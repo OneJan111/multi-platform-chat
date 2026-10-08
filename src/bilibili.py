@@ -306,28 +306,24 @@ def send_danmaku(room_id: str, message: str) -> bool:
 
 # ── Moderation (block user) ────────────────────────────────────────────────────
 
-def block_user(room_id: str, uid: int, hours: int = 1) -> bool:
-    """Block a user from the live room for the given number of hours (1–720)."""
+def block_user(room_id: str, uid: int, hours: int = -1) -> tuple[bool, str]:
+    """Mute a user in the live room. hours: -1 = permanent, 0 = until this stream ends, else 1–720.
+
+    Needs a logged-in account that is the room owner or a room admin.
+    """
+    if not BILIBILI_LIB_OK:
+        return False, "bilibili-api-python is not installed."
+    if not str(uid).strip() or str(uid).strip() == "0":
+        return False, "Bilibili hid this user's ID — log in (🍪 Cookies tab) and restart the Bilibili listener."
     sessdata, bili_jct, _, _ = _cookie_values()
     if not sessdata or not bili_jct:
-        return False
+        return False, "Not logged in to Bilibili — import cookies in the 🍪 Cookies tab."
     try:
-        url = "https://api.live.bilibili.com/banned_service/v2/Silent/add_silent_user"
-        headers = {
-            "Cookie": f"SESSDATA={sessdata}; bili_jct={bili_jct}",
-            "Referer": "https://live.bilibili.com",
-        }
-        payload = {
-            "roomid": room_id,
-            "block_uid": uid,
-            "hour": hours,
-            "csrf_token": bili_jct,
-            "csrf": bili_jct,
-        }
-        resp = requests.post(url, data=payload, headers=headers, timeout=5)
-        return resp.json().get("code", -1) == 0
-    except Exception:
-        return False
+        room = live.LiveRoom(room_display_id=int(room_id), credential=_credential())
+        _run(room.ban_user(uid=int(uid), hour=int(hours)))
+        return True, ""
+    except Exception as exc:
+        return False, str(exc) or type(exc).__name__
 
 
 # ── Follower / viewer stats ────────────────────────────────────────────────────

@@ -448,24 +448,41 @@ def send_chat(live_chat_id: str, video_id: str, message: str) -> tuple[bool, str
     return False, "Not signed in to YouTube — sign in (sidebar) or import YouTube cookies in the 🍪 Cookies tab."
 
 
-def delete_chat_message(message_id: str) -> bool:
+def _http_error_reason(exc: HttpError) -> str:
+    try:
+        return exc.error_details[0].get("message") or exc.reason  # type: ignore[index]
+    except Exception:
+        return getattr(exc, "reason", "") or str(exc)
+
+
+_NEEDS_GOOGLE_SIGNIN = (
+    "YouTube ban / delete needs Google sign-in (sidebar → Start YouTube OAuth). "
+    "Browser-cookie login can only read and send chat."
+)
+
+
+def delete_chat_message(message_id: str) -> tuple[bool, str]:
     """Delete a chat message by ID."""
     service = _build_service()
     if not service:
-        return False
+        return False, _NEEDS_GOOGLE_SIGNIN
     try:
         service.liveChatMessages().delete(id=message_id).execute()
-        return True
-    except HttpError:
-        return False
+        return True, ""
+    except HttpError as exc:
+        return False, _http_error_reason(exc)
 
 
-def ban_user(live_chat_id: str, channel_id: str, ban_duration_seconds: int = 0) -> bool:
+def ban_user(live_chat_id: str, channel_id: str, ban_duration_seconds: int = 0) -> tuple[bool, str]:
     """Ban (permanent if 0) or timeout a user from live chat."""
     service = _build_service()
-    live_chat_id = _api_chat_id(live_chat_id) if service else ""
-    if not service or not live_chat_id:
-        return False
+    if not service:
+        return False, _NEEDS_GOOGLE_SIGNIN
+    if not channel_id:
+        return False, "This message has no channel ID."
+    live_chat_id = _api_chat_id(live_chat_id)
+    if not live_chat_id:
+        return False, "Could not find the live chat for this stream (is it live?)."
     try:
         body: dict = {
             "snippet": {
@@ -477,9 +494,9 @@ def ban_user(live_chat_id: str, channel_id: str, ban_duration_seconds: int = 0) 
         if ban_duration_seconds > 0:
             body["snippet"]["banDurationSeconds"] = ban_duration_seconds
         service.liveChatBans().insert(part="snippet", body=body).execute()
-        return True
-    except HttpError:
-        return False
+        return True, ""
+    except HttpError as exc:
+        return False, _http_error_reason(exc)
 
 
 def get_channel_stats() -> dict:

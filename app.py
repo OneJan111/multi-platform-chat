@@ -36,7 +36,7 @@ from src.config import CHAT_POLL_INTERVAL, MISSEVAN_ROOM_ID
 from src.filters import ChatFilter, make_default_filter
 from src.tts import (
     LANGUAGES as TTS_LANGUAGES, format_announcement, format_message, is_emoji_only, is_paid,
-    matches_language, speak, speak_async, strip_emoji,
+    matches_language, speak, speak_async, stop_speaking, strip_emoji,
 )
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -45,12 +45,12 @@ from src.tts import (
 st.markdown(
     """
 <style>
-/* Chat bubbles */
+/* Chat bubbles (--chat-scale is set by the sidebar "Text size" option) */
 .chat-bubble {
     padding: 6px 10px;
     border-radius: 8px;
     margin-bottom: 4px;
-    font-size: 0.88rem;
+    font-size: calc(0.88rem * var(--chat-scale, 1));
     line-height: 1.4;
     word-break: break-word;
 }
@@ -67,14 +67,14 @@ st.markdown(
     padding-top: 3px;
     border-top: 1px dashed #444;
     color: #9fd3ff;
-    font-size: 0.84rem;
+    font-size: 0.95em;
 }
 .chat-translation.pending { color: #777; font-style: italic; }
 .chat-reading { line-height: 2.2; }
 .chat-reading rt { font-size: 0.62em; color: #ffcc80; letter-spacing: 0; }
 .badge {
     display: inline-block;
-    font-size: 0.68rem;
+    font-size: 0.77em;
     font-weight: 700;
     padding: 1px 5px;
     border-radius: 4px;
@@ -119,6 +119,25 @@ st.markdown(
     height: calc(100dvh - 420px) !important;
     max-height: calc(100dvh - 420px) !important;
 }
+/* Join feed sits under the gifts, so the gifts box gives up its height */
+[data-testid="stColumn"]:has(.join-feed) .st-key-paid_feed {
+    height: calc(100dvh - 610px) !important;
+    max-height: calc(100dvh - 610px) !important;
+    min-height: 180px;
+}
+.join-feed {
+    height: 130px;
+    overflow-y: auto;
+    font-size: calc(0.82rem * var(--chat-scale, 1));
+    color: #aaa;
+    border: 1px solid rgba(128,128,128,0.25);
+    border-radius: 6px;
+    padding: 4px 8px;
+}
+.join-row { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; line-height: 1.6; }
+.join-row b { color: #ccc; font-weight: 500; margin-left: 4px; }
+.join-time { color: #777; margin-right: 6px; font-size: 0.9em; }
+.join-empty { color: #777; font-style: italic; }
 /* Portrait tablets: stack chat above gifts (must precede the row rules below) */
 @media (max-width: 900px) {
     .st-key-chat_paid [data-testid="stHorizontalBlock"] { flex-wrap: wrap !important; }
@@ -128,7 +147,8 @@ st.markdown(
         min-width: 100% !important;
     }
     .st-key-chat_feed { height: 50dvh !important; max-height: 50dvh !important; }
-    .st-key-paid_feed { height: 35dvh !important; max-height: 35dvh !important; }
+    .st-key-paid_feed,
+    [data-testid="stColumn"]:has(.join-feed) .st-key-paid_feed { height: 35dvh !important; max-height: 35dvh !important; }
 }
 /* Message rows and the send box: keep text + buttons on one line at any width */
 .st-key-chat_feed [data-testid="stHorizontalBlock"],
@@ -155,7 +175,7 @@ st.markdown(
 }
 @media (max-width: 1100px) {
     [data-testid="stMainBlockContainer"] { padding: 2.5rem 0.75rem 1rem; }
-    .chat-bubble { font-size: 0.85rem; padding: 5px 8px; }
+    .chat-bubble { font-size: calc(0.85rem * var(--chat-scale, 1)); padding: 5px 8px; }
 }
 /* Touch screens: bigger tap targets */
 @media (hover: none) and (pointer: coarse) {
@@ -178,14 +198,20 @@ st.markdown(
 # Session-state initialisation
 # ──────────────────────────────────────────────────────────────────────────────
 
+@st.cache_resource
+def _shared_filter() -> ChatFilter:
+    """One filter for every browser tab, so tabs can't overwrite each other's saved file."""
+    return make_default_filter()
+
+
 def _init_state():
     defaults = {
         "chat_messages": [],          # unified list of all chat messages
         "yt_page_token": "",
         "bili_listener": None,
-        "filter": make_default_filter(),
         "blocked_msgs": [],
         "paid_messages": [],          # gifts / Super Chats, kept apart so chat trimming can't drop them
+        "join_messages": [],          # "entered the room" events, shown in their own feed
         "thanked_ids": set(),
         "tts_enabled": False,
         "tts_rate": 150,
@@ -198,10 +224,16 @@ def _init_state():
         "translate_enabled": False,
         "translate_target": "en",
         "sc_reading": "auto",
-        "show_enter_events": False,
+        "show_enter_events": True,
+        "obs_enabled": False,         # never contact OBS unless the streamer turns this on
+        "text_scale": {"chat": 100, "paid": 100, "join": 100},  # text size in % per feed
         "max_chat_display": 200,
         "selected_chat_id": "",
         "yt_chat_input": "",
+        "yt_watch_channel": "",       # channel URL being watched for its next live stream
+        "yt_watch_info": {},          # last ytw.find_live_video() result
+        "yt_watch_last": 0.0,
+        "yt_live_video": "",          # video ID of the stream the watcher attached to
         "yt_chat_error": "",
         "bili_room_id": "",
         "me_listener": None,
@@ -218,6 +250,13 @@ def _init_state():
     for k, v in defaults.items():
         if k not in st.session_state:
             st.session_state[k] = v
+    if not isinstance(st.session_state["text_scale"], dict):  # older session stored one number
+        st.session_state["text_scale"] = dict(defaults["text_scale"])
+    filt = _shared_filter()
+    if not hasattr(filt, "is_blocked_user"):  # stale object from before a code reload
+        _shared_filter.clear()
+        filt = _shared_filter()
+    st.session_state["filter"] = filt
 
 
 _init_state()
@@ -318,7 +357,7 @@ def _render_message(msg: dict, key_prefix: str = "", thank: bool = False):
     html = (
         f'<div class="chat-bubble {bubble}">'
         f'{badges}'
-        f'<span style="color:#aaa;font-size:0.75rem;">[{ts}]</span> '
+        f'<span style="color:#aaa;font-size:0.85em;">[{ts}]</span> '
         f'<strong>{author}</strong>: {text_html}'
         f"{translation_html}"
         f"</div>"
@@ -342,8 +381,30 @@ def _render_message(msg: dict, key_prefix: str = "", thank: bool = False):
                 on_click=_replay_message, args=(msg,),
             )
     with col3:
-        if st.button("🚫", key=f"ban_{wkey}", help=t("Ban/block user")):
-            st.session_state["_pending_ban"] = msg
+        st.button(
+            "🚫", key=f"ban_{wkey}", help=t("Block this user (hides their messages; saved permanently)"),
+            on_click=_block_user, args=(msg,),
+        )
+
+
+def _block_user(msg: dict):
+    """Add the author to the saved blocked-users filter and drop their messages already on screen."""
+    filt: ChatFilter = st.session_state["filter"]
+    platform, author_id, author = msg.get("platform", ""), msg.get("author_id", ""), msg.get("author", "")
+    if author_id and author_id != "0":  # Bilibili sends uid 0 when it hides the viewer's ID
+        filt.block_user(author_id, name=author, platform=platform)
+    else:
+        filt.block_name(author)
+    names = set(filt.blocked_names)
+    for key in ("chat_messages", "paid_messages", "join_messages"):
+        st.session_state[key] = [
+            m for m in st.session_state[key]
+            if not (filt.is_blocked_user(m) or m.get("author", "").lower() in names)
+        ]
+    st.toast(t("Blocked {author} — see the 🛡️ Filters tab to unblock", author=author))
+
+
+_PLATFORM_NAMES = {"youtube": "YouTube", "bilibili": "Bilibili", "missevan": "MissEvan"}
 
 
 def _play_tts(text: str, lang: str):
@@ -356,6 +417,50 @@ def _play_tts(text: str, lang: str):
     )
     if audio:
         st.session_state["_tts_audio"] = audio
+
+
+def _stop_tts(clear: bool):
+    """Cut off the message being read (e.g. a sensitive comment); clear=True also drops the queue."""
+    dropped = stop_speaking(clear=clear)
+    st.session_state.pop("_tts_audio", None)  # gTTS: removing the player stops browser playback
+    if clear:
+        st.toast(t("⏹ TTS stopped · {n} queued message(s) dropped", n=dropped))
+    else:
+        st.toast(t("⏭ Skipped the current message"))
+
+
+_TEXT_SIZES = [80, 90, 100, 115, 130, 150, 175, 200]
+
+
+def _change_text_size(feed: str, step: int):
+    scales = st.session_state["text_scale"]
+    i = _TEXT_SIZES.index(scales[feed]) if scales[feed] in _TEXT_SIZES else _TEXT_SIZES.index(100)
+    scales[feed] = _TEXT_SIZES[max(0, min(len(_TEXT_SIZES) - 1, i + step))]
+
+
+def _text_size_buttons(container, feed: str):
+    """A− / A+ at the right end of a feed's header row."""
+    size = st.session_state["text_scale"][feed]
+    container.space("stretch")
+    container.button(
+        "A−", key=f"size_{feed}_dec", type="tertiary", disabled=size <= _TEXT_SIZES[0],
+        on_click=_change_text_size, args=(feed, -1), help=t("Smaller text ({p}%)", p=size),
+    )
+    container.button(
+        "A+", key=f"size_{feed}_inc", type="tertiary", disabled=size >= _TEXT_SIZES[-1],
+        on_click=_change_text_size, args=(feed, 1), help=t("Bigger text ({p}%)", p=size),
+    )
+
+
+def _tts_stop_buttons(container, prefix: str):
+    container.button(
+        t("⏭ Skip"), key=f"{prefix}_tts_skip", on_click=_stop_tts, args=(False,),
+        help=t("Stop reading the current message and go on to the next one."),
+    )
+    container.button(
+        t("⏹ Stop TTS"), key=f"{prefix}_tts_stop", on_click=_stop_tts, args=(True,), type="primary",
+        help=t("Stop reading now and drop all queued messages. New chat is still read."),
+    )
 
 
 def _tts_translating() -> bool:
@@ -413,6 +518,7 @@ def _poll_chat():
     history_ids: set = set()
 
     # YouTube
+    _check_watched_channel()
     chat_id = st.session_state.get("selected_chat_id", "")
     if chat_id:
         first_fetch = not st.session_state["yt_page_token"]
@@ -481,16 +587,18 @@ def _poll_chat():
                 priority=paid,
             )
 
-    # Update history (skip enter events if hidden)
-    show_enter = st.session_state["show_enter_events"]
+    # Update history; join events go to their own feed, never into chat
     for m in allowed:
         if is_paid(m):
             st.session_state["paid_messages"].append(m)
-        if not show_enter and m.get("type") == "enter":
+        if m.get("type") == "enter":
+            st.session_state["join_messages"].append(m)
             continue
         st.session_state["chat_messages"].append(m)
     if len(st.session_state["paid_messages"]) > 1000:
         st.session_state["paid_messages"] = st.session_state["paid_messages"][-1000:]
+    if len(st.session_state["join_messages"]) > 500:
+        st.session_state["join_messages"] = st.session_state["join_messages"][-300:]
 
     st.session_state["blocked_msgs"].extend(blocked)
 
@@ -514,6 +622,49 @@ def _record_viewer_snapshot(yt_viewers: int, bili_viewers: int, me_viewers: int 
 def _cached_video_status(video_id: str) -> dict:
     # Cached because the app reruns every few seconds and each lookup costs API quota.
     return yt.get_video_live_status(video_id)
+
+
+YT_WATCH_INTERVAL = 60  # seconds between checks of a watched channel
+
+
+def _yt_video_id() -> str:
+    """Video ID of the YouTube stream in use: the watched channel's live stream, or the one typed in."""
+    if st.session_state["yt_watch_channel"]:
+        return st.session_state["yt_live_video"]
+    return yt.extract_video_id(st.session_state["yt_chat_input"])
+
+
+def _stop_yt_listener():
+    st.session_state["selected_chat_id"] = ""
+    st.session_state["yt_page_token"] = ""
+    st.session_state["yt_live_video"] = ""
+
+
+def _check_watched_channel(force: bool = False):
+    """Attach to the watched channel's stream once it goes live; detach when it ends."""
+    channel = st.session_state["yt_watch_channel"]
+    now = time.time()
+    if not channel or (not force and now - st.session_state["yt_watch_last"] < YT_WATCH_INTERVAL):
+        return
+    st.session_state["yt_watch_last"] = now
+    live_vid = st.session_state["yt_live_video"]
+    if st.session_state["selected_chat_id"] and live_vid:
+        status = ytw.get_video_status(live_vid)
+        if status and status.get("broadcast") != "live":  # {} = network hiccup, keep listening
+            _stop_yt_listener()
+            st.toast(t("The YouTube stream ended — watching the channel for the next one."))
+        return
+    info = ytw.find_live_video(channel)
+    st.session_state["yt_watch_info"] = info
+    if not info["live"]:
+        return
+    chat_id, err = yt.resolve_live_chat_id(info["video_id"])
+    st.session_state["yt_chat_error"] = err
+    if chat_id:
+        st.session_state["selected_chat_id"] = chat_id
+        st.session_state["yt_page_token"] = ""
+        st.session_state["yt_live_video"] = info["video_id"]
+        st.toast(t("{channel} is live — reading chat", channel=info["channel"] or "YouTube"))
 
 
 @st.cache_data(ttl=30, show_spinner=False)
@@ -628,15 +779,19 @@ with st.sidebar:
         value=st.session_state["yt_chat_input"],
         key="yt_room_input",
         placeholder="https://www.youtube.com/watch?v=…",
+        help=t("Or a channel link like https://www.youtube.com/@name — the chat is picked up automatically when the channel goes live."),
     ).strip()
     if yt_chat_input != st.session_state["yt_chat_input"]:
         st.session_state["yt_chat_input"] = yt_chat_input
         # Changing the stream stops the current listener, like the Bilibili room field.
-        st.session_state["selected_chat_id"] = ""
+        _stop_yt_listener()
         st.session_state["yt_chat_error"] = ""
-        st.session_state["yt_page_token"] = ""
+        st.session_state["yt_watch_channel"] = ""
+        st.session_state["yt_watch_info"] = {}
 
     _yt_vid = yt.extract_video_id(yt_chat_input) if yt_chat_input else ""
+    _yt_channel = "" if _yt_vid else ytw.channel_url(yt_chat_input)
+    _yt_vid = _yt_vid or st.session_state["yt_live_video"]
     if _yt_vid:
         _yt_info = _cached_video_status(_yt_vid)
         if _yt_info:
@@ -647,16 +802,46 @@ with st.sidebar:
                 else (t("Upcoming") if _yt_info["broadcast"] == "upcoming" else ""),
             )
 
+    _check_watched_channel()  # before drawing, so the status below is current
+    watching = st.session_state["yt_watch_channel"]
     if st.session_state["selected_chat_id"]:
         st.success(t("YouTube chat listener active ✓"))
+        winfo = st.session_state["yt_watch_info"]
+        if watching and winfo.get("title"):
+            st.caption(t("Live now: {title}", title=winfo["title"]))
         if yt.is_web_chat(st.session_state["selected_chat_id"]):
             st.caption(t("Reading chat without sign-in. Sign in to send messages or moderate."))
-        elif st.session_state["selected_chat_id"] != yt_chat_input:
+        elif not watching and st.session_state["selected_chat_id"] != yt_chat_input:
             st.caption(t("Chat ID: `{chat_id}`", chat_id=st.session_state["selected_chat_id"]))
-        if st.button(t("Stop YouTube listener")):
-            st.session_state["selected_chat_id"] = ""
-            st.session_state["yt_page_token"] = ""
+        if st.button(t("Stop watching channel") if watching else t("Stop YouTube listener")):
+            _stop_yt_listener()
+            st.session_state["yt_watch_channel"] = ""
             st.rerun()
+    elif watching:
+        winfo = st.session_state["yt_watch_info"]
+        name = winfo.get("channel") or watching.rsplit("/", 1)[-1]
+        if winfo.get("error"):
+            st.warning(t(winfo["error"]))
+        elif winfo.get("upcoming"):
+            st.info(t("👀 Watching {name} — stream scheduled: {title}", name=name, title=winfo.get("title", "")))
+        else:
+            st.info(t("👀 Watching {name} — not live yet", name=name))
+        st.caption(t(
+            "Checks every {s}s · last checked {time}", s=YT_WATCH_INTERVAL,
+            time=datetime.fromtimestamp(st.session_state["yt_watch_last"]).strftime("%H:%M:%S"),
+        ))
+        if st.session_state["yt_chat_error"]:
+            st.error(t(st.session_state["yt_chat_error"]))
+        if st.button(t("Stop watching channel")):
+            st.session_state["yt_watch_channel"] = ""
+            st.session_state["yt_watch_info"] = {}
+            st.rerun()
+    elif _yt_channel:
+        if st.button(t("👀 Watch channel")):
+            st.session_state["yt_watch_channel"] = _yt_channel
+            _check_watched_channel(force=True)
+            st.rerun()
+        st.caption(t("Waits for the channel to go live, then reads its chat automatically."))
     else:
         if st.button(t("Start YouTube listener")) and yt_chat_input:
             chat_id, err = yt.resolve_live_chat_id(yt_chat_input)
@@ -773,8 +958,14 @@ with st.sidebar:
 
     # ── OBS ───────────────────────────────────────────────────────────────────
     st.subheader("🎬 OBS")
-    obs_status = obs.get_status()
-    if obs_status.get("connected"):
+    st.toggle(
+        t("Connect to OBS"), key="obs_enabled", on_change=obs.retry_now,
+        help=t("Off: the dashboard never contacts OBS. On: OBS controls appear here and in the 🎬 OBS Control tab once OBS is connected."),
+    )
+    obs_status = obs.get_status() if st.session_state["obs_enabled"] else {"connected": False}
+    if not st.session_state["obs_enabled"]:
+        st.caption(t("OBS functions are off."))
+    elif obs_status.get("connected"):
         st.success(t("OBS connected ✓"))
         scenes = obs.get_scenes()
         if scenes:
@@ -861,6 +1052,7 @@ with st.sidebar:
         _samples = {"zh": "你好，欢迎来到直播间", "ja": "こんにちは、配信へようこそ", "ko": "안녕하세요, 방송에 오신 것을 환영합니다", "en": "Hello, welcome to the stream"}
         _sample = _samples.get(st.session_state["tts_lang"], _samples["en"])
         _play_tts(format_message("Streamer", _sample, st.session_state["tts_lang"]), st.session_state["tts_lang"])
+    _tts_stop_buttons(st.container(horizontal=True), "sb")
     if st.session_state.get("_tts_audio"):
         st.audio(st.session_state["_tts_audio"], format="audio/mp3", autoplay=True)
     st.session_state["tts_rate"] = st.slider(
@@ -872,7 +1064,8 @@ with st.sidebar:
 
     st.divider()
     st.session_state["show_enter_events"] = st.checkbox(
-        t("Show join events"), value=st.session_state["show_enter_events"]
+        t("Show join events"), value=st.session_state["show_enter_events"],
+        help=t("Show viewers entering the room in a separate feed under Gifts & Super Chats."),
     )
     st.session_state["max_chat_display"] = st.number_input(
         t("Max messages displayed"), 50, 1000, st.session_state["max_chat_display"]
@@ -880,6 +1073,7 @@ with st.sidebar:
 
     if st.button(t("🗑️ Clear chat history")):
         st.session_state["chat_messages"] = []
+        st.session_state["join_messages"] = []
         st.rerun()
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -896,39 +1090,6 @@ tab_chat, tab_status, tab_obs, tab_analytics, tab_filters, tab_overlay, tab_cook
 
 with tab_chat:
     _poll_chat()  # fetch new messages every rerun
-
-    # Handle pending ban from previous rerun
-    if "_pending_ban" in st.session_state:
-        msg = st.session_state.pop("_pending_ban")
-        with st.expander(t("⚠️ Action on {author}", author=msg["author"]), expanded=True):
-            col_a, col_b, col_c = st.columns(3)
-            with col_a:
-                timeout_min = st.number_input(t("Timeout (minutes, 0=permanent)"), 0, 1440, 10, key="ban_dur")
-            with col_b:
-                if st.button(t("🚫 Ban / Timeout"), key="do_ban"):
-                    platform = msg.get("platform")
-                    if platform == "youtube":
-                        chat_id = st.session_state.get("selected_chat_id", "")
-                        yt.ban_user(chat_id, msg["author_id"], timeout_min * 60)
-                    elif platform == "bilibili":
-                        try:
-                            bili.block_user(
-                                st.session_state["bili_room_id"],
-                                int(msg["author_id"]),
-                                max(1, timeout_min // 60),
-                            )
-                        except Exception:
-                            pass
-                    st.session_state["filter"].block_user(msg["author_id"])
-                    st.success(t("Blocked {author}", author=msg["author"]))
-            with col_c:
-                if st.button(t("🗑️ Delete message"), key="do_del"):
-                    if msg.get("platform") == "youtube":
-                        yt.delete_chat_message(msg["id"])
-                    st.session_state["chat_messages"] = [
-                        m for m in st.session_state["chat_messages"] if m["id"] != msg["id"]
-                    ]
-                    st.rerun()
 
     # ── Send message ──────────────────────────────────────────────────────────
     yt_chat = st.session_state.get("selected_chat_id", "")
@@ -951,6 +1112,9 @@ with tab_chat:
         else t("Log in to MissEvan in the 🍪 Cookies tab first.") if not me_logged_in
         else t("Enter a MissEvan room first."),
     )
+    if st.session_state["tts_enabled"]:
+        tgt_row.space("stretch")
+        _tts_stop_buttons(tgt_row, "chat")
     with st.form("send_form", clear_on_submit=True), st.container(key="send_box"):
         send_cols = st.columns([8, 1])
         outgoing = send_cols[0].text_input(t("Message"), label_visibility="collapsed", placeholder=t("Type a message…"))
@@ -959,7 +1123,7 @@ with tab_chat:
             targets = []
             if send_yt and yt_chat:
                 targets.append(("YouTube", lambda: yt.send_chat(
-                    yt_chat, yt.extract_video_id(st.session_state["yt_chat_input"]), outgoing)))
+                    yt_chat, _yt_video_id(), outgoing)))
             if send_bili and bili_room_send:
                 targets.append(("Bilibili", lambda: (bili.send_danmaku(bili_room_send, outgoing), "")))
             if send_me and me_room_send and me_logged_in:
@@ -1003,9 +1167,17 @@ with tab_chat:
             wait=2.0,
         )
 
+    scales = st.session_state["text_scale"]
+    st.markdown(
+        f"<style>.st-key-chat_feed {{ --chat-scale: {scales['chat'] / 100}; }}"
+        f".st-key-paid_feed {{ --chat-scale: {scales['paid'] / 100}; }}</style>",
+        unsafe_allow_html=True,
+    )
     chat_col, paid_col = st.container(key="chat_paid").columns([3, 2])
     with chat_col:
-        st.markdown(f"**💬 {t('Chat')}**")
+        chat_head = st.container(horizontal=True, vertical_alignment="center")
+        chat_head.markdown(f"**💬 {t('Chat')}**", width="content")
+        _text_size_buttons(chat_head, "chat")
         with st.container(key="chat_feed"):
             for msg in reversed(visible):
                 _render_message(msg, key_prefix="chat")
@@ -1023,11 +1195,27 @@ with tab_chat:
             t("🙏 Mark all thanked"), key="thank_all", disabled=not pending,
             on_click=_set_thanked, args=([m["id"] for m in pending], True),
         )
+        _text_size_buttons(paid_head, "paid")
         with st.container(key="paid_feed"):
             if not paid_all:
                 st.caption(t("No gifts or Super Chats yet."))
             for msg in reversed(paid_all[-200:]):
                 _render_message(msg, key_prefix="paid", thank=True)
+
+        if st.session_state["show_enter_events"]:
+            joins = [m for m in st.session_state["join_messages"] if m.get("platform") not in hidden_platforms]
+            join_head = st.container(horizontal=True, vertical_alignment="center")
+            join_head.markdown(f"**👋 {t('Joins')}** · {t('{n} total', n=len(joins))}", width="content")
+            _text_size_buttons(join_head, "join")
+            rows = "".join(
+                f'<div class="join-row"><span class="join-time">{_fmt_time(m.get("timestamp", ""))}</span>'
+                f'{_platform_badge(m)}<b>{html_lib.escape(m.get("author", ""))}</b></div>'
+                for m in reversed(joins[-150:])
+            ) or f'<div class="join-empty">{t("No one has joined yet.")}</div>'
+            st.markdown(
+                f'<div class="join-feed" style="--chat-scale: {scales["join"] / 100}">{rows}</div>',
+                unsafe_allow_html=True,
+            )
 
     # Auto-refresh placeholder
     st.markdown(
@@ -1049,9 +1237,11 @@ with tab_status:
     with yt_col:
         st.subheader("🔴 YouTube")
         yt_input = st.session_state["yt_chat_input"]
-        video_id = yt.extract_video_id(yt_input)
+        video_id = _yt_video_id()
         if not yt_input:
             st.warning(t("Enter a stream URL in the sidebar."))
+        elif st.session_state["yt_watch_channel"] and not video_id:
+            st.info(t("Watching the channel — it isn't live yet."))
         elif not video_id:
             st.info(t("Status needs a stream URL or video ID (a raw chat ID has no video info)."))
         else:
@@ -1152,9 +1342,11 @@ with tab_status:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 with tab_obs:
-    obs_status = obs.get_status()
+    if not st.session_state["obs_enabled"]:
+        st.info(t("OBS functions are off. Turn on **Connect to OBS** in the sidebar to use them."))
     if not obs_status.get("connected"):
-        st.warning(t("⚠️ OBS is not connected. Configure OBS WebSocket settings in your .env file."))
+        if st.session_state["obs_enabled"]:
+            st.warning(t("⚠️ OBS is not connected. Configure OBS WebSocket settings in your .env file."))
         with st.expander(t("Setup instructions")):
             st.markdown(
                 t("obs_setup_md") if st.session_state["ui_lang"] != "en" else """
@@ -1351,6 +1543,12 @@ with tab_filters:
                 st.rerun()
 
         st.markdown("#### " + t("Allow Patterns (override block)"))
+        for pat in filt.allow_patterns:
+            c1, c2 = st.columns([8, 1])
+            c1.code(pat)
+            if c2.button("✕", key=f"del_allow_{pat}"):
+                filt.remove_allow_pattern(pat)
+                st.rerun()
         with st.form("add_allow_pattern", clear_on_submit=True):
             new_allow = st.text_input(t("New allow pattern"))
             if st.form_submit_button(t("Add allow pattern")) and new_allow:
@@ -1359,13 +1557,23 @@ with tab_filters:
 
     with col_user:
         st.markdown("#### " + t("Blocked Users"))
-        blocked_ids = filt.blocked_users
-        if blocked_ids:
-            for uid in list(blocked_ids):
-                c1, c2 = st.columns([8, 1])
-                c1.code(uid)
-                if c2.button("✕", key=f"del_uid_{uid}"):
-                    filt.unblock_user(uid)
+        st.caption(t("Saved to chat_filters.json and kept after restarting the app."))
+        blocked = filt.blocked_users
+        blocked_names = filt.blocked_names
+        if blocked or blocked_names:
+            for key, name in sorted(blocked.items(), key=lambda kv: (kv[1] or kv[0]).lower()):
+                platform, _, uid = key.rpartition(":")
+                site = _PLATFORM_NAMES.get(platform, t("Any platform"))
+                c1, c2 = st.columns([8, 1], vertical_alignment="center")
+                c1.markdown(f"**{html_lib.escape(name) or '—'}** · {site} · `{uid}`")
+                if c2.button("✕", key=f"del_uid_{key}", help=t("Unblock")):
+                    filt.unblock_user(key)
+                    st.rerun()
+            for name in blocked_names:
+                c1, c2 = st.columns([8, 1], vertical_alignment="center")
+                c1.markdown(f"**{html_lib.escape(name)}** · {t('by name')}")
+                if c2.button("✕", key=f"del_name_{name}", help=t("Unblock")):
+                    filt.unblock_name(name)
                     st.rerun()
         else:
             st.info(t("No blocked users."))
@@ -1558,7 +1766,15 @@ with tab_cookies:
                 )
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Auto-refresh via st.rerun
+# Auto-refresh: a browser-side timer reruns the app. Sleeping + st.rerun() on the
+# server would swallow button clicks made while the script was sleeping.
 # ──────────────────────────────────────────────────────────────────────────────
-time.sleep(CHAT_POLL_INTERVAL)
-st.rerun()
+@st.fragment(run_every=CHAT_POLL_INTERVAL)
+def _auto_refresh():
+    if st.session_state.pop("_full_run", False):
+        return  # part of a normal full run; only the timer ticks should rerun the app
+    st.rerun()
+
+
+st.session_state["_full_run"] = True
+_auto_refresh()

@@ -14,7 +14,9 @@ import threading
 import time
 from collections import OrderedDict
 from datetime import datetime, timezone
+from html import unescape
 from pathlib import Path
+from urllib.parse import unquote, urlparse
 
 import requests
 
@@ -263,6 +265,64 @@ def get_video_status(video_id: str) -> dict:
         "scheduled_start": scheduled,
         "thumbnail": thumbs[min(1, len(thumbs) - 1)]["url"] if thumbs else "",
     }
+
+
+# ── Channel watcher (auto-join the channel's next live stream) ──────────────────
+
+_CHANNEL_ID_RE = re.compile(r"^UC[\w-]{22}$")
+_HANDLE_RE = re.compile(r"^@[\w.\-·]{3,30}$")
+
+
+def channel_url(value: str) -> str:
+    """Normalise a channel link / @handle / UC… ID to https://www.youtube.com/<channel>, or "" if not a channel."""
+    value = value.strip().rstrip("/")
+    if _HANDLE_RE.match(value):
+        return f"https://www.youtube.com/{value}"
+    if _CHANNEL_ID_RE.match(value):
+        return f"https://www.youtube.com/channel/{value}"
+    if "://" not in value and "youtube.com" in value:
+        value = "https://" + value
+    parsed = urlparse(value)
+    host = parsed.netloc.lower().removeprefix("www.").removeprefix("m.")
+    if host != "youtube.com":
+        return ""
+    parts = [unquote(p) for p in parsed.path.split("/") if p]
+    if parts and parts[0].startswith("@"):
+        return f"https://www.youtube.com/{parts[0]}"
+    if len(parts) >= 2 and parts[0] in ("channel", "c", "user"):
+        return f"https://www.youtube.com/{parts[0]}/{parts[1]}"
+    return ""
+
+
+def find_live_video(channel: str) -> dict:
+    """
+    Check whether a channel is live right now, via its public /live page.
+    Returns {"video_id", "live", "upcoming", "title", "channel", "error"}; video_id is "" when offline.
+    """
+    result = {"video_id": "", "live": False, "upcoming": False, "title": "", "channel": "", "error": ""}
+    try:
+        resp = _session.get(channel + "/live", timeout=_TIMEOUT)
+    except requests.RequestException as exc:
+        result["error"] = f"Couldn't reach YouTube: {exc}"
+        return result
+    if resp.status_code == 404:
+        result["error"] = "Channel not found."
+        return result
+    html = resp.text
+    name = re.search(r'<meta property="og:title" content="([^"]*)"', html)
+    result["channel"] = unescape(name.group(1)) if name else ""
+    # When the channel is live (or has a scheduled stream), /live serves that stream's watch page.
+    canonical = re.search(r'<link rel="canonical" href="https://www\.youtube\.com/watch\?v=([\w-]{11})"', html)
+    if not canonical:
+        return result
+    player = _initial_data(html, "ytInitialPlayerResponse")
+    details = player.get("videoDetails", {})
+    result["video_id"] = canonical.group(1)
+    result["title"] = details.get("title", "")
+    result["channel"] = details.get("author", "") or result["channel"]
+    result["live"] = bool(details.get("isLive"))
+    result["upcoming"] = bool(details.get("isUpcoming"))
+    return result
 
 
 # ── Cookie login (send chat as the signed-in browser user) ──────────────────────

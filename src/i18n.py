@@ -91,6 +91,16 @@ _STRINGS: dict[str, tuple[str, str]] = {
         "bilibili-api-python が未インストールか、接続に失敗しました。",
     ),
     "OBS connected ✓": ("OBS 已连接 ✓", "OBS 接続済み ✓"),
+    "Connect to OBS": ("连接 OBS", "OBS に接続"),
+    "Off: the dashboard never contacts OBS. On: OBS controls appear here and in the 🎬 OBS Control tab once OBS is connected.": (
+        "关闭：仪表板不会连接 OBS。开启：连接成功后，这里和「🎬 OBS 控制」标签页会显示 OBS 控制项。",
+        "オフ：ダッシュボードは OBS に接続しません。オン：接続されると、ここと「🎬 OBS 操作」タブに OBS の操作が表示されます。",
+    ),
+    "OBS functions are off.": ("OBS 功能已关闭。", "OBS 機能はオフです。"),
+    "OBS functions are off. Turn on **Connect to OBS** in the sidebar to use them.": (
+        "OBS 功能已关闭。请在侧边栏开启 **连接 OBS** 以使用。",
+        "OBS 機能はオフです。サイドバーで **OBS に接続** をオンにすると使えます。",
+    ),
     "Scene": ("场景", "シーン"),
     "OBS not connected — check OBS_HOST/PORT/PASSWORD in .env": (
         "OBS 未连接 — 请检查 .env 中的 OBS_HOST/PORT/PASSWORD",
@@ -142,6 +152,23 @@ _STRINGS: dict[str, tuple[str, str]] = {
         "メッセージ本文のみを読み上げます。ギフトとスーパーチャットは送り主の名前も読み上げます。",
     ),
     "▶ Test voice": ("▶ 试听", "▶ 音声テスト"),
+    "Smaller text ({p}%)": ("缩小文字（{p}%）", "文字を小さく（{p}%）"),
+    "Bigger text ({p}%)": ("放大文字（{p}%）", "文字を大きく（{p}%）"),
+    "⏭ Skip": ("⏭ 跳过", "⏭ スキップ"),
+    "⏹ Stop TTS": ("⏹ 停止朗读", "⏹ 読み上げ停止"),
+    "Stop reading the current message and go on to the next one.": (
+        "停止朗读当前这条，继续读下一条。",
+        "今読んでいるメッセージを止めて、次へ進みます。",
+    ),
+    "Stop reading now and drop all queued messages. New chat is still read.": (
+        "立即停止朗读并清空等待中的消息。之后的新弹幕仍会朗读。",
+        "すぐに読み上げを止め、待機中のメッセージを全て破棄します。新しいチャットは引き続き読み上げます。",
+    ),
+    "⏹ TTS stopped · {n} queued message(s) dropped": (
+        "⏹ 已停止朗读 · 丢弃了 {n} 条等待中的消息",
+        "⏹ 読み上げを停止 · 待機中の {n} 件を破棄",
+    ),
+    "⏭ Skipped the current message": ("⏭ 已跳过当前消息", "⏭ 現在のメッセージをスキップしました"),
     "Speed (WPM)": ("语速（WPM）", "速度（WPM）"),
     "Volume": ("音量", "音量"),
     "Show join events": ("显示进场消息", "入室イベントを表示"),
@@ -164,7 +191,8 @@ _STRINGS: dict[str, tuple[str, str]] = {
     "Pinyin + Hiragana": ("拼音 + 平假名", "ピンイン + ひらがな"),
     "Off": ("关闭", "オフ"),
     # ── Chat rendering ───────────────────────────────────────────────────────
-    "Ban/block user": ("封禁/屏蔽用户", "ユーザーをBAN/ブロック"),
+    "Block this user (hides their messages; saved permanently)": (
+        "屏蔽该用户（隐藏其消息，永久保存）", "このユーザーをブロック（メッセージを非表示にし、永続的に保存）"),
     "Read this message aloud": ("朗读这条消息", "このメッセージを読み上げる"),
     "translating…": ("翻译中…", "翻訳中…"),
     # ── Tabs ─────────────────────────────────────────────────────────────────
@@ -176,11 +204,30 @@ _STRINGS: dict[str, tuple[str, str]] = {
     "🖥️ Overlay": ("🖥️ 叠加层", "🖥️ オーバーレイ"),
     "🍪 Cookies": ("🍪 Cookies", "🍪 Cookie"),
     # ── Chat tab ─────────────────────────────────────────────────────────────
-    "⚠️ Action on {author}": ("⚠️ 处理 {author}", "⚠️ {author} への操作"),
-    "Timeout (minutes, 0=permanent)": ("禁言时长（分钟，0=永久）", "タイムアウト（分、0=永久）"),
-    "🚫 Ban / Timeout": ("🚫 封禁 / 禁言", "🚫 BAN / タイムアウト"),
-    "Blocked {author}": ("已屏蔽 {author}", "{author} をブロックしました"),
-    "🗑️ Delete message": ("🗑️ 删除消息", "🗑️ メッセージを削除"),
+    "Blocked {author} — see the 🛡️ Filters tab to unblock": (
+        "已屏蔽 {author}——可在 🛡️ 过滤 标签页取消屏蔽", "{author} をブロックしました（🛡️ フィルター タブで解除できます）"),
+    "Saved to chat_filters.json and kept after restarting the app.": (
+        "保存在 chat_filters.json，重启应用后仍然有效。", "chat_filters.json に保存され、アプリを再起動しても保持されます。"),
+    "Any platform": ("任意平台", "全プラットフォーム"),
+    "by name": ("按名称", "名前で"),
+    "Unblock": ("取消屏蔽", "ブロック解除"),
+    "Or a channel link like https://www.youtube.com/@name — the chat is picked up automatically when the channel goes live.": (
+        "也可以填频道链接，如 https://www.youtube.com/@name——频道开播后会自动读取聊天。",
+        "チャンネルのリンク（例: https://www.youtube.com/@name）も可。配信が始まると自動でチャットを読み込みます。"),
+    "👀 Watch channel": ("👀 监视频道", "👀 チャンネルを監視"),
+    "Waits for the channel to go live, then reads its chat automatically.": (
+        "等待频道开播，然后自动读取聊天。", "チャンネルの配信開始を待ち、自動でチャットを読み込みます。"),
+    "👀 Watching {name} — not live yet": ("👀 正在监视 {name}——尚未开播", "👀 {name} を監視中 — まだ配信していません"),
+    "👀 Watching {name} — stream scheduled: {title}": (
+        "👀 正在监视 {name}——已预定直播：{title}", "👀 {name} を監視中 — 配信予定: {title}"),
+    "Checks every {s}s · last checked {time}": ("每 {s} 秒检查一次 · 上次检查 {time}", "{s} 秒ごとに確認 · 最終確認 {time}"),
+    "Stop watching channel": ("停止监视频道", "チャンネルの監視を停止"),
+    "Live now: {title}": ("正在直播：{title}", "配信中: {title}"),
+    "{channel} is live — reading chat": ("{channel} 开播了——正在读取聊天", "{channel} が配信開始 — チャットを読み込み中"),
+    "The YouTube stream ended — watching the channel for the next one.": (
+        "YouTube 直播已结束——继续监视频道等待下一场。", "YouTube の配信が終了しました — 次の配信に備えてチャンネルを監視します。"),
+    "Watching the channel — it isn't live yet.": ("正在监视频道——尚未开播。", "チャンネルを監視中 — まだ配信していません。"),
+    "Channel not found.": ("找不到该频道。", "チャンネルが見つかりません。"),
     "Send to": ("发送到", "送信先"),
     "Both": ("两者", "両方"),
     "Start the YouTube listener first.": ("请先启动 YouTube 监听。", "先に YouTube 受信を開始してください。"),
@@ -200,6 +247,11 @@ _STRINGS: dict[str, tuple[str, str]] = {
     "{n} total": ("共 {n} 条", "合計 {n} 件"),
     "🙏 Mark all thanked": ("🙏 全部标为已感谢", "🙏 すべてお礼済みにする"),
     "No gifts or Super Chats yet.": ("还没有礼物或醒目留言。", "まだギフトやスーパーチャットはありません。"),
+    "Joins": ("进场", "入室"),
+    "No one has joined yet.": ("还没有人进场。", "まだ誰も入室していません。"),
+    "Show viewers entering the room in a separate feed under Gifts & Super Chats.": (
+        "在“礼物与醒目留言”下方的单独列表中显示进场的观众。",
+        "入室した視聴者を「ギフトとスーパーチャット」の下の別欄に表示します。"),
     "Thanked": ("已感谢", "お礼済み"),
     "Mark as thanked": ("标为已感谢", "お礼済みにする"),
     "Undo: mark as not thanked yet": ("撤销：标为未感谢", "取り消し：未お礼に戻す"),

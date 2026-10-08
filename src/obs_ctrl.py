@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import logging
+import socket
+import time
 from typing import Optional
 
 try:
@@ -14,11 +16,36 @@ except ImportError:
 
 from src.config import OBS_HOST, OBS_PASSWORD, OBS_PORT
 
+# When OBS isn't running, a websocket connect takes ~4s on Windows before failing, and the
+# dashboard asks on every rerun. Probe the port quickly and remember a failure for a while.
+_RETRY_AFTER = 15.0
+_down_until = 0.0
+
+
+def _reachable() -> bool:
+    global _down_until
+    if time.monotonic() < _down_until:
+        return False
+    try:
+        with socket.create_connection((OBS_HOST, OBS_PORT), timeout=0.5):
+            return True
+    except OSError:
+        _down_until = time.monotonic() + _RETRY_AFTER
+        return False
+
+
+def retry_now():
+    """Forget a recent connection failure so the next call tries OBS straight away."""
+    global _down_until
+    _down_until = 0.0
+
 
 def _client() -> Optional["obs.ReqClient"]:
     if not OBS_LIB_OK:
         return None
     if not OBS_PASSWORD:
+        return None
+    if not _reachable():
         return None
     try:
         return obs.ReqClient(host=OBS_HOST, port=OBS_PORT, password=OBS_PASSWORD, timeout=3)

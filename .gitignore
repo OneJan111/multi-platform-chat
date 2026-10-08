@@ -2,6 +2,10 @@
 /.env
 /youtube_token.json
 
+# Local data (blocked viewers list)
+/chat_filters.json
+/chat_filters.tmp
+
 # Python
 __pycache__/
 *.py[cod]

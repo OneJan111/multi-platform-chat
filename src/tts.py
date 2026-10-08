@@ -151,11 +151,33 @@ def _pick_voice(engine, lang: str):
     return None
 
 
+_SVSF_ASYNC = 1
+_SVSF_PURGE = 2
+_stop_event = threading.Event()
+
+
 def _speak_pyttsx3(text: str, rate: int, volume: float, lang: str) -> bool:
     try:
         import pyttsx3
         engine = pyttsx3.init()
         voice = _pick_voice(engine, lang)
+        driver = getattr(engine.proxy, "_driver", None)
+        sapi = getattr(driver, "_tts", None)
+        if sapi is not None and hasattr(sapi, "WaitUntilDone"):
+            # engine.setProperty() only queues the change until runAndWait(), which this
+            # path doesn't use, so set the voice / rate / volume on the driver directly.
+            if voice:
+                driver.setProperty("voice", voice)
+            driver.setProperty("rate", rate)
+            driver.setProperty("volume", volume)
+            # Speak asynchronously so stop_speaking() can cut it off mid-sentence
+            # (pyttsx3's runAndWait can't be interrupted from another thread).
+            sapi.Speak(text, _SVSF_ASYNC)
+            while not sapi.WaitUntilDone(100):
+                if _stop_event.is_set():
+                    sapi.Speak("", _SVSF_ASYNC | _SVSF_PURGE)
+                    break
+            return True
         if voice:
             engine.setProperty("voice", voice)
         engine.setProperty("rate", rate)
@@ -240,6 +262,7 @@ def _next_item() -> tuple[str, int, float, str]:
     with _cond:
         while not _priority_q and not _normal_q:
             _cond.wait()
+        _stop_event.clear()  # under _cond, so a stop pressed after this pop still applies
         return (_priority_q or _normal_q).popleft()
 
 
@@ -264,3 +287,16 @@ def clear_queue():
     with _cond:
         _priority_q.clear()
         _normal_q.clear()
+
+
+def stop_speaking(clear: bool = True) -> int:
+    """Cut off the message being read now; with clear=True also drop everything queued.
+    Returns how many queued messages were dropped."""
+    with _cond:
+        dropped = 0
+        if clear:
+            dropped = len(_priority_q) + len(_normal_q)
+            _priority_q.clear()
+            _normal_q.clear()
+        _stop_event.set()
+    return dropped
