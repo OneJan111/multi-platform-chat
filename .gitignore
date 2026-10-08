@@ -1,0 +1,11 @@
+﻿# Secrets
+/.env
+/youtube_token.json
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+
+# Node
+node_modules/
