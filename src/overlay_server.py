@@ -6,6 +6,7 @@ import re
 import socket
 import sys
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Callable
 from urllib.parse import parse_qs, urlparse
@@ -17,6 +18,9 @@ PORT = OVERLAY_PORT
 MAX_MESSAGES = 50
 DEFAULT_CHANNEL = "main"
 MAX_CHANNELS = 50
+# A standalone URL mirrors an open dashboard reading the same rooms; the dashboard republishes
+# every few seconds, so a snapshot older than this means the dashboard was closed.
+MIRROR_TTL = 20
 _EMPTY = {"messages": [], "paid": [], "custom_text": ""}
 _CHANNEL_RE = re.compile(r"[^A-Za-z0-9_-]")
 SITES = ("youtube", "bilibili", "missevan")
@@ -72,12 +76,14 @@ def snapshot(messages: list[dict], translate_enabled: bool, target: str,
             item["kind"] = "gift"
         if show_username:
             item["author"] = str(msg.get("author", ""))
-        sticker = emotes.safe_image_url(msg.get("sticker_url"))
+        sticker = emotes.safe_chat_image_url(msg.get("sticker_url"))
         if sticker:
             item["sticker"] = sticker
+            if msg.get("sticker_caption"):
+                item["caption"] = True
         inline = {
             code: safe for code, raw in (msg.get("emotes") or {}).items()
-            if isinstance(code, str) and code in text and (safe := emotes.safe_image_url(raw))
+            if isinstance(code, str) and code in text and (safe := emotes.safe_chat_image_url(raw))
         }
         if inline:
             item["emotes"] = inline
@@ -209,7 +215,11 @@ function image(url, alt, cls) {
   return img;
 }
 function appendText(row, msg) {
-  if (msg.sticker) { row.append(image(msg.sticker, msg.text, "sticker")); return; }
+  if (msg.sticker) {
+    if (msg.caption) row.append(document.createTextNode(msg.text), document.createElement("br"));
+    row.append(image(msg.sticker, msg.text, "sticker"));
+    return;
+  }
   const codes = Object.keys(msg.emotes || {}).sort((a, b) => b.length - a.length);
   if (!codes.length) { row.append(document.createTextNode(msg.text)); return; }
   const pattern = new RegExp("(" + codes.map(c => c.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\\\$&")).join("|") + ")");
@@ -272,7 +282,16 @@ class _Handler(BaseHTTPRequestHandler):
             sites = parse_sites(query.get("site", []))
             key = overlay_feeds.parse_key(query)
             if key:
-                data = feed_snapshot(key, query)
+                data = self.server.mirror(key)
+                if data is None:
+                    data = feed_snapshot(key, query)
+                else:
+                    # Keep the feed warm so the overlay continues seamlessly if the dashboard closes.
+                    feed = overlay_feeds.get(key)
+                    if feed is not None:
+                        feed.last_used = time.time()
+                    if not sites:
+                        sites = {site for site, value in key._asdict().items() if value}
             else:
                 channel = clean_channel(query.get("ch", [""])[0])
                 with self.server.snapshot_lock:
@@ -309,18 +328,34 @@ class OverlayServer(ThreadingHTTPServer):
         self.snapshot_lock = threading.Lock()
         # One snapshot per overlay channel, so several dashboards can each drive their own overlay.
         self.channels: dict[str, dict] = {}
+        # Dashboard snapshots by the rooms they read, for standalone URLs: FeedKey -> (time, data).
+        self.mirrors: dict = {}
 
     @property
     def data(self) -> dict:
         with self.snapshot_lock:
             return self.channels.get(DEFAULT_CHANNEL, _EMPTY)
 
-    def publish(self, data: dict, channel: str = DEFAULT_CHANNEL) -> None:
+    def publish(self, data: dict, channel: str = DEFAULT_CHANNEL,
+                source: "overlay_feeds.FeedKey | None" = None) -> None:
+        """`source` = the rooms the dashboard reads; standalone URLs for those rooms then show `data`."""
         channel = clean_channel(channel)
         with self.snapshot_lock:
             if channel not in self.channels and len(self.channels) >= MAX_CHANNELS:
                 self.channels.pop(next(iter(self.channels)))
             self.channels[channel] = data
+            if source:
+                now = time.time()
+                self.mirrors = {k: v for k, v in self.mirrors.items() if now - v[0] < MIRROR_TTL}
+                self.mirrors[source] = (now, data)
+
+    def mirror(self, key: "overlay_feeds.FeedKey") -> dict | None:
+        """The live dashboard snapshot for these rooms, or None if no dashboard is reading them."""
+        with self.snapshot_lock:
+            entry = self.mirrors.get(key)
+        if entry and time.time() - entry[0] < MIRROR_TTL:
+            return entry[1]
+        return None
 
 
 def ensure_started() -> OverlayServer:
@@ -328,7 +363,7 @@ def ensure_started() -> OverlayServer:
     with _STATE["lock"]:
         old = _STATE["server"]
         if old is not None and isinstance(old, ThreadingHTTPServer) and (
-            not hasattr(old, "channels") or old.server_address[0] != OVERLAY_HOST
+            not hasattr(old, "mirror") or old.server_address[0] != OVERLAY_HOST
         ):
             # Started by an older version of this module (or with another OVERLAY_HOST): replace it.
             old.shutdown()

@@ -50,6 +50,10 @@ _STRINGS: dict[str, tuple[str, str]] = {
     ),
     "🌐 Translation": ("🌐 翻译", "🌐 翻訳"),
     "Translate chat": ("翻译聊天", "チャットを翻訳"),
+    "🕒 Chat time zone": ("🕒 聊天时区", "🕒 チャットのタイムゾーン"),
+    "Server time ({tz})": ("服务器时间（{tz}）", "サーバー時刻（{tz}）"),
+    "{tz} (this browser)": ("{tz}（此浏览器）", "{tz}（このブラウザ）"),
+    "Time zone for the times shown on chat messages.": ("聊天消息上显示的时间所用的时区。", "チャットメッセージに表示する時刻のタイムゾーン。"),
     "Shows a translation under each chat message.": (
         "在每条聊天消息下方显示翻译。",
         "各チャットメッセージの下に翻訳を表示します。",
@@ -353,6 +357,10 @@ _STRINGS: dict[str, tuple[str, str]] = {
     "The overlay only accepts connections from this computer. If OBS runs on another machine, set OVERLAY_HOST=0.0.0.0 in .env and restart.": (
         "叠加层仅接受本机连接。若 OBS 在其他电脑上运行，请在 .env 中设置 OVERLAY_HOST=0.0.0.0 并重启。",
         "オーバーレイはこのコンピューターからの接続のみ受け付けます。OBS が別のマシンで動いている場合は .env に OVERLAY_HOST=0.0.0.0 を設定して再起動してください。",
+    ),
+    "This overlay URL uses the address you opened the dashboard with ({host}), but the overlay only accepts connections from this computer. Set OVERLAY_HOST=0.0.0.0 in .env and restart so OBS can load it.": (
+        "此叠加层网址使用你打开仪表板时的地址（{host}），但叠加层仅接受本机连接。请在 .env 中设置 OVERLAY_HOST=0.0.0.0 并重启，OBS 才能加载。",
+        "このオーバーレイ URL はダッシュボードを開いたアドレス（{host}）を使いますが、オーバーレイはこのコンピューターからの接続のみ受け付けます。OBS で読み込めるよう .env に OVERLAY_HOST=0.0.0.0 を設定して再起動してください。",
     ),
     "Couldn't start the chat overlay on port {port}: {err}": (
         "无法在端口 {port} 启动聊天叠加层：{err}",

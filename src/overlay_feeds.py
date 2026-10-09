@@ -99,7 +99,7 @@ class Feed:
     # ── messages ───────────────────────────────────────────────────────────────
 
     def add(self, messages: list[dict]) -> None:
-        from src.tts import is_paid
+        from src.tts import is_gift, is_paid
 
         if not messages:
             return
@@ -107,7 +107,7 @@ class Feed:
             allowed, _ = self._filter.filter_messages(messages)
             for msg in allowed:
                 site = msg.get("platform", "")
-                if is_paid(msg):
+                if is_paid(msg) or is_gift(msg):
                     self._paid.setdefault(site, deque(maxlen=KEEP_PER_SITE)).append(msg)
                 elif msg.get("type") in ("textMessageEvent", "danmaku"):
                     self._chat.setdefault(site, deque(maxlen=KEEP_PER_SITE)).append(msg)

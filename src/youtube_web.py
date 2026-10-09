@@ -18,7 +18,7 @@ from urllib.parse import unquote, urlparse
 
 import requests
 
-from src import user_login
+from src import emotes, user_login
 
 _UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -75,6 +75,26 @@ def _runs_text(obj: dict) -> str:
     return "".join(out)
 
 
+def _custom_emotes(obj: dict) -> dict[str, str]:
+    """{":shortcut:": image URL} for the channel's custom emojis (member stamps) in a message."""
+    found = {}
+    for run in (obj or {}).get("runs", []):
+        emoji = run.get("emoji") or {}
+        if not emoji.get("isCustomEmoji"):
+            continue
+        code = (emoji.get("shortcuts") or [""])[0]
+        thumbs = emoji.get("image", {}).get("thumbnails", [])
+        url = emotes.safe_chat_image_url(thumbs[-1].get("url", "")) if thumbs else ""
+        if code and url:
+            found[code] = url
+    return found
+
+
+def _sticker_url(renderer: dict) -> str:
+    thumbs = renderer.get("sticker", {}).get("thumbnails", [])
+    return emotes.safe_chat_image_url(thumbs[-1].get("url", "")) if thumbs else ""
+
+
 def _iso(usec: str) -> str:
     try:
         dt = datetime.fromtimestamp(int(usec) / 1_000_000, tz=timezone.utc)
@@ -92,10 +112,42 @@ def _badges(renderer: dict) -> set[str]:
     return kinds
 
 
+def _membership(renderer: dict) -> tuple[str, str]:
+    """(label, icon URL) of the channel-membership badge, e.g. ("Member (6 months)", "https://yt3.ggpht.com/…")."""
+    for badge in renderer.get("authorBadges", []):
+        b = badge.get("liveChatAuthorBadgeRenderer", {})
+        thumbs = b.get("customThumbnail", {}).get("thumbnails", [])
+        if b.get("customThumbnail"):
+            label = b.get("tooltip") or b.get("accessibility", {}).get("accessibilityData", {}).get("label", "") or "Member"
+            return label, thumbs[-1].get("url", "") if thumbs else ""
+    return "", ""
+
+
 def _parse_action(action: dict) -> dict | None:
     item = action.get("addChatItemAction", {}).get("item", {})
     if not item:
-        return None
+        ticker = action.get("addLiveChatTickerItemAction", {}).get("item", {})
+        if not ticker:
+            return None
+        ticker_kind, ticker_renderer = next(iter(ticker.items()))
+        if ticker_kind != "liveChatTickerPaidStickerItemRenderer":
+            return None
+        sticker_renderer = (
+            ticker_renderer.get("showItemEndpoint", {})
+            .get("showLiveChatItemEndpoint", {})
+            .get("renderer", {})
+            .get("liveChatPaidStickerRenderer", {})
+        )
+        if not sticker_renderer:
+            return None
+        item = {"liveChatPaidStickerRenderer": {
+            **sticker_renderer,
+            "id": ticker_renderer.get("id", sticker_renderer.get("id", "")),
+            "authorExternalChannelId": ticker_renderer.get(
+                "authorExternalChannelId", sticker_renderer.get("authorExternalChannelId", "")
+            ),
+            "authorPhoto": ticker_renderer.get("authorPhoto", sticker_renderer.get("authorPhoto", {})),
+        }}
     kind, r = next(iter(item.items()))
     text = _runs_text(r.get("message", {}))
     if kind == "liveChatTextMessageRenderer":
@@ -120,6 +172,7 @@ def _parse_action(action: dict) -> dict | None:
     else:
         return None  # placeholders, system banners, polls, gift announcements
     badges = _badges(r)
+    member_label, member_icon = _membership(r)
     photos = r.get("authorPhoto", {}).get("thumbnails", [])
     return {
         "id": r.get("id", ""),
@@ -129,7 +182,12 @@ def _parse_action(action: dict) -> dict | None:
         "is_owner": "OWNER" in badges,
         "is_moderator": "MODERATOR" in badges,
         "is_verified": "VERIFIED" in badges,
+        "membership": member_label,
+        "membership_icon": member_icon,
         "text": text,
+        "emotes": _custom_emotes(r.get("message", {})),
+        "sticker_url": _sticker_url(r) if msg_type == "superStickerEvent" else "",
+        "sticker_caption": msg_type == "superStickerEvent",
         "type": msg_type,
         "timestamp": _iso(r.get("timestampUsec", "")),
         "avatar": photos[-1]["url"] if photos else "",

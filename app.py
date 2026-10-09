@@ -11,9 +11,10 @@ import html as html_lib
 import json
 import os
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError, available_timezones
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
@@ -29,11 +30,14 @@ st.set_page_config(
 from src import bilibili as bili
 from src import browser_cookies as bc
 from src import emotes
+if not hasattr(emotes, "safe_chat_image_url"):  # stateless; reload after a code update
+    import importlib
+    emotes = importlib.reload(emotes)
 from src import i18n
 from src import missevan as me
 from src import obs_ctrl as obs
 from src import overlay_server
-if not hasattr(overlay_server, "feed_snapshot"):  # stale copy from before a code update (state survives reload)
+if not hasattr(overlay_server.OverlayServer, "mirror"):  # stale copy from before a code update (state survives reload)
     import importlib
     overlay_server = importlib.reload(overlay_server)
 from src import reading
@@ -47,7 +51,7 @@ from src.config import (
 )
 from src.filters import ChatFilter, make_default_filter
 from src.tts import (
-    LANGUAGES as TTS_LANGUAGES, format_announcement, format_message, is_emoji_only, is_paid,
+    LANGUAGES as TTS_LANGUAGES, format_announcement, format_message, is_emoji_only, is_gift, is_paid,
     matches_language, resolve_language, speak, speak_async, stop_speaking, strip_emoji,
 )
 
@@ -72,6 +76,13 @@ st.markdown(
 .chat-me   { background: rgba(128,128,160,0.13); border-left: 3px solid #ff7a45; }
 .chat-gift { background: rgba(156,39,176,0.16) !important; }
 .chat-thanked { opacity: 0.45; }
+/* Gifts / Super Chats: clicking the bubble toggles thanked (see _render_message) */
+div[class*="st-key-thankbox_"] { position: relative; }
+div[class*="st-key-thankbox_"] div[class*="st-key-thank_"] { position: absolute; inset: 0; z-index: 2; margin: 0; width: 100% !important; height: 100% !important; }
+div[class*="st-key-thankbox_"] div[class*="st-key-thank_"] div,
+div[class*="st-key-thankbox_"] div[class*="st-key-thank_"] button { width: 100% !important; height: 100% !important; max-width: none !important; }
+div[class*="st-key-thankbox_"] div[class*="st-key-thank_"] button { opacity: 0; cursor: pointer; }
+div[class*="st-key-thankbox_"]:hover .chat-bubble { filter: brightness(1.15); }
 .chat-mod  { border-left-color: #ffd700 !important; }
 .chat-sc   { background: rgba(255,120,0,0.17) !important; border-left-color: #ff6600 !important; }
 .chat-superchat { background: rgba(230,0,0,0.16) !important; border-left-color: #ff0000 !important; }
@@ -102,6 +113,8 @@ h3 .site-icon { margin-right: 0.15em; position: relative; top: -0.08em; }
 .badge-mod  { background:#ffd700; color:#000; }
 .badge-owner{ background:#cc0000; color:#fff; }
 .badge-sc   { background:#ff6600; color:#fff; }
+.badge-member { background:#2e7d32; color:#fff; }
+.badge-member-icon { height:1.3em; width:auto; vertical-align:middle; margin-right:2px; }
 .status-dot {
     display: inline-block;
     width: 10px; height: 10px;
@@ -219,6 +232,9 @@ def _shared_filter() -> ChatFilter:
     return make_default_filter()
 
 
+_TIMEZONES = sorted(tz for tz in available_timezones() if "/" in tz and not tz.startswith(("Etc/", "SystemV/")))
+
+
 def _init_state():
     defaults = {
         "chat_messages": [],          # unified list of all chat messages
@@ -275,6 +291,8 @@ def _init_state():
         "viewer_history": [],         # list of {time, yt, bili}
         # ?lang=zh in the URL lets a bookmark or refresh keep the chosen page language.
         "ui_lang": st.query_params.get("lang", "en") if st.query_params.get("lang") in i18n.UI_LANGUAGES else "en",
+        # Chat timestamps: "" = server time; ?tz=Asia/Tokyo in the URL keeps a choice across refreshes.
+        "chat_tz": st.query_params.get("tz", "") if st.query_params.get("tz", "") in _TIMEZONES else "",
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -360,6 +378,13 @@ def _role_badges(msg: dict) -> str:
         parts.append('<span class="badge badge-owner">OWNER</span>')
     if msg.get("is_moderator"):
         parts.append('<span class="badge badge-mod">MOD</span>')
+    if msg.get("membership"):
+        icon = emotes.safe_badge_url(msg.get("membership_icon"))
+        mark = (
+            f'<img class="badge-member-icon" src="{html_lib.escape(icon, quote=True)}" alt="" referrerpolicy="no-referrer">'
+            if icon else "💎"
+        )
+        parts.append(f'<span class="badge badge-member">{mark} {html_lib.escape(msg["membership"])}</span>')
     return "".join(parts)
 
 
@@ -382,15 +407,28 @@ def _bubble_class(msg: dict) -> str:
     return base
 
 
+def _chat_tz():
+    """None = the server's local time; otherwise the ZoneInfo picked in the sidebar."""
+    name = st.session_state.get("chat_tz", "")
+    if not name:
+        return None
+    try:
+        return ZoneInfo(name)
+    except (ZoneInfoNotFoundError, ValueError):
+        return None
+
+
 def _fmt_time(ts: str) -> str:
     try:
         dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
-        return dt.strftime("%H:%M:%S")
     except Exception:
         try:
-            return datetime.fromtimestamp(int(ts)).strftime("%H:%M:%S")
+            dt = datetime.fromtimestamp(int(ts), tz=timezone.utc)
         except Exception:
             return ts
+    if dt.tzinfo is None:
+        dt = dt.astimezone()  # naive times come from this server's clock
+    return dt.astimezone(_chat_tz()).strftime("%H:%M:%S")
 
 
 _RENDER_KEYS: dict[str, int] = {}  # app.py re-executes every run, so this resets per run
@@ -418,7 +456,7 @@ def _render_message(msg: dict, key_prefix: str = "", thank: bool = False):
     ts = _fmt_time(msg.get("timestamp", ""))
     author = html_lib.escape(msg.get("author", ""))
     text = msg.get("text", "")
-    text_html = emotes.text_to_html(text, msg.get("emotes"), msg.get("sticker_url", ""))
+    text_html = emotes.text_to_html(text, msg.get("emotes"), msg.get("sticker_url", ""), msg.get("sticker_caption", False))
     if "super" in msg.get("type", "").lower():
         annotated = reading.annotate_html(text, st.session_state["sc_reading"])
         if annotated:
@@ -440,17 +478,20 @@ def _render_message(msg: dict, key_prefix: str = "", thank: bool = False):
         f"</div>"
     )
     if thank:
-        col1, col_thank, col2, col3 = st.columns([7, 1, 1, 1])
-        with col_thank:
-            st.button(
-                "↩️" if thanked else "🙏", key=f"thank_{wkey}",
-                help=t("Undo: mark as not thanked yet") if thanked else t("Mark as thanked"),
-                on_click=_set_thanked, args=([msg["id"]], not thanked),
-            )
+        col1, col2, col3 = st.columns([9, 1, 1])
+        with col1:
+            # The whole bubble is the toggle: an invisible button stretched over the keyed container.
+            with st.container(key=f"thankbox_{wkey}"):
+                st.markdown(html, unsafe_allow_html=True)
+                st.button(
+                    "↩️" if thanked else "🙏", key=f"thank_{wkey}",
+                    help=t("Undo: mark as not thanked yet") if thanked else t("Mark as thanked"),
+                    on_click=_set_thanked, args=([msg["id"]], not thanked),
+                )
     else:
         col1, col2, col3 = st.columns([9, 1, 1])
-    with col1:
-        st.markdown(html, unsafe_allow_html=True)
+        with col1:
+            st.markdown(html, unsafe_allow_html=True)
     with col2:
         if text and msg.get("type") != "enter":
             st.button(
@@ -726,7 +767,7 @@ def _poll_chat():
 
     # Update history; join events go to their own feed, never into chat
     for m in allowed:
-        if is_paid(m):
+        if is_paid(m) or is_gift(m):
             st.session_state["paid_messages"].append(m)
         if m.get("type") == "enter":
             st.session_state["join_messages"].append(m)
@@ -1036,6 +1077,25 @@ with st.sidebar:
         st.session_state["ui_lang"] = _ui_lang
         st.query_params["lang"] = _ui_lang
         st.rerun()
+
+    _off = datetime.now().astimezone().strftime("%z")
+    _server_tz = f"UTC{_off[:3]}:{_off[3:]}" if _off else "UTC"
+    _browser_tz = st.context.timezone if st.context.timezone in _TIMEZONES else ""
+    _tz_options = [""] + ([_browser_tz] if _browser_tz else []) + [z for z in _TIMEZONES if z != _browser_tz]
+    _chat_tz_pick = st.selectbox(
+        t("🕒 Chat time zone"), _tz_options,
+        index=_tz_options.index(st.session_state["chat_tz"]) if st.session_state["chat_tz"] in _tz_options else 0,
+        format_func=lambda z: t("Server time ({tz})", tz=_server_tz) if not z
+        else (t("{tz} (this browser)", tz=z) if z == _browser_tz else z),
+        key="chat_tz_select",
+        help=t("Time zone for the times shown on chat messages."),
+    )
+    if _chat_tz_pick != st.session_state["chat_tz"]:
+        st.session_state["chat_tz"] = _chat_tz_pick
+        if _chat_tz_pick:
+            st.query_params["tz"] = _chat_tz_pick
+        else:
+            st.query_params.pop("tz", None)
 
     st.title(t("🎙️ Streaming Dashboard"))
     st.divider()
@@ -1517,10 +1577,10 @@ with tab_chat:
     hidden_platforms = {
         p for p, shown in (("youtube", show_yt), ("bilibili", show_bili), ("missevan", show_me)) if not shown
     }
-    # Gifts / Super Chats live in their own column; free gifts stay in regular chat.
+    # All gifts, including free gifts, and other paid events have their own column.
     msgs = [
         m for m in st.session_state["chat_messages"]
-        if m.get("platform") not in hidden_platforms and not is_paid(m)
+        if m.get("platform") not in hidden_platforms and not (is_paid(m) or is_gift(m))
     ]
     paid_all = [m for m in st.session_state["paid_messages"] if m.get("platform") not in hidden_platforms]
 
@@ -1750,14 +1810,14 @@ with tab_obs:
         st.query_params.pop("overlay", None)
     else:
         st.query_params["overlay"] = _overlay_ch
+    _loopback = ("127.0.0.1", "localhost", "::1")
+    # Same machine name the browser used to reach this dashboard, minus the Streamlit port.
+    _req_host = urlsplit("//" + (st.context.headers.get("Host") or "localhost")).hostname or "localhost"
+    _req_host_url = f"[{_req_host}]" if ":" in _req_host else _req_host
     if OVERLAY_PUBLIC_URL:
         _overlay_base = OVERLAY_PUBLIC_URL
-    elif OVERLAY_HOST in ("127.0.0.1", "localhost", "::1"):
-        _overlay_base = f"http://localhost:{overlay_server.PORT}"
     else:
-        # Same machine name the browser used to reach this dashboard, minus the Streamlit port.
-        _req_host = (st.context.headers.get("Host") or "localhost").rsplit(":", 1)[0]
-        _overlay_base = f"http://{_req_host}:{overlay_server.PORT}"
+        _overlay_base = f"http://{_req_host_url}:{overlay_server.PORT}"
     _overlay_site_labels = {"youtube": "YouTube", "bilibili": "Bilibili", "missevan": t("MissEvan")}
     st.multiselect(
         t("Sites on this overlay"), list(_overlay_site_labels), key="overlay_sites",
@@ -1777,8 +1837,15 @@ with tab_obs:
         "**How to use**: Add a Browser Source in OBS pointing to `{url}`. "
         "Keep the dashboard open for live updates.", url=_overlay_url,
     ))
-    if OVERLAY_HOST in ("127.0.0.1", "localhost", "::1"):
-        st.caption(t("The overlay only accepts connections from this computer. If OBS runs on another machine, set OVERLAY_HOST=0.0.0.0 in .env and restart."))
+    if OVERLAY_HOST in _loopback:
+        if not OVERLAY_PUBLIC_URL and _req_host not in _loopback:
+            st.warning(t(
+                "This overlay URL uses the address you opened the dashboard with ({host}), but the overlay only "
+                "accepts connections from this computer. Set OVERLAY_HOST=0.0.0.0 in .env and restart so OBS can load it.",
+                host=_req_host,
+            ))
+        else:
+            st.caption(t("The overlay only accepts connections from this computer. If OBS runs on another machine, set OVERLAY_HOST=0.0.0.0 in .env and restart."))
 
     # Live overlay text
     overlay_text = st.text_area(
@@ -1837,6 +1904,10 @@ with tab_obs:
             "names=0 hides usernames, tr=en adds translations, text= custom message. "
             "Bilibili hides viewer names from logged-out readers, so they appear masked."
         ))
+        st.caption(t(
+            "While this dashboard is open and reading the same rooms, the standalone overlay shows exactly the "
+            "Recent Chat Preview below (your login, filters and blocked users included)."
+        ))
     def _on_overlay(m: dict) -> bool:
         return not _overlay_sites or m.get("platform") in _overlay_sites
 
@@ -1870,7 +1941,7 @@ with tab_obs:
         return (
             f'<div style="color:#fff;margin-bottom:4px;font-size:13px;{style}">'
             f'{author_html}'
-            f'<div>{emotes.text_to_html(m["text"], m.get("emotes"), m.get("sticker_url", ""))}</div>'
+            f'<div>{emotes.text_to_html(m["text"], m.get("emotes"), m.get("sticker_url", ""), m.get("sticker_caption", False))}</div>'
             f'{translation_html}'
             f"</div>"
         )
@@ -1905,7 +1976,9 @@ with tab_obs:
             overlay_count,
             overlay_sc_count,
             st.session_state["paid_messages"],
-        ), _overlay_ch)
+        ), _overlay_ch, source=overlay_server.overlay_feeds.parse_key(
+            {site: [value] for site, value in _standalone.items()}
+        ))
     except OSError as exc:
         st.error(t("Couldn't start the chat overlay on port {port}: {err}", port=overlay_server.PORT, err=str(exc)))
 

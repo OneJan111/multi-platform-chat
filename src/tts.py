@@ -120,6 +120,10 @@ def is_paid(msg: dict) -> bool:
     return msg.get("type", "") in PAID_TYPES and not msg.get("free")
 
 
+def is_gift(msg: dict) -> bool:
+    return msg.get("type") == "gift"
+
+
 def announcement_text(text: str) -> str:
     """Make a paid-event line speakable: drop tag words / brackets, emoji markers and the × sign."""
     text = re.sub(r"\b(Super Chat|Super Sticker|SC)\b", " ", text)

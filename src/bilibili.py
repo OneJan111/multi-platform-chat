@@ -7,8 +7,10 @@ so they work seamlessly inside Streamlit's synchronous execution model.
 from __future__ import annotations
 
 import asyncio
+import base64
 import re
 import time
+from collections import deque
 from typing import Optional
 
 import requests
@@ -145,6 +147,97 @@ def _get_room_info_http(room_id: str) -> dict:
 
 # ── Danmaku (chat) via WebSocket listener ─────────────────────────────────────
 
+def _yuan(coins: int) -> str:
+    """Format gold coins (1000 = ¥1) as yuan."""
+    return f"{coins / 1000:g}"
+
+
+_GUARD_NAMES = {1: "总督", 2: "提督", 3: "舰长"}
+_GUARD_ICON = "https://i0.hdslb.com/bfs/activity-plat/static/20200716/1d0c5a1b042efb59f46d4ba1286c6727/icon-guard{}.png"
+
+
+def _guard_icon(level) -> str:
+    try:
+        level = int(level or 0)
+    except (TypeError, ValueError):
+        return ""
+    return _GUARD_ICON.format(level) if level in _GUARD_NAMES else ""
+
+
+def _guard_name(level) -> str:
+    try:
+        return _GUARD_NAMES.get(int(level or 0), "")
+    except (TypeError, ValueError):
+        return ""
+
+
+def _pb_fields(buf: bytes) -> dict[int, list]:
+    """Minimal protobuf wire decoder: field number -> list of raw values."""
+    fields: dict[int, list] = {}
+    i = 0
+
+    def varint() -> int:
+        nonlocal i
+        result = shift = 0
+        while True:
+            b = buf[i]
+            i += 1
+            result |= (b & 0x7F) << shift
+            if not b & 0x80:
+                return result
+            shift += 7
+
+    while i < len(buf):
+        key = varint()
+        number, wire = key >> 3, key & 7
+        if wire == 0:
+            value = varint()
+        elif wire == 1:
+            value, i = buf[i:i + 8], i + 8
+        elif wire == 2:
+            size = varint()
+            value, i = buf[i:i + size], i + size
+        elif wire == 5:
+            value, i = buf[i:i + 4], i + 4
+        else:
+            raise ValueError(f"unsupported protobuf wire type {wire}")
+        fields.setdefault(number, []).append(value)
+    return fields
+
+
+def _decode_send_gift_v2(pb: str) -> list[dict]:
+    """Decode a SEND_GIFT_V2 packet into SEND_GIFT-shaped dicts (schema from blivedm)."""
+    try:
+        root = _pb_fields(base64.b64decode(pb))
+    except Exception:
+        return []
+
+    def text(f: dict, n: int) -> str:
+        return bytes(f[n][0]).decode("utf-8", "replace") if n in f else ""
+
+    def num(f: dict, n: int) -> int:
+        return f[n][0] if n in f and isinstance(f[n][0], int) else 0
+
+    blind = None
+    if 9 in root:
+        b = _pb_fields(root[9][0])
+        if text(b, 3):
+            blind = {"original_gift_name": text(b, 3), "original_gift_price": num(b, 6)}
+
+    gifts = []
+    for raw in root.get(10, []):
+        g = _pb_fields(raw)
+        gifts.append({
+            "uid": num(root, 1), "uname": text(root, 2), "face": text(root, 3),
+            "giftId": num(g, 1), "giftName": text(g, 2), "num": num(g, 3),
+            "giftType": num(g, 4), "price": num(g, 5), "total_coin": num(g, 7),
+            "coin_type": text(g, 8), "tid": text(g, 9), "action": text(g, 18),
+            "guard_level": num(root, 5),
+            "blind_gift": blind,
+        })
+    return gifts
+
+
 class DanmakuListener:
     """
     Starts a bilibili-api LiveDanmaku WebSocket listener in a background thread.
@@ -223,6 +316,9 @@ class DanmakuListener:
                         "is_owner": False,
                         "is_moderator": len(info) > 2 and bool(info[2][2]),
                         "is_verified": False,
+                        # info[7] = the sender's 大航海 level in this room
+                        "membership": _guard_name(info[7] if len(info) > 7 else 0),
+                        "membership_icon": _guard_icon(info[7] if len(info) > 7 else 0),
                         "text": info[1],
                         "type": "danmaku",
                         # dm_type 1 = sticker/emoticon danmaku (big emote image)
@@ -247,6 +343,8 @@ class DanmakuListener:
                         "is_owner": False,
                         "is_moderator": False,
                         "is_verified": False,
+                        "membership": _guard_name(data.get("user_info", {}).get("guard_level", 0)),
+                        "membership_icon": _guard_icon(data.get("user_info", {}).get("guard_level", 0)),
                         "text": f"[SC ¥{data.get('price',0)}] {data.get('message','')}",
                         "type": "superchat",
                         "timestamp": str(data.get("start_time", int(time.time()))),
@@ -258,21 +356,29 @@ class DanmakuListener:
             @danmaku.on("SEND_GIFT")
             async def on_gift(event):
                 data = event["data"]["data"]
-                paid = data.get("coin_type") == "gold"
-                price = f" (¥{data.get('total_coin', 0) / 1000:g})" if paid and data.get("total_coin") else ""
-                self.messages.append(self._gift_msg(
-                    data.get("uname", ""), data.get("uid", ""), data.get("face", ""),
-                    f"🎁 {data.get('giftName', '')} ×{data.get('num', 1)}{price}", free=not paid,
-                ))
+                if self._new_gift(data):
+                    self.messages.append(self._gift_message(data))
 
+            # Newer clients receive gifts (e.g. batched ×20 sends) as protobuf.
+            @danmaku.on("SEND_GIFT_V2")
+            async def on_gift_v2(event):
+                for data in _decode_send_gift_v2(event["data"]["data"].get("pb", "")):
+                    if self._new_gift(data):
+                        self.messages.append(self._gift_message(data))
+
+            @danmaku.on("COMBO_SEND")
+            async def on_combo_gift(event):
+                self.messages.append(self._gift_message(event["data"]["data"], combo=True))
+
+            # GUARD_BUY carries the list price; USER_TOAST_MSG (sent alongside it)
+            # carries the price actually paid, e.g. discounted first-time 舰长.
             @danmaku.on("GUARD_BUY")
             async def on_guard(event):
-                data = event["data"]["data"]
-                price = data.get("price", 0) * max(int(data.get("num", 1) or 1), 1)
-                self.messages.append(self._gift_msg(
-                    data.get("username", ""), data.get("uid", ""), "",
-                    f"🎁 {data.get('gift_name', '')} ×{data.get('num', 1)} (¥{price / 1000:g})",
-                ))
+                self._record_guard(event["data"]["data"], paid=False)
+
+            @danmaku.on("USER_TOAST_MSG")
+            async def on_guard_toast(event):
+                self._record_guard(event["data"]["data"], paid=True)
 
             @danmaku.on("INTERACT_WORD")
             async def on_enter(event):
@@ -303,6 +409,90 @@ class DanmakuListener:
             pass
         finally:
             self._running = False
+
+    def _new_gift(self, data: dict) -> bool:
+        """Drop the duplicate when a gift arrives as both SEND_GIFT and SEND_GIFT_V2."""
+        tid = str(data.get("tid") or "")
+        if not tid:
+            return True
+        seen = self.__dict__.setdefault("_seen_tids", deque(maxlen=500))
+        if tid in seen:
+            return False
+        seen.append(tid)
+        return True
+
+    @staticmethod
+    def _gift_message(data: dict, combo: bool = False) -> dict:
+        """Normalize Bilibili's individual and combo gift packet formats.
+
+        total_coin is what the viewer actually paid (discounted unit price × num,
+        or blind-box price × num); price is the list unit price (or, for blind
+        boxes, the unit value of the gift that came out of the box).
+        """
+        num = int(data.get("num") or 1)
+        price_coins = data.get("combo_total_coin") if combo else data.get("total_coin")
+        if not price_coins:
+            price_coins = data.get("total_coin") or 0
+        if not price_coins and data.get("discount_price"):
+            price_coins = data["discount_price"] * num
+        if data.get("coin_type"):
+            paid = data["coin_type"] == "gold"
+        elif data.get("gift_type") is not None:
+            paid = str(data["gift_type"]) == "1"
+        else:
+            paid = price_coins > 0
+        price = ""
+        if paid and price_coins:
+            price = f" (¥{_yuan(price_coins)}"
+            value_coins = 0 if combo else (data.get("price") or 0) * num
+            blind = data.get("blind_gift") if not combo else None
+            if isinstance(blind, dict) and blind.get("original_gift_name"):
+                price += f" via {blind['original_gift_name']}"
+                if value_coins:
+                    price += f", worth ¥{_yuan(value_coins)}"
+            elif value_coins > price_coins:
+                price += f", list ¥{_yuan(value_coins)}"
+            price += ")"
+        gift_name = data.get("giftName") or data.get("gift_name") or ""
+        count = data.get("combo_num") or data.get("num") or data.get("gift_num") or 1
+        msg = DanmakuListener._gift_msg(
+            data.get("uname", ""), data.get("uid", ""), data.get("face", ""),
+            f"🎁 {gift_name} ×{count}{price}", free=not paid,
+        )
+        msg["membership"] = _guard_name(data.get("guard_level"))
+        msg["membership_icon"] = _guard_icon(data.get("guard_level"))
+        return msg
+
+    @staticmethod
+    def _guard_text(data: dict, paid_coins: int, list_coins: int) -> str:
+        name = data.get("gift_name") or data.get("role_name") or ""
+        unit = data.get("unit") or ""
+        text = f"🎁 {name} ×{data.get('num', 1)}{unit} (¥{_yuan(paid_coins)}"
+        if list_coins > paid_coins:
+            text += f", list ¥{_yuan(list_coins)}"
+        return text + ")"
+
+    def _record_guard(self, data: dict, paid: bool) -> None:
+        """Merge the GUARD_BUY (list price) / USER_TOAST_MSG (paid price) pair."""
+        num = max(int(data.get("num", 1) or 1), 1)
+        coins = (data.get("price") or 0) * num
+        key = (str(data.get("uid", "")), data.get("guard_level"))
+        now = time.time()
+        self._guards = {k: v for k, v in getattr(self, "_guards", {}).items() if now - v["at"] < 30}
+        entry = self._guards.get(key)
+        if entry is None:
+            msg = self._gift_msg(data.get("username", ""), data.get("uid", ""), "", "")
+            msg["membership"] = _guard_name(data.get("guard_level"))
+            msg["membership_icon"] = _guard_icon(data.get("guard_level"))
+            entry = self._guards[key] = {"at": now, "msg": msg, "data": dict(data), "paid": None, "list": None}
+            self.messages.append(msg)
+        elif entry["paid" if paid else "list"] is not None:
+            return  # duplicate packet
+        entry["paid" if paid else "list"] = coins
+        entry["data"].update({k: v for k, v in data.items() if v not in (None, "")})
+        paid_coins = entry["paid"] if entry["paid"] is not None else entry["list"]
+        # Mutate in place so a toast arriving after GUARD_BUY corrects the shown price.
+        entry["msg"]["text"] = self._guard_text(entry["data"], paid_coins, entry["list"] or 0)
 
     @staticmethod
     def _gift_msg(author: str, uid, avatar: str, text: str, free: bool = False) -> dict:

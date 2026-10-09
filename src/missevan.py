@@ -144,6 +144,19 @@ def _decode(raw) -> list:
     return data if isinstance(data, list) else [data]
 
 
+# Paid subscriptions shown in user.titles: 贵族 (site-wide noble tiers), 上神 and the room's 超粉.
+_MEMBERSHIP_TITLES = {"highness": "上神", "noble": "贵族", "super_fan": "超粉"}
+
+
+def _membership(user: dict) -> str:
+    labels = []
+    for title in user.get("titles") or []:
+        kind = (title or {}).get("type", "")
+        if kind in _MEMBERSHIP_TITLES:
+            labels.append(title.get("name") or _MEMBERSHIP_TITLES[kind])
+    return " · ".join(labels)
+
+
 def _epoch(ms) -> str:
     try:
         return str(int(ms) // 1000)
@@ -278,6 +291,7 @@ class MissEvanListener:
             "is_owner": bool(uid) and uid == self._creator_id,
             "is_moderator": uid in self._admins,
             "is_verified": False,
+            "membership": _membership(user),
             "text": text,
             "type": mtype,
             "timestamp": _epoch(ts) if ts else str(int(time.time())),

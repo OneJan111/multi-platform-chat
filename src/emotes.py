@@ -24,6 +24,27 @@ def safe_image_url(url) -> str:
     return url
 
 
+_BADGE_HOSTS = ("hdslb.com", "ggpht.com", "googleusercontent.com")
+
+
+def safe_badge_url(url) -> str:
+    """https membership-badge images from Bilibili's or YouTube's image CDNs only."""
+    if not isinstance(url, str):
+        return ""
+    if url.startswith("//"):
+        url = "https:" + url
+    parts = urlsplit(url)
+    host = (parts.hostname or "").lower()
+    if parts.scheme != "https" or not any(host == h or host.endswith("." + h) for h in _BADGE_HOSTS):
+        return ""
+    return url
+
+
+def safe_chat_image_url(url) -> str:
+    """Emote/sticker images from Bilibili's CDN or YouTube's image CDNs."""
+    return safe_image_url(url) or safe_badge_url(url)
+
+
 def _as_dict(value) -> dict:
     if isinstance(value, dict):
         return value
@@ -59,10 +80,13 @@ def _img(url: str, alt: str, size: str) -> str:
     )
 
 
-def text_to_html(text: str, emotes: dict[str, str] | None = None, sticker: str = "") -> str:
-    """Escape text and swap known emote codes / sticker danmaku for images."""
+def text_to_html(text: str, emotes: dict[str, str] | None = None, sticker: str = "", caption: bool = False) -> str:
+    """Escape text and swap known emote codes / sticker danmaku for images.
+
+    `caption` keeps the text next to the sticker (e.g. a Super Sticker's amount)."""
     if sticker:
-        return _img(sticker, text, f"{_MAX_EMOTE_PX}px")
+        image = _img(sticker, text, f"{_MAX_EMOTE_PX}px")
+        return f"{html.escape(text)}<br>{image}" if caption else image
     if not emotes:
         return html.escape(text)
     codes = sorted((c for c in emotes if c in text), key=len, reverse=True)

@@ -1,5 +1,6 @@
 import json
 import threading
+import time
 import unittest
 from urllib.error import HTTPError
 from urllib.request import urlopen
@@ -172,7 +173,7 @@ class OverlayTests(unittest.TestCase):
             overlay_feeds.get = original_get
         self.assertEqual([m["text"] for m in data["messages"]], ["b5", "b6", "b7"])
         self.assertNotIn("author", data["messages"][0])
-        self.assertEqual([m["text"] for m in data["paid"]], ["[SC ¥30] hi"])
+        self.assertEqual([m["text"] for m in data["paid"]], ["[SC ¥30] hi", "free"])
         self.assertEqual(data["custom_text"], "hey")
 
     def test_bilibili_room_id_or_url(self):
@@ -192,6 +193,38 @@ class OverlayTests(unittest.TestCase):
         head.assert_called_once()
         with mock.patch.object(bilibili.requests, "head", side_effect=bilibili.requests.ConnectionError):
             self.assertEqual(bilibili.parse_room_id("https://b23.tv/Other1"), "")
+
+    def test_standalone_url_mirrors_open_dashboard_reading_same_rooms(self):
+        from unittest import mock
+        from src import overlay_feeds
+        server = overlay_server.OverlayServer(0)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            base = f"http://127.0.0.1:{server.server_address[1]}"
+            key = overlay_feeds.parse_key({"bilibili": ["25760587"]})
+            dashboard = {"messages": [{"text": "dash", "platform": "bilibili"},
+                                      {"text": "yt", "platform": "youtube"}],
+                         "paid": [], "custom_text": "", "count": 5, "paid_count": 3}
+            server.publish(dashboard, "alice", source=key)
+            standalone = {"messages": [{"text": "own", "platform": "bilibili"}], "paid": [], "custom_text": ""}
+            feed = mock.Mock(last_used=0)
+            with mock.patch.object(overlay_feeds, "get", return_value=feed), \
+                    mock.patch.object(overlay_server, "feed_snapshot", return_value=standalone):
+                with urlopen(base + "/overlay/data?bilibili=25760587") as response:
+                    # Only the URL's sites, even though the dashboard snapshot has more.
+                    self.assertEqual([m["text"] for m in json.load(response)["messages"]], ["dash"])
+                self.assertGreater(feed.last_used, 0)  # standalone feed kept warm for fallback
+                with urlopen(base + "/overlay/data?bilibili=999") as response:
+                    self.assertEqual([m["text"] for m in json.load(response)["messages"]], ["own"])
+                with mock.patch.object(overlay_server.time, "time",
+                                       return_value=time.time() + overlay_server.MIRROR_TTL + 1):
+                    with urlopen(base + "/overlay/data?bilibili=25760587") as response:
+                        self.assertEqual([m["text"] for m in json.load(response)["messages"]], ["own"])
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
 
     def test_channels_are_isolated(self):
         server = overlay_server.OverlayServer(0)

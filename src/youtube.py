@@ -184,6 +184,7 @@ def get_chat_messages(live_chat_id: str, page_token: str = "") -> tuple[list[dic
                     "is_owner": author.get("isChatOwner", False),
                     "is_moderator": author.get("isChatModerator", False),
                     "is_verified": author.get("isVerified", False),
+                    "membership": "Member" if author.get("isChatSponsor") else "",
                     "text": text,
                     "type": msg_type,
                     "timestamp": snippet.get("publishedAt", ""),
