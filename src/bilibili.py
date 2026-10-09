@@ -7,14 +7,13 @@ so they work seamlessly inside Streamlit's synchronous execution model.
 from __future__ import annotations
 
 import asyncio
-import os
 import re
 import time
 from typing import Optional
 
 import requests
 
-from src import emotes
+from src import emotes, user_login
 from src.config import BILIBILI_ROOM_ID
 
 try:
@@ -25,13 +24,9 @@ except ImportError:
 
 
 def _cookie_values() -> tuple[str, str, str, str]:
-    """Read credentials at call time so cookies imported from a browser apply without restart."""
-    return (
-        os.getenv("BILIBILI_SESSDATA", ""),
-        os.getenv("BILIBILI_BILI_JCT", ""),
-        os.getenv("BILIBILI_BUVID3", ""),
-        os.getenv("BILIBILI_DEDEUSERID", ""),
-    )
+    """The current user's Bilibili login (per browser session, see user_login)."""
+    c = user_login.get("bilibili")
+    return (c.get("SESSDATA", ""), c.get("bili_jct", ""), c.get("buvid3", ""), c.get("DedeUserID", ""))
 
 
 def has_login_credentials() -> bool:
@@ -45,8 +40,8 @@ def parse_room_id(text: str) -> str:
     return m.group(1) if m else ""
 
 
-def _credential() -> "Credential":
-    sessdata, bili_jct, buvid3, dedeuserid = _cookie_values()
+def _credential(values: Optional[tuple[str, str, str, str]] = None) -> "Credential":
+    sessdata, bili_jct, buvid3, dedeuserid = values or _cookie_values()
     return Credential(
         sessdata=sessdata or None,
         bili_jct=bili_jct or None,
@@ -139,6 +134,8 @@ class DanmakuListener:
         self._task: Optional[asyncio.Task] = None
         # UID used in the WebSocket handshake; 0 means anonymous (Bilibili masks usernames).
         self.connected_uid: Optional[int] = None
+        # The starting user's login, captured here: the listener thread has no Streamlit session.
+        self._login = _cookie_values()
 
     @property
     def is_anonymous(self) -> bool:
@@ -172,7 +169,7 @@ class DanmakuListener:
             self._loop = asyncio.get_running_loop()
             danmaku = live.LiveDanmaku(
                 room_display_id=self.room_id,
-                credential=_credential(),
+                credential=_credential(self._login),
             )
 
             @danmaku.on("VERIFICATION_SUCCESSFUL")

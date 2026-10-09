@@ -65,14 +65,19 @@ def set_text_source(name: str, text: str) -> None:
         cl.disconnect()
 
 
+# Why the last connection attempt failed: (code, detail). Codes: no_lib, no_password, unreachable, auth.
+last_error: tuple[str, str] = ("", "")
+
+
 def _reachable() -> bool:
-    global _down_until
+    global _down_until, last_error
     if time.monotonic() < _down_until:
         return False
     try:
         with socket.create_connection((OBS_HOST, OBS_PORT), timeout=0.5):
             return True
-    except OSError:
+    except OSError as exc:
+        last_error = ("unreachable", str(exc))
         _down_until = time.monotonic() + _RETRY_AFTER
         return False
 
@@ -84,16 +89,22 @@ def retry_now():
 
 
 def _client() -> Optional["obs.ReqClient"]:
+    global last_error
     if not OBS_LIB_OK:
+        last_error = ("no_lib", "")
         return None
     if not OBS_PASSWORD:
+        last_error = ("no_password", "")
         return None
     if not _reachable():
         return None
     try:
-        return obs.ReqClient(host=OBS_HOST, port=OBS_PORT, password=OBS_PASSWORD, timeout=3)
-    except Exception:
+        client = obs.ReqClient(host=OBS_HOST, port=OBS_PORT, password=OBS_PASSWORD, timeout=3)
+    except Exception as exc:
+        last_error = ("auth", f"{type(exc).__name__}: {exc}")
         return None
+    last_error = ("", "")
+    return client
 
 
 def get_status() -> dict:

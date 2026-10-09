@@ -213,9 +213,33 @@ _STRINGS: dict[str, tuple[str, str]] = {
     "Streamer: {name}": ("主播：{name}", "配信者：{name}"),
     "Category: {area} › {sub}": ("分区：{area} › {sub}", "カテゴリ：{area} › {sub}"),
     # ── OBS tab ──────────────────────────────────────────────────────────────
-    "⚠️ OBS is not connected. Configure OBS WebSocket settings in your .env file.": (
-        "⚠️ OBS 未连接。请在 .env 文件中配置 OBS WebSocket 设置。",
-        "⚠️ OBS が接続されていません。.env ファイルで OBS WebSocket を設定してください。",
+    "⚠️ OBS is not connected: obsws-python is not installed. Run `pip install obsws-python`.": (
+        "⚠️ OBS 未连接：未安装 obsws-python。请运行 `pip install obsws-python`。",
+        "⚠️ OBS に接続されていません：obsws-python がインストールされていません。`pip install obsws-python` を実行してください。",
+    ),
+    "⚠️ OBS is not connected: OBS_PASSWORD is not set in .env.": (
+        "⚠️ OBS 未连接：.env 中未设置 OBS_PASSWORD。",
+        "⚠️ OBS に接続されていません：.env に OBS_PASSWORD が設定されていません。",
+    ),
+    "⚠️ OBS at {addr} refused the login — check OBS_PASSWORD. ({detail})": (
+        "⚠️ {addr} 上的 OBS 拒绝登录——请检查 OBS_PASSWORD。（{detail}）",
+        "⚠️ {addr} の OBS がログインを拒否しました — OBS_PASSWORD を確認してください。（{detail}）",
+    ),
+    "⚠️ OBS is not connected: nothing answered at {addr}.": (
+        "⚠️ OBS 未连接：{addr} 没有响应。",
+        "⚠️ OBS に接続されていません：{addr} から応答がありません。",
+    ),
+    "Is OBS running with its WebSocket server enabled? OBS_HOST is resolved on the computer "
+    "running this dashboard — if that's a server, `localhost` means the server itself. Set "
+    "OBS_HOST to the address of the PC running OBS, reachable from the server (same network, "
+    "VPN such as Tailscale, or a port forward), and allow port {port} in that PC's firewall.": (
+        "OBS 是否正在运行并已启用 WebSocket 服务器？OBS_HOST 是在运行本仪表板的电脑上解析的——如果它运行在服务器上，"
+        "`localhost` 指的是服务器本身。请把 OBS_HOST 设为运行 OBS 的电脑地址，并确保服务器能访问它（同一网络、"
+        "Tailscale 等 VPN 或端口转发），同时在该电脑的防火墙中放行端口 {port}。",
+        "OBS は起動していて WebSocket サーバーが有効になっていますか？OBS_HOST はこのダッシュボードを動かしているコンピューターで"
+        "解決されます — サーバーで動かしている場合、`localhost` はサーバー自身を指します。OBS_HOST を OBS を動かしている PC の"
+        "アドレスにし、サーバーから届くようにしてください（同じネットワーク、Tailscale などの VPN、またはポート転送）。"
+        "その PC のファイアウォールでポート {port} を許可してください。",
     ),
     "Setup instructions": ("设置说明", "設定手順"),
     "obs_setup_md": (
@@ -297,16 +321,30 @@ _STRINGS: dict[str, tuple[str, str]] = {
         "在 OBS 中将叠加层 URL 添加为**浏览器来源**，即可在直播画面显示透明聊天框。",
         "OBS でオーバーレイ URL を**ブラウザソース**として追加すると、配信画面に透過チャットを表示できます。",
     ),
-    "**How to use**: Add a Browser Source in OBS pointing to `http://localhost:8502/overlay`. "
+    "**How to use**: Add a Browser Source in OBS pointing to `{url}`. "
     "Keep the dashboard open for live updates.": (
-        "**使用方法**：在 OBS 中添加指向 `http://localhost:8502/overlay` 的浏览器来源。"
+        "**使用方法**：在 OBS 中添加指向 `{url}` 的浏览器来源。"
         "保持仪表板打开以接收实时更新。",
-        "**使い方**：OBS のブラウザソースに `http://localhost:8502/overlay` を設定してください。"
+        "**使い方**：OBS のブラウザソースに `{url}` を設定してください。"
         "ライブ更新にはダッシュボードを開いたままにしてください。",
     ),
-    "Couldn't start the chat overlay on port 8502: {err}": (
-        "无法在端口 8502 启动聊天叠加层：{err}",
-        "ポート 8502 でチャットオーバーレイを起動できません：{err}",
+    "Overlay channel": ("叠加层频道", "オーバーレイチャンネル"),
+    "Sites on this overlay": ("此叠加层显示的网站", "このオーバーレイに表示するサイト"),
+    "Show only some sites' chat — e.g. one Browser Source per site. Adds ?site=… to the overlay URL; leave all selected (or empty) for every site.": (
+        "只显示部分网站的聊天——例如每个网站一个浏览器源。会在叠加层网址中加入 ?site=…；全部选中（或留空）则显示所有网站。",
+        "一部のサイトのチャットだけを表示します（例：サイトごとにブラウザソースを 1 つ）。オーバーレイ URL に ?site=… を追加します。すべて選択（または空）ですべてのサイトを表示します。",
+    ),
+    "Each dashboard user can pick their own channel name so their overlays don't overwrite each other. Letters, digits, - and _ only.": (
+        "每位仪表板用户可使用自己的频道名，避免叠加层互相覆盖。仅限字母、数字、- 和 _。",
+        "ダッシュボードの利用者ごとに別のチャンネル名を使うと、オーバーレイが互いに上書きされません。英数字・-・_ のみ。",
+    ),
+    "The overlay only accepts connections from this computer. If OBS runs on another machine, set OVERLAY_HOST=0.0.0.0 in .env and restart.": (
+        "叠加层仅接受本机连接。若 OBS 在其他电脑上运行，请在 .env 中设置 OVERLAY_HOST=0.0.0.0 并重启。",
+        "オーバーレイはこのコンピューターからの接続のみ受け付けます。OBS が別のマシンで動いている場合は .env に OVERLAY_HOST=0.0.0.0 を設定して再起動してください。",
+    ),
+    "Couldn't start the chat overlay on port {port}: {err}": (
+        "无法在端口 {port} 启动聊天叠加层：{err}",
+        "ポート {port} でチャットオーバーレイを起動できません：{err}",
     ),
     "Custom overlay message (shown permanently on stream)": (
         "自定义叠加消息（常驻显示在直播画面）",
@@ -322,7 +360,31 @@ _STRINGS: dict[str, tuple[str, str]] = {
     ),
     "Recent Chat Preview (last {n} messages)": ("最近聊天预览（最后 {n} 条）", "最近のチャットプレビュー（最新 {n} 件）"),
     # ── Cookies tab ──────────────────────────────────────────────────────────
-    "🍪 Import login cookies from browser": ("🍪 从浏览器导入登录 Cookie", "🍪 ブラウザからログイン Cookie をインポート"),
+    "🍪 Import login cookies": ("🍪 导入登录 Cookie", "🍪 ログイン Cookie をインポート"),
+    "🧭 Browser on this computer": ("🧭 本机浏览器", "🧭 このパソコンのブラウザ"),
+    "📋 Paste / upload cookies": ("📋 粘贴 / 上传 Cookie", "📋 Cookie を貼り付け / アップロード"),
+    "Source": ("来源", "取得元"),
+    "Use Paste / upload when the app runs on another computer or a server, "
+    "where it can't see your browser.": (
+        "当应用运行在其他电脑或服务器上、无法访问你的浏览器时，请使用粘贴 / 上传。",
+        "アプリが別のパソコンやサーバーで動いていてブラウザにアクセスできない場合は、貼り付け / アップロードを使ってください。",
+    ),
+    "In your own browser, export the site's cookies with an extension such as "
+    "\"Get cookies.txt LOCALLY\" or \"Cookie-Editor\" (Export → JSON or Netscape), or copy the "
+    "Cookie request header from DevTools (F12 → Network → any request to the site). "
+    "Paste it below or upload the exported file. Only cookies for the chosen site are used.": (
+        "在你自己的浏览器中，用 \"Get cookies.txt LOCALLY\" 或 \"Cookie-Editor\" 等扩展导出该网站的 Cookie"
+        "（导出为 JSON 或 Netscape 格式），或从开发者工具复制 Cookie 请求头（F12 → 网络 → 任意发往该网站的请求）。"
+        "粘贴到下方或上传导出的文件。只会使用所选网站的 Cookie。",
+        "自分のブラウザで \"Get cookies.txt LOCALLY\" や \"Cookie-Editor\" などの拡張機能を使ってサイトの Cookie を"
+        "エクスポートするか（JSON または Netscape 形式）、開発者ツールから Cookie リクエストヘッダーをコピーしてください"
+        "（F12 → ネットワーク → サイトへの任意のリクエスト）。下に貼り付けるか、エクスポートしたファイルをアップロードします。"
+        "選択したサイトの Cookie だけが使われます。",
+    ),
+    "Cookies": ("Cookie", "Cookie"),
+    "…or upload an exported file": ("…或上传导出的文件", "…またはエクスポートしたファイルをアップロード"),
+    "No cookies for {site} found in that text.": ("在该文本中未找到 {site} 的 Cookie。", "そのテキストに {site} の Cookie が見つかりません。"),
+    "the pasted cookies": ("粘贴的 Cookie", "貼り付けた Cookie"),
     "Reads cookies from a browser installed on this computer. Values never leave this "
     "machine except when verifying the login with the site itself.": (
         "从本机已安装的浏览器读取 Cookie。除向对应网站验证登录外，Cookie 值不会离开本机。",
@@ -360,7 +422,6 @@ _STRINGS: dict[str, tuple[str, str]] = {
         "{browser} で {site} の **Cookie {n} 件**が見つかりました。",
     ),
     "Cookie": ("Cookie", "Cookie"),
-    "Env var": ("环境变量", "環境変数"),
     "Value": ("值", "値"),
     "❌ missing": ("❌ 缺失", "❌ なし"),
     "Logged in as **{uname}** (UID {mid}).": ("已登录为 **{uname}**（UID {mid}）。", "**{uname}** としてログイン中（UID {mid}）。"),
@@ -373,19 +434,6 @@ _STRINGS: dict[str, tuple[str, str]] = {
         "SESSDATA Cookie が見つかりません — 先にこのブラウザで bilibili.com にログインしてください。",
     ),
     "✅ Use these cookies": ("✅ 使用这些 Cookie", "✅ この Cookie を使用"),
-    "💾 Also save to .env (keep login after restart)": (
-        "💾 同时保存到 .env（重启后保持登录）",
-        "💾 .env にも保存（再起動後もログインを維持）",
-    ),
-    "Off: cookies are kept only in this app's memory and never written to disk; re-import them after restarting. On: also written to .env in plain text.": (
-        "关闭：Cookie 只保存在本应用内存中，不会写入磁盘；重启后需重新导入。开启：同时以明文写入 .env。",
-        "オフ：Cookie はこのアプリのメモリにのみ保持され、ディスクには書き込まれません。再起動後は再インポートしてください。オン：.env にも平文で書き込みます。",
-    ),
-    "Saved {keys} to .env and applied.": ("已将 {keys} 保存到 .env 并应用。", "{keys} を .env に保存して適用しました。"),
-    "Applied {keys} in memory only — not written to disk; lost when the app restarts.": (
-        "已在内存中应用 {keys}——未写入磁盘，应用重启后失效。",
-        "{keys} をメモリ上でのみ適用しました — ディスクには書き込まれず、アプリ再起動で消えます。",
-    ),
     " Bilibili listener reconnected with the new login.": (
         " B站监听已使用新登录重新连接。",
         " 新しいログインで Bilibili 受信に再接続しました。",
@@ -462,11 +510,18 @@ _STRINGS: dict[str, tuple[str, str]] = {
         "この Google アカウントには複数の YouTube チャンネルがあります。チャットを送信するチャンネルを選んでください。",
     ),
     "🚪 Clear login": ("🚪 清除登录", "🚪 ログインを解除"),
-    "Forget this site's login cookies (also removed from .env). Chat keeps working read-only.": (
-        "清除此网站的登录 Cookie（也会从 .env 删除）。聊天仍可只读查看。",
-        "このサイトのログイン Cookie を削除します（.env からも削除）。チャットは閲覧のみで引き続き使えます。",
+    "Forget your login cookies for this site (also removed from this browser). Chat keeps working read-only.": (
+        "清除你在此网站的登录 Cookie（也会从此浏览器删除）。聊天仍可只读查看。",
+        "このサイトのあなたのログイン Cookie を削除します（このブラウザからも削除）。チャットは閲覧のみで引き続き使えます。",
     ),
-    "Cleared the {site} login (memory and .env).": ("已清除 {site} 登录（内存和 .env）。", "{site} のログインを解除しました（メモリと .env）。"),
+    "Login saved for you only — kept encrypted in this browser, not shared with other users.": (
+        "登录仅对你保存——加密保存在此浏览器中，不会与其他用户共享。",
+        "ログインはあなた専用に保存されました — このブラウザに暗号化して保持され、他のユーザーとは共有されません。",
+    ),
+    "Your logins are yours only: other people opening this dashboard don't see or use them. They are kept encrypted in this browser, so they survive a refresh; use 🚪 Clear login to forget them.": (
+        "登录仅属于你：其他打开此仪表板的人看不到也无法使用。登录加密保存在此浏览器中，刷新后仍然有效；使用 🚪 清除登录 可将其删除。",
+        "ログインはあなた専用です：このダッシュボードを開いた他の人には見えず、使われることもありません。このブラウザに暗号化して保持されるため再読み込み後も有効です。🚪 ログインを解除 で削除できます。",
+    ),
     "Cleared the {site} login.": ("已清除 {site} 登录。", "{site} のログインを解除しました。"),
     '🔑 Logged in as **{name}**': (
         '🔑 已登录：**{name}**',

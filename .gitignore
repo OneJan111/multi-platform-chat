@@ -1,5 +1,6 @@
 ﻿# Secrets
 /.env
+/.login_secret
 /youtube_token.json
 
 # Local data (blocked viewers list)

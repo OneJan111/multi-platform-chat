@@ -55,7 +55,8 @@ class OverlayTests(unittest.TestCase):
             {"type": "superStickerEvent", "text": "[Super Sticker $2]", "platform": "youtube"},
             {"type": "gift", "text": "gift", "platform": "bilibili"},
         ]
-        data = overlay_server.snapshot(messages, False, "en", lambda *_: "", paid_count=2)
+        data = overlay_server.view(
+            overlay_server.snapshot(messages, False, "en", lambda *_: "", paid_count=2), set())
         self.assertEqual([m["text"] for m in data["messages"]], ["hi"])
         self.assertEqual([m["text"] for m in data["paid"]],
                          ["[Super Chat $5] yo", "[Super Sticker $2]"])
@@ -87,7 +88,7 @@ class OverlayTests(unittest.TestCase):
             with urlopen(base + "/overlay") as response:
                 page = response.read().decode("utf-8")
                 self.assertIn('background: transparent', page)
-                self.assertIn('fetch("/overlay/data"', page)
+                self.assertIn('fetch("/overlay/data" + location.search', page)
                 self.assertNotIn("Streamer", page)
                 self.assertEqual(response.headers["Cache-Control"], "no-store")
             server.publish({"messages": [{"text": "<script>", "author": "a",
@@ -100,6 +101,64 @@ class OverlayTests(unittest.TestCase):
                 urlopen(base + "/")
             self.assertEqual(error.exception.code, 404)
             error.exception.close()
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+
+    def test_site_filter_gets_full_count_per_site(self):
+        messages = [{"type": "danmaku", "text": f"y{i}", "platform": "youtube"} for i in range(3)]
+        messages += [{"type": "danmaku", "text": f"b{i}", "platform": "bilibili"} for i in range(10)]
+        paid = [{"type": "superChatEvent", "text": "[SC] yt", "platform": "youtube"},
+                {"type": "superchat", "text": "[SC] b", "platform": "bilibili"}]
+        data = overlay_server.snapshot(messages, False, "en", lambda *_: "", count=3,
+                                       paid_count=1, paid_messages=paid)
+        texts = lambda d, k="messages": [m["text"] for m in d[k]]
+        everything = overlay_server.view(data, set())
+        self.assertEqual(texts(everything), ["b7", "b8", "b9"])
+        self.assertEqual(texts(everything, "paid"), ["[SC] b"])
+        yt_only = overlay_server.view(data, overlay_server.parse_sites(["yt"]))
+        self.assertEqual(texts(yt_only), ["y0", "y1", "y2"])
+        self.assertEqual(texts(yt_only, "paid"), ["[SC] yt"])
+        self.assertEqual(overlay_server.parse_sites(["bili,ME", "youtube", "bogus"]),
+                         {"bilibili", "missevan", "youtube"})
+        self.assertEqual(overlay_server.parse_sites([]), set())
+
+        server = overlay_server.OverlayServer(0)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            base = f"http://127.0.0.1:{server.server_address[1]}"
+            server.publish(data, "alice")
+            with urlopen(base + "/overlay/data?ch=alice&site=youtube") as response:
+                self.assertEqual(texts(json.load(response)), ["y0", "y1", "y2"])
+            with urlopen(base + "/overlay/data?ch=alice&site=missevan") as response:
+                self.assertEqual(json.load(response)["messages"], [])
+            with urlopen(base + "/overlay/data?ch=alice") as response:
+                self.assertEqual(texts(json.load(response)), ["b7", "b8", "b9"])
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+
+    def test_channels_are_isolated(self):
+        server = overlay_server.OverlayServer(0)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            base = f"http://127.0.0.1:{server.server_address[1]}"
+            server.publish({"messages": [], "custom_text": "main"})
+            server.publish({"messages": [], "custom_text": "alice"}, "alice")
+            with urlopen(base + "/overlay/data") as response:
+                self.assertEqual(json.load(response)["custom_text"], "main")
+            with urlopen(base + "/overlay/data?ch=alice") as response:
+                self.assertEqual(json.load(response)["custom_text"], "alice")
+            with urlopen(base + "/overlay/data?ch=nobody") as response:
+                self.assertEqual(json.load(response)["messages"], [])
+            with urlopen(base + "/overlay?ch=alice") as response:
+                self.assertEqual(response.status, 200)
+            self.assertEqual(overlay_server.clean_channel("a b/<c>"), "abc")
+            self.assertEqual(overlay_server.clean_channel(""), "main")
         finally:
             server.shutdown()
             server.server_close()

@@ -34,9 +34,13 @@ from src import obs_ctrl as obs
 from src import overlay_server
 from src import reading
 from src import translate as tr
+from src import user_login
 from src import youtube as yt
 from src import youtube_web as ytw
-from src.config import BILIBILI_ROOM_ID, CHAT_POLL_INTERVAL, MISSEVAN_ROOM_ID, YOUTUBE_CHANNEL
+from src.config import (
+    BILIBILI_ROOM_ID, CHAT_POLL_INTERVAL, MISSEVAN_ROOM_ID, OBS_HOST, OBS_PORT, OVERLAY_HOST,
+    OVERLAY_PUBLIC_URL, YOUTUBE_CHANNEL,
+)
 from src.filters import ChatFilter, make_default_filter
 from src.tts import (
     LANGUAGES as TTS_LANGUAGES, format_announcement, format_message, is_emoji_only, is_paid,
@@ -254,6 +258,9 @@ def _init_state():
         "overlay_show_username": True,
         "overlay_count": 5,
         "overlay_sc_count": 3,
+        # ?overlay=name keeps this dashboard's overlay channel across refreshes.
+        "overlay_channel": overlay_server.clean_channel(st.query_params.get("overlay", "")),
+        "overlay_sites": list(overlay_server.SITES),
         "last_poll": 0.0,
         "viewer_history": [],         # list of {time, yt, bili}
         # ?lang=zh in the URL lets a bookmark or refresh keep the chosen page language.
@@ -272,6 +279,29 @@ def _init_state():
 
 
 _init_state()
+
+
+def _restore_user_logins() -> None:
+    """New browser session: load this user's own logins from their encrypted browser cookie."""
+    if user_login.SESSION_KEY not in st.session_state:
+        st.session_state[user_login.SESSION_KEY] = user_login.decode(
+            user_login.join_cookies(st.context.cookies))
+
+
+def _sync_login_cookie() -> None:
+    """After a login changes, rewrite (or delete) the encrypted copy in this user's browser."""
+    if user_login.take_changed():
+        st.html(user_login.cookie_script(user_login.current()), unsafe_allow_javascript=True)
+
+
+def _is_local_client() -> bool:
+    """True when the dashboard is opened on the computer running it (not over the network/a proxy)."""
+    headers = st.context.headers
+    return st.context.ip_address is None and not (headers.get("X-Forwarded-For") or headers.get("X-Real-Ip"))
+
+
+_restore_user_logins()
+_sync_login_cookie()
 
 
 def t(text: str, **kwargs) -> str:
@@ -743,21 +773,21 @@ def _cached_me_room_info(room_id: str) -> dict:
 @st.cache_data(ttl=300, show_spinner=False)
 def _cached_yt_cookie_login(cookie: str, page_id: str = "") -> dict:
     # `cookie`/`page_id` are the cache key so new cookies or a channel switch re-check immediately.
-    return ytw.verify_login()
+    return ytw.verify_login(user_login.parse_cookie_string(cookie))
 
 
 @st.cache_data(ttl=600, show_spinner=False)
 def _cached_yt_channels(cookie: str) -> dict:
-    return ytw.list_channels()
+    return ytw.list_channels(user_login.parse_cookie_string(cookie))
 
 
 def _set_yt_channel(choices: dict[str, str]) -> None:
-    ytw.select_channel(choices.get(st.session_state["yt_send_as"], ""), persist=_cookie_persist())
+    ytw.select_channel(choices.get(st.session_state["yt_send_as"], ""))
 
 
 def _render_yt_channel_picker() -> None:
     """'Send as' picker when the Google login owns more than one YouTube channel (brand accounts)."""
-    channels = _cached_yt_channels(os.getenv("YOUTUBE_COOKIE", "")).get("channels", [])
+    channels = _cached_yt_channels(user_login.cookie_string(ytw.login_cookies())).get("channels", [])
     if len(channels) < 2:
         return
     choices = {}
@@ -776,24 +806,28 @@ def _render_yt_channel_picker() -> None:
 
 @st.cache_data(ttl=300, show_spinner=False)
 def _cached_me_cookie_login(cookie: str) -> dict:
-    return me.verify_login()
+    return me.verify_login(user_login.parse_cookie_string(cookie))
 
 
 @st.cache_data(ttl=300, show_spinner=False)
-def _cached_bili_login(sessdata: str) -> dict:
-    return bc.verify_bilibili_login({name: os.getenv(env, "") for name, env in bc.BILIBILI_ENV_KEYS.items()})
+def _cached_bili_login(cookie: str) -> dict:
+    return bc.verify_bilibili_login(user_login.parse_cookie_string(cookie))
 
 
-def _clear_login(site: str, env_keys: list[str]) -> None:
-    removed = bc.clear_login(env_keys)
-    for key in ("_yt_saved_name", "_yt_saved_msg", "_me_saved_msg", "yt_send_as"):
+def _login_key(site: str) -> str:
+    """The current user's cookies for `site` as one string (cache key for the verify helpers)."""
+    return user_login.cookie_string(user_login.get(site))
+
+
+def _clear_login(site_label: str, site: str) -> None:
+    bc.clear_login(site)
+    for key in ("_yt_saved_name", "_yt_saved_msg", "_me_saved_msg", "_me_saved_uid", "yt_send_as"):
         st.session_state.pop(key, None)
-    st.toast(t("Cleared the {site} login (memory and .env).", site=site) if removed
-             else t("Cleared the {site} login.", site=site))
+    st.toast(t("Cleared the {site} login.", site=site_label))
 
 
 def _render_login(state: Optional[dict], name: str, detail: str = "",
-                  site: str = "", env_keys: Optional[list[str]] = None) -> None:
+                  site: str = "", login_site: str = "") -> None:
     """Login line shared by every site; `state` is the verify result, or None when no cookies are set."""
     if state and state.get("is_login"):
         st.success(t("🔑 Logged in as **{name}**", name=name) + (f" · {detail}" if detail else ""))
@@ -803,11 +837,12 @@ def _render_login(state: Optional[dict], name: str, detail: str = "",
         st.warning(t("🔑 Login expired — re-import cookies in the 🍪 Cookies tab."))
     else:
         st.info(t("🔑 Not logged in — chat is read-only. Import cookies in the 🍪 Cookies tab to send."))
-    if state is not None and env_keys:
+    if state is not None and login_site:
         st.button(
-            t("🚪 Clear login"), key=f"clear_login_{env_keys[0]}", type="tertiary",
-            on_click=_clear_login, args=(site, env_keys),
-            help=t("Forget this site's login cookies (also removed from .env). Chat keeps working read-only."),
+            t("🚪 Clear login"), key=f"clear_login_{login_site}", type="tertiary",
+            on_click=_clear_login, args=(site, login_site),
+            help=t("Forget your login cookies for this site (also removed from this browser). "
+                   "Chat keeps working read-only."),
         )
 
 
@@ -828,26 +863,20 @@ def _render_listener(site: str, running: bool, level: str, msg: str, detail: str
 
 def _me_login_state() -> Optional[dict]:
     """Verified MissEvan cookie login, or None when no cookies are saved."""
-    return _cached_me_cookie_login(os.getenv("MISSEVAN_COOKIE", "")) if me.has_login() else None
+    return _cached_me_cookie_login(_login_key("missevan")) if me.has_login() else None
 
 
-def _cookie_persist() -> bool:
-    return bool(st.session_state.get("cookie_persist"))
-
-
-def _cookie_applied_msg(keys: str) -> str:
-    if _cookie_persist():
-        return t("Saved {keys} to .env and applied.", keys=keys)
-    return t("Applied {keys} in memory only — not written to disk; lost when the app restarts.", keys=keys)
+def _cookie_applied_msg() -> str:
+    return t("Login saved for you only — kept encrypted in this browser, not shared with other users.")
 
 
 def _render_missevan_verify(verify: Optional[dict], cookies: dict, key: str):
     if verify and verify["is_login"]:
         st.success(t("Logged in as **{uname}** (UID {mid}).", uname=verify["username"], mid=verify["user_id"]))
         if st.button(t("✅ Use these cookies"), key=key):
-            me.save_login(cookies, persist=_cookie_persist())
+            me.save_login(cookies)
             st.session_state["_me_saved_uid"] = verify["user_id"]
-            st.session_state["_me_saved_msg"] = _cookie_applied_msg("MISSEVAN_COOKIE")
+            st.session_state["_me_saved_msg"] = _cookie_applied_msg()
         if st.session_state.get("_me_saved_uid") == verify["user_id"]:
             st.success(st.session_state.get("_me_saved_msg", "") + " " + t("You can now send chat to MissEvan."))
     elif verify and verify.get("error"):
@@ -992,10 +1021,9 @@ with tab_status:
     # ── YouTube ───────────────────────────────────────────────────────────────
     with yt_col:
         _site_heading("youtube")
-        _yt_login = (_cached_yt_cookie_login(os.getenv("YOUTUBE_COOKIE", ""), ytw.selected_page_id())
+        _yt_login = (_cached_yt_cookie_login(_login_key("youtube"), ytw.selected_page_id())
                      if ytw.has_login() else None)
-        _render_login(_yt_login, (_yt_login or {}).get("name", ""), site="YouTube",
-                      env_keys=["YOUTUBE_COOKIE", "YOUTUBE_PAGE_ID"])
+        _render_login(_yt_login, (_yt_login or {}).get("name", ""), site="YouTube", login_site="youtube")
         if _yt_login and _yt_login.get("is_login"):
             _render_yt_channel_picker()
 
@@ -1104,10 +1132,10 @@ with tab_status:
     # ── Bilibili status ───────────────────────────────────────────────────────
     with bili_col:
         _site_heading("bilibili")
-        _bili_login = _cached_bili_login(os.getenv("BILIBILI_SESSDATA", "")) if bili.has_login_credentials() else None
+        _bili_login = _cached_bili_login(_login_key("bilibili")) if bili.has_login_credentials() else None
         _render_login(_bili_login, (_bili_login or {}).get("uname", ""),
                       t("UID {mid}", mid=_bili_login["mid"]) if _bili_login and _bili_login.get("mid") else "",
-                      site="Bilibili", env_keys=list(bc.BILIBILI_ENV_KEYS.values()))
+                      site="Bilibili", login_site="bilibili")
 
         bili_input = st.text_input(
             t("Room ID or URL"), value=st.session_state["bili_room_id"], key="bili_room_input",
@@ -1183,7 +1211,7 @@ with tab_status:
         _me_login = _me_login_state()
         _render_login(_me_login, (_me_login or {}).get("username", ""),
                       t("UID {mid}", mid=_me_login["user_id"]) if _me_login and _me_login.get("user_id") else "",
-                      site=t("MissEvan"), env_keys=["MISSEVAN_COOKIE"])
+                      site=t("MissEvan"), login_site="missevan")
 
         me_input = st.text_input(
             t("Room ID or URL"), value=st.session_state["me_room_id"], key="me_room_input",
@@ -1404,7 +1432,23 @@ with tab_obs:
     if not obs_status.get("connected"):
         st.session_state["obs_chat_last"] = None
         if st.session_state["obs_enabled"]:
-            st.warning(t("⚠️ OBS is not connected. Configure OBS WebSocket settings in your .env file."))
+            code, detail = obs.last_error
+            addr = f"{OBS_HOST}:{OBS_PORT}"
+            if code == "no_lib":
+                st.warning(t("⚠️ OBS is not connected: obsws-python is not installed. Run `pip install obsws-python`."))
+            elif code == "no_password":
+                st.warning(t("⚠️ OBS is not connected: OBS_PASSWORD is not set in .env."))
+            elif code == "auth":
+                st.warning(t("⚠️ OBS at {addr} refused the login — check OBS_PASSWORD. ({detail})",
+                             addr=addr, detail=detail))
+            else:
+                st.warning(t("⚠️ OBS is not connected: nothing answered at {addr}.", addr=addr))
+                st.caption(t(
+                    "Is OBS running with its WebSocket server enabled? OBS_HOST is resolved on the computer "
+                    "running this dashboard — if that's a server, `localhost` means the server itself. Set "
+                    "OBS_HOST to the address of the PC running OBS, reachable from the server (same network, "
+                    "VPN such as Tailscale, or a port forward), and allow port {port} in that PC's firewall.", port=OBS_PORT,
+                ))
         else:
             st.caption(t("OBS functions are off."))
         with st.expander(t("Setup instructions")):
@@ -1512,10 +1556,44 @@ with tab_obs:
         t("Use the overlay URL in OBS as a **Browser Source** to show a transparent chat on stream.")
     )
 
+    st.text_input(
+        t("Overlay channel"), key="overlay_channel", max_chars=40,
+        help=t("Each dashboard user can pick their own channel name so their overlays don't overwrite each other. Letters, digits, - and _ only."),
+    )
+    _overlay_ch = overlay_server.clean_channel(st.session_state["overlay_channel"])
+    if _overlay_ch == overlay_server.DEFAULT_CHANNEL:
+        st.query_params.pop("overlay", None)
+    else:
+        st.query_params["overlay"] = _overlay_ch
+    if OVERLAY_PUBLIC_URL:
+        _overlay_base = OVERLAY_PUBLIC_URL
+    elif OVERLAY_HOST in ("127.0.0.1", "localhost", "::1"):
+        _overlay_base = f"http://localhost:{overlay_server.PORT}"
+    else:
+        # Same machine name the browser used to reach this dashboard, minus the Streamlit port.
+        _req_host = (st.context.headers.get("Host") or "localhost").rsplit(":", 1)[0]
+        _overlay_base = f"http://{_req_host}:{overlay_server.PORT}"
+    _overlay_site_labels = {"youtube": "YouTube", "bilibili": "Bilibili", "missevan": t("MissEvan")}
+    st.multiselect(
+        t("Sites on this overlay"), list(_overlay_site_labels), key="overlay_sites",
+        format_func=_overlay_site_labels.get,
+        help=t("Show only some sites' chat — e.g. one Browser Source per site. Adds ?site=… to the overlay URL; "
+               "leave all selected (or empty) for every site."),
+    )
+    _overlay_sites = [s for s in overlay_server.SITES if s in st.session_state["overlay_sites"]]
+    if len(_overlay_sites) == len(overlay_server.SITES):
+        _overlay_sites = []  # every site: keep the URL short
+    _overlay_query = "&".join(
+        ([f"ch={_overlay_ch}"] if _overlay_ch != overlay_server.DEFAULT_CHANNEL else [])
+        + ([f"site={','.join(_overlay_sites)}"] if _overlay_sites else [])
+    )
+    _overlay_url = f"{_overlay_base}/overlay" + (f"?{_overlay_query}" if _overlay_query else "")
     st.info(t(
-        "**How to use**: Add a Browser Source in OBS pointing to `http://localhost:8502/overlay`. "
-        "Keep the dashboard open for live updates."
+        "**How to use**: Add a Browser Source in OBS pointing to `{url}`. "
+        "Keep the dashboard open for live updates.", url=_overlay_url,
     ))
+    if OVERLAY_HOST in ("127.0.0.1", "localhost", "::1"):
+        st.caption(t("The overlay only accepts connections from this computer. If OBS runs on another machine, set OVERLAY_HOST=0.0.0.0 in .env and restart."))
 
     # Live overlay text
     overlay_text = st.text_area(
@@ -1540,8 +1618,12 @@ with tab_obs:
         help=t("Super Chats, gifts and memberships are pinned to the top of the overlay, apart from regular chat, so busy chat never pushes them away. Set to 0 to hide them."),
     )
     overlay_sc_count = int(st.session_state["overlay_sc_count"])
+
+    def _on_overlay(m: dict) -> bool:
+        return not _overlay_sites or m.get("platform") in _overlay_sites
+
     overlay_paid = [
-        m for m in st.session_state["paid_messages"] if m.get("text")
+        m for m in st.session_state["paid_messages"] if m.get("text") and _on_overlay(m)
     ][-overlay_sc_count:] if overlay_sc_count else []
 
     st.divider()
@@ -1550,7 +1632,7 @@ with tab_obs:
     st.markdown("#### " + t("Recent Chat Preview (last {n} messages)", n=overlay_count))
     recent = [
         m for m in st.session_state["chat_messages"]
-        if m.get("type") in ("textMessageEvent", "danmaku") and m.get("text")
+        if m.get("type") in ("textMessageEvent", "danmaku") and m.get("text") and _on_overlay(m)
     ][-overlay_count:]
     if st.session_state["translate_enabled"]:
         tr.prefetch([m["text"] for m in overlay_paid + recent if m.get("type") != "gift"],
@@ -1605,9 +1687,9 @@ with tab_obs:
             overlay_count,
             overlay_sc_count,
             st.session_state["paid_messages"],
-        ))
+        ), _overlay_ch)
     except OSError as exc:
-        st.error(t("Couldn't start the chat overlay on port 8502: {err}", err=str(exc)))
+        st.error(t("Couldn't start the chat overlay on port {port}: {err}", port=overlay_server.PORT, err=str(exc)))
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # TAB: ANALYTICS
@@ -1773,20 +1855,61 @@ with tab_filters:
 # TAB: COOKIES
 # ═══════════════════════════════════════════════════════════════════════════════
 
+def _cookie_verify(site_label: str, cookies: dict) -> Optional[dict]:
+    if site_label == "Bilibili":
+        return bc.verify_bilibili_login(cookies) if "SESSDATA" in cookies else None
+    if site_label == "MissEvan":
+        return me.verify_login(cookies) if cookies else None
+    return ytw.verify_login(cookies) if cookies else None
+
+
 with tab_cookies:
-    st.subheader(t("🍪 Import login cookies from browser"))
+    st.subheader(t("🍪 Import login cookies"))
     st.caption(t(
-        "Reads cookies from a browser installed on this computer. Values never leave this "
-        "machine except when verifying the login with the site itself."
+        "Your logins are yours only: other people opening this dashboard don't see or use them. "
+        "They are kept encrypted in this browser, so they survive a refresh; use 🚪 Clear login to forget them."
     ))
-    if not bc.BROWSER_COOKIE_LIB_OK:
+    _src_browser, _src_paste = t("🧭 Browser on this computer"), t("📋 Paste / upload cookies")
+    # Reading a browser's cookie store means the *server's* browser, so only offer it to the server's own user.
+    _cookie_sources = [_src_browser, _src_paste] if _is_local_client() else [_src_paste]
+    cookie_source = st.radio(
+        t("Source"), _cookie_sources, key="cookie_source", horizontal=True,
+        help=t("Use Paste / upload when the app runs on another computer or a server, "
+               "where it can't see your browser."),
+    )
+    site_label = st.selectbox(t("Site"), list(bc.SITES), key="cookie_site")
+
+    if cookie_source == _src_paste:
+        st.caption(t(
+            "In your own browser, export the site's cookies with an extension such as "
+            "\"Get cookies.txt LOCALLY\" or \"Cookie-Editor\" (Export → JSON or Netscape), or copy the "
+            "Cookie request header from DevTools (F12 → Network → any request to the site). "
+            "Paste it below or upload the exported file. Only cookies for the chosen site are used."
+        ))
+        pasted = st.text_area(t("Cookies"), key="cookie_paste", height=120,
+                              placeholder="SESSDATA=…; bili_jct=…   /   cookies.txt   /   [{\"name\": …}]")
+        uploaded = st.file_uploader(t("…or upload an exported file"), type=["txt", "json"], key="cookie_upload")
+        if st.button(t("Read cookies"), type="primary", key="cookie_parse"):
+            raw = uploaded.getvalue().decode("utf-8", errors="replace") if uploaded else pasted
+            try:
+                cookies = bc.parse_cookie_text(raw, bc.SITES[site_label])
+                if not cookies:
+                    raise bc.CookieReadError(t("No cookies for {site} found in that text.", site=site_label))
+                st.session_state["cookie_result"] = {
+                    "browser": t("the pasted cookies"), "site": site_label, "cookies": cookies,
+                    "verify": _cookie_verify(site_label, cookies),
+                }
+            except bc.CookieReadError as exc:
+                st.session_state.pop("cookie_result", None)
+                st.error(str(exc))
+    elif not bc.BROWSER_COOKIE_LIB_OK:
         st.error(t("browser-cookie3 is not installed. Run `pip install browser-cookie3`."))
     else:
-        col_browser, col_site = st.columns(2)
-        with col_browser:
-            browser_label = st.selectbox(t("Browser"), list(bc.BROWSERS), key="cookie_browser")
-        with col_site:
-            site_label = st.selectbox(t("Site"), list(bc.SITES), key="cookie_site")
+        st.caption(t(
+            "Reads cookies from a browser installed on this computer. Values never leave this "
+            "machine except when verifying the login with the site itself."
+        ))
+        browser_label = st.selectbox(t("Browser"), list(bc.BROWSERS), key="cookie_browser")
         st.caption(t(
             "Chrome/Edge on Windows encrypt cookies with app-bound encryption and may require "
             "running the app as administrator. Firefox works without elevation. Close the "
@@ -1797,90 +1920,79 @@ with tab_cookies:
             try:
                 cookies = bc.read_cookies(bc.BROWSERS[browser_label], bc.SITES[site_label])
                 st.session_state["cookie_result"] = {
-                    "browser": browser_label,
-                    "site": site_label,
-                    "cookies": cookies,
-                    "verify": bc.verify_bilibili_login(cookies)
-                    if site_label == "Bilibili" and "SESSDATA" in cookies
-                    else me.verify_login(cookies)
-                    if site_label == "MissEvan" and cookies
-                    else ytw.verify_login(cookies)
-                    if site_label == "YouTube" and cookies
-                    else None,
+                    "browser": browser_label, "site": site_label, "cookies": cookies,
+                    "verify": _cookie_verify(site_label, cookies),
                 }
             except bc.CookieReadError as exc:
                 st.session_state.pop("cookie_result", None)
                 st.error(str(exc))
 
-        result = st.session_state.get("cookie_result")
-        if result:
-            cookies = result["cookies"]
-            st.markdown(t("**{n} cookies** found for {site} in {browser}.", n=len(cookies), site=result["site"], browser=result["browser"]))
-            st.checkbox(
-                t("💾 Also save to .env (keep login after restart)"), key="cookie_persist",
-                help=t("Off: cookies are kept only in this app's memory and never written to disk; "
-                       "re-import them after restarting. On: also written to .env in plain text."),
+    result = st.session_state.get("cookie_result")
+    if result:
+        cookies = result["cookies"]
+        st.markdown(t("**{n} cookies** found for {site} in {browser}.", n=len(cookies), site=result["site"], browser=result["browser"]))
+
+        if result["site"] == "Bilibili":
+            rows = [
+                {t("Cookie"): name, t("Value"): bc.mask(cookies[name]) if name in cookies else t("❌ missing")}
+                for name in bc.BILIBILI_LOGIN_COOKIES
+            ]
+            st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
+
+            verify = result["verify"]
+            if verify and verify["is_login"]:
+                st.success(t("Logged in as **{uname}** (UID {mid}).", uname=verify["uname"], mid=verify["mid"]))
+            elif verify:
+                st.warning(t("Bilibili reports these cookies are not logged in (expired or signed out)."))
+            else:
+                st.warning(t("No SESSDATA cookie found — log in to bilibili.com in this browser first."))
+
+            if "SESSDATA" in cookies and "bili_jct" in cookies:
+                if st.button(t("✅ Use these cookies"), key="bili_save_browser"):
+                    bc.save_bilibili_credentials(cookies)
+                    msg = _cookie_applied_msg()
+                    old = st.session_state.get("bili_listener")
+                    if old:
+                        # Credentials are bound at connect time, so reconnect to use the new login.
+                        old.stop()
+                        new_listener = bili.DanmakuListener(str(old.room_id))
+                        if new_listener.start():
+                            st.session_state["bili_listener"] = new_listener
+                            msg += t(" Bilibili listener reconnected with the new login.")
+                    st.success(msg)
+        elif result["site"] == "MissEvan":
+            _render_missevan_verify(result["verify"], cookies, "me_save_browser")
+        else:
+            found = [name for name in bc.YOUTUBE_LOGIN_COOKIES if name in cookies]
+            verify = result["verify"]
+            if verify and verify["is_login"]:
+                st.success(t("Logged in to YouTube as **{name}**.", name=verify["name"]))
+                if st.button(t("✅ Use these cookies"), key="yt_save_browser"):
+                    ytw.save_login(cookies)
+                    st.session_state["_yt_saved_name"] = verify["name"]
+                    st.session_state["_yt_saved_msg"] = _cookie_applied_msg()
+                if st.session_state.get("_yt_saved_name") == verify["name"]:
+                    st.success(st.session_state.get("_yt_saved_msg", "") + " "
+                               + t("You can now send YouTube chat."))
+                st.caption(t(
+                    "Cookie login is unofficial (it works like youtube.com itself) and may break if YouTube "
+                    "changes it."
+                ))
+            elif verify and verify.get("error"):
+                st.error(verify["error"])
+            elif found:
+                st.warning(t("YouTube reports these cookies are not logged in (expired or signed out)."))
+            else:
+                st.warning(t("No YouTube login cookies found — log in to youtube.com in this browser first."))
+
+        with st.expander(t("All cookie names (values masked)")):
+            st.dataframe(
+                pd.DataFrame([{t("Cookie"): k, t("Value"): bc.mask(v)} for k, v in sorted(cookies.items())]),
+                hide_index=True,
+                width="stretch",
             )
 
-            if result["site"] == "Bilibili":
-                rows = [
-                    {t("Cookie"): name, t("Env var"): env, t("Value"): bc.mask(cookies[name]) if name in cookies else t("❌ missing")}
-                    for name, env in bc.BILIBILI_ENV_KEYS.items()
-                ]
-                st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
-
-                verify = result["verify"]
-                if verify and verify["is_login"]:
-                    st.success(t("Logged in as **{uname}** (UID {mid}).", uname=verify["uname"], mid=verify["mid"]))
-                elif verify:
-                    st.warning(t("Bilibili reports these cookies are not logged in (expired or signed out)."))
-                else:
-                    st.warning(t("No SESSDATA cookie found — log in to bilibili.com in this browser first."))
-
-                if "SESSDATA" in cookies and "bili_jct" in cookies:
-                    if st.button(t("✅ Use these cookies"), key="bili_save_browser"):
-                        saved = bc.save_bilibili_credentials(cookies, persist=_cookie_persist())
-                        msg = _cookie_applied_msg(", ".join(saved))
-                        old = st.session_state.get("bili_listener")
-                        if old:
-                            # Credentials are bound at connect time, so reconnect to use the new login.
-                            old.stop()
-                            new_listener = bili.DanmakuListener(str(old.room_id))
-                            if new_listener.start():
-                                st.session_state["bili_listener"] = new_listener
-                                msg += t(" Bilibili listener reconnected with the new login.")
-                        st.success(msg)
-            elif result["site"] == "MissEvan":
-                _render_missevan_verify(result["verify"], cookies, "me_save_browser")
-            else:
-                found = [name for name in bc.YOUTUBE_LOGIN_COOKIES if name in cookies]
-                verify = result["verify"]
-                if verify and verify["is_login"]:
-                    st.success(t("Logged in to YouTube as **{name}**.", name=verify["name"]))
-                    if st.button(t("✅ Use these cookies"), key="yt_save_browser"):
-                        ytw.save_login(cookies, persist=_cookie_persist())
-                        st.session_state["_yt_saved_name"] = verify["name"]
-                        st.session_state["_yt_saved_msg"] = _cookie_applied_msg("YOUTUBE_COOKIE")
-                    if st.session_state.get("_yt_saved_name") == verify["name"]:
-                        st.success(st.session_state.get("_yt_saved_msg", "") + " "
-                                   + t("You can now send YouTube chat."))
-                    st.caption(t(
-                        "Cookie login is unofficial (it works like youtube.com itself) and may break if YouTube "
-                        "changes it."
-                    ))
-                elif verify and verify.get("error"):
-                    st.error(verify["error"])
-                elif found:
-                    st.warning(t("YouTube reports these cookies are not logged in (expired or signed out)."))
-                else:
-                    st.warning(t("No YouTube login cookies found — log in to youtube.com in this browser first."))
-
-            with st.expander(t("All cookie names (values masked)")):
-                st.dataframe(
-                    pd.DataFrame([{t("Cookie"): k, t("Value"): bc.mask(v)} for k, v in sorted(cookies.items())]),
-                    hide_index=True,
-                    width="stretch",
-                )
+_sync_login_cookie()
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Auto-refresh: a browser-side timer reruns the app. Sleeping + st.rerun() on the

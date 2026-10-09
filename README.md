@@ -19,7 +19,7 @@ The UI is available in **English / 简体中文 / 日本語** and fits PC and ta
 | 📡 **Stream Monitoring** | Per-site controls (stream URL / room ID, start/stop listener, login status) plus live / offline state, title and viewer count for each platform. |
 | 🎬 **OBS** | One streamer-only tab for everything OBS: connect, start/stop stream & recording, switch scenes and sources (OBS WebSocket v5), send chat to an OBS Text source, and the chat-only Browser Source overlay. Off until you turn on *Connect to OBS* in that tab. |
 | 📊 **Analytics** | Viewer count (sampled from Stream Monitoring) and messages-per-minute charts, top chatters. |
-| 🍪 **Cookies** | Import login cookies from your browser (Chrome / Edge / Firefox …) for Bilibili, MissEvan and YouTube. |
+| 🍪 **Cookies** | Import login cookies for Bilibili, MissEvan and YouTube — read from a browser on this computer (Chrome / Edge / Firefox), or paste / upload cookies exported from any browser (for servers). |
 
 ## Requirements
 
@@ -37,7 +37,7 @@ pip install -r requirements.txt
 
 ## Configuration
 
-Settings are read from a `.env` file in the project root (loaded with `python-dotenv`). Start by copying the template: `Copy-Item env.template .env` (macOS/Linux: `cp env.template .env`). All values are optional — fill in only the platforms you use. Cookie values can be imported **by the app** from the 🍪 Cookies tab, so you rarely need to edit them by hand. By default imported cookies are kept in memory only (never written to disk, re-import after a restart); tick **Also save to .env** to keep them across restarts.
+Settings are read from a `.env` file in the project root (loaded with `python-dotenv`). Start by copying the template: `Copy-Item env.template .env` (macOS/Linux: `cp env.template .env`). All values are optional — fill in only the platforms you use. Site logins are **not** set in `.env`: each person imports their own cookies in the 🍪 Cookies tab (see [Logging in to send chat](#logging-in-to-send-chat)).
 
 The template only contains placeholder values (`your-…`, `xxx`). **Replace them or delete those lines** — a placeholder is treated as a real setting (e.g. a placeholder `OBS_PASSWORD` makes the app try to log in to OBS with it).
 
@@ -45,22 +45,19 @@ The template only contains placeholder values (`your-…`, `xxx`). **Replace the
 |---|---|---|
 | `YOUTUBE_API_KEY` | YouTube Data API key — optional; reading chat and stream status fall back to the public web page without it (or when the quota runs out) | — |
 | `YOUTUBE_CHANNEL` | Default YouTube channel link (or stream URL) in the Stream Monitoring tab; click *Start listening* to watch it | `https://www.youtube.com/@Ya-chan` |
-| `YOUTUBE_COOKIE` | YouTube login cookies (for sending chat) | — |
-| `YOUTUBE_PAGE_ID` | Channel to send YouTube chat as, for Google logins with several channels (set by **Send as**) | main channel |
 | `BILIBILI_ROOM_ID` | Default Bilibili live room | — |
-| `BILIBILI_SESSDATA` | Bilibili login cookie | — |
-| `BILIBILI_BILI_JCT` | Bilibili CSRF cookie | — |
-| `BILIBILI_BUVID3` | Bilibili device cookie | — |
-| `BILIBILI_DEDEUSERID` | Bilibili user ID cookie | — |
 | `MISSEVAN_ROOM_ID` | Default MissEvan live room | `869215180` |
-| `MISSEVAN_COOKIE` | MissEvan login cookies (for sending chat) | — |
 | `OBS_HOST` | OBS WebSocket host | `localhost` |
 | `OBS_PORT` | OBS WebSocket port | `4455` |
 | `OBS_PASSWORD` | OBS WebSocket password | — |
+| `OVERLAY_HOST` | Chat overlay listen address: `127.0.0.1` = this computer only, `0.0.0.0` = reachable from other machines | `127.0.0.1` |
+| `OVERLAY_PORT` | Chat overlay port | `8502` |
+| `OVERLAY_PUBLIC_URL` | Overlay address shown in the 🎬 OBS tab (e.g. `http://203.0.113.5:8502` or a reverse-proxy URL) | auto |
 | `TTS_USE_GTTS` | `true` = online gTTS, `false` = offline pyttsx3 | `false` |
 | `CHAT_POLL_INTERVAL` | Chat refresh interval in seconds | `5` |
+| `LOGIN_SECRET` | Key that encrypts each user's logins in their browser. Changing it logs everyone out | random, in `.login_secret` |
 
-> ⚠️ `.env` contains login secrets and is listed in `.gitignore`. Never commit or share them.
+> ⚠️ `.env` and `.login_secret` contain secrets and are listed in `.gitignore`. Never commit or share them.
 
 ## Running
 
@@ -90,12 +87,15 @@ What goes in **Room ID or URL**:
 ### Logging in to send chat
 
 1. Log in to the site in your normal browser.
-2. In the **🍪 Cookies** tab pick the browser and site, then import the cookies and click **Use these cookies** (memory only unless **Also save to .env** is ticked).
+2. In the **🍪 Cookies** tab pick the browser and site, then import the cookies and click **Use these cookies**.
+   - **App running on a server / another computer?** The app can only read a browser installed on the machine it runs on (otherwise you get `Could not find Firefox profile directory`), so **🧭 Browser on this computer** is only offered when the dashboard is opened on that machine itself. Choose **📋 Paste / upload cookies** instead and paste cookies exported from your own browser: a `Cookie:` header copied from DevTools (F12 → Network), or an export from an extension such as *Get cookies.txt LOCALLY* (Netscape `cookies.txt`) or *Cookie-Editor* (JSON). Upload the exported file if you prefer.
 3. Tick the sites under **Send to** above the message box and send.
 
-The 🔑 line in each **📡 Stream Monitoring** column shows the login state. Sending to MissEvan is disabled when its cookies have expired. Click **🚪 Clear login** under it to forget that site's cookies — they are removed from memory and from `.env`, and chat keeps working read-only.
+**Logins are per user.** Everyone who opens the dashboard has their own logins: your cookies are never used or shown for anyone else, and other users can't send chat as you. Your logins are stored only in your own browser as an encrypted cookie (the server keeps only the key, `LOGIN_SECRET` / `.login_secret`), so they survive a page refresh or server restart. Opening the dashboard in another browser or a private window starts logged out. Listeners you start use the login you had when you started them.
 
-If your Google login owns several YouTube channels (brand accounts), a **Send as** picker appears under the YouTube login line. Pick the channel your chat messages should come from. The choice is kept in memory, or saved to `.env` as `YOUTUBE_PAGE_ID` when cookie saving to `.env` is enabled. To use a different Google account, import that account's cookies in the 🍪 Cookies tab.
+The 🔑 line in each **📡 Stream Monitoring** column shows the login state. Sending to MissEvan is disabled when its cookies have expired. Click **🚪 Clear login** under it to forget that site's cookies — they are removed from this session and this browser, and chat keeps working read-only.
+
+If your Google login owns several YouTube channels (brand accounts), a **Send as** picker appears under the YouTube login line. Pick the channel your chat messages should come from. The choice is per user and remembered with your login. To use a different Google account, import that account's cookies in the 🍪 Cookies tab.
 
 Sending to YouTube with browser cookies is unofficial (it works like youtube.com itself) and only works on streams with chat enabled.
 
@@ -132,7 +132,9 @@ In OBS: **Tools → WebSocket Server Settings**, enable the server and set the s
 
 To show chat in OBS, add a **Text (GDI+)** source (or a FreeType text source), then enable **Send chat to OBS Text source** in the 🎬 OBS tab and select it. The source shows the last 10 regular chat messages, oldest first, without usernames or badges. When **Translate chat** is enabled, each available translation appears beneath its original; turning it off removes translations on the next update. OBS chat output is opt-in and uses the configured WebSocket server; the separate Browser Source overlay preview does not update this Text source.
 
-Alternatively, add an OBS **Browser Source** pointed at `http://localhost:8502/overlay` (not `:8501/overlay`). This local-only page pins Super Chats, gifts and memberships (Bilibili SC and gifts, MissEvan paid questions and gifts, YouTube Super Chats/Stickers and memberships) to the top of the overlay and regular chat to the bottom, so busy chat never pushes paid events away (3 by default; set **Super Chats & gifts shown in OBS overlay** to 0 to hide), then the most recent regular chat messages (5 by default; change **Messages shown in OBS overlay** in the 🎬 OBS tab, 1–50), available translations only when **Translate chat** is enabled, and the optional custom overlay message. In the 🎬 OBS tab, turn off **Show usernames in OBS overlay** to display chat text without usernames (on by default); the preview follows the same setting. Bilibili custom emotes (e.g. `[doge]`) and sticker danmaku appear as images in the dashboard, preview and Browser Source; the OBS Text source can only show the text code. Keep the dashboard open for updates. Port 8502 must be free; an error in the 🎬 OBS tab reports if the local server cannot start. The Browser Source works even when *Connect to OBS* is off. OBS on another computer cannot reach this loopback address.
+Alternatively, add an OBS **Browser Source** pointed at `http://localhost:8502/overlay` (not `:8501/overlay`). This page pins Super Chats, gifts and memberships (Bilibili SC and gifts, MissEvan paid questions and gifts, YouTube Super Chats/Stickers and memberships) to the top of the overlay and regular chat to the bottom, so busy chat never pushes paid events away (3 by default; set **Super Chats & gifts shown in OBS overlay** to 0 to hide), then the most recent regular chat messages (5 by default; change **Messages shown in OBS overlay** in the 🎬 OBS tab, 1–50), available translations only when **Translate chat** is enabled, and the optional custom overlay message. In the 🎬 OBS tab, turn off **Show usernames in OBS overlay** to display chat text without usernames (on by default); the preview follows the same setting. Bilibili custom emotes (e.g. `[doge]`) and sticker danmaku appear as images in the dashboard, preview and Browser Source; the OBS Text source can only show the text code. Keep the dashboard open for updates. Port 8502 (`OVERLAY_PORT`) must be free; an error in the 🎬 OBS tab reports if the overlay server cannot start. The Browser Source works even when *Connect to OBS* is off. By default the overlay listens only on `127.0.0.1`; when the dashboard runs on a server, set `OVERLAY_HOST=0.0.0.0` (and open the port in the firewall) so OBS on your PC can load `http://<server>:8502/overlay` — the 🎬 OBS tab shows the exact URL. The overlay is read-only and only shows public chat. If several people use the same dashboard, give each one a different **Overlay channel** in the 🎬 OBS tab (adds `?ch=name` to the overlay URL); otherwise every open dashboard publishes to the same overlay and the last one wins.
+
+To show only some sites on an overlay, pick them under **Sites on this overlay** in the 🎬 OBS tab, or add `site=` to the URL yourself: `/overlay?site=youtube`, `/overlay?site=bilibili,missevan`, `/overlay?ch=alice&site=bili` (short names `yt`, `bili`, `me` also work). Each URL gets its own full message counts, so you can add one Browser Source per site (e.g. YouTube chat on one side, Bilibili on the other). Without `site=` every site is shown.
 
 ## Project structure
 
@@ -140,7 +142,8 @@ Alternatively, add an OBS **Browser Source** pointed at `http://localhost:8502/o
 app.py                 Streamlit UI (all tabs, sidebar, CSS)
 requirements.txt       Python dependencies
 env.template           Template for .env (placeholder values only)
-.env                   Your settings and login cookies        (created by you / the app, git-ignored)
+.env                   Your settings                          (created by you, git-ignored)
+.login_secret          Key encrypting users' browser-stored logins (created by the app, git-ignored)
 chat_filters.json      Saved blocks and filters               (created by the app, git-ignored)
 src/
   config.py            .env settings
@@ -150,7 +153,8 @@ src/
   bilibili.py          Bilibili danmaku listener, gifts, send, moderation
   emotes.py            Bilibili emote/sticker image parsing and safe rendering
   missevan.py          MissEvan (猫耳FM) chat listener, login & send
-  browser_cookies.py   Import cookies from installed browsers
+  browser_cookies.py   Import cookies from installed browsers or pasted/exported text
+  user_login.py        Per-user logins (session + encrypted browser cookie)
   filters.py           Keyword / regex / user chat filters (saved to chat_filters.json)
   translate.py         Background, cached chat translation
   reading.py           Pinyin / hiragana reading aids
@@ -162,7 +166,8 @@ src/
 
 | Problem | Fix |
 |---|---|
-| OBS shows "not connected" | OBS isn't running or its WebSocket server is off — start OBS / enable the server and check `OBS_PORT` / `OBS_PASSWORD`. If you don't use OBS, turn off *Connect to OBS*. |
+| OBS shows "not connected" | The warning names the cause. *Nothing answered*: OBS isn't running or its WebSocket server is off — start OBS / enable the server and check `OBS_HOST` / `OBS_PORT`. *Refused the login*: wrong `OBS_PASSWORD`. If you don't use OBS, turn off *Connect to OBS*. |
+| OBS not connected when the dashboard runs on a server | `OBS_HOST=localhost` means the server itself. Set `OBS_HOST` to the IP of the PC running OBS, make it reachable from the server (same LAN, VPN such as Tailscale, or a port forward) and allow port 4455 in that PC's firewall. The chat overlay (`:8502`) listens only on `127.0.0.1` unless you set `OVERLAY_HOST=0.0.0.0` and allow the port in the server firewall. |
 | `bilibili-api-python not installed or connection failed` | Run `pip install -r requirements.txt` inside the venv; check the room ID and network. |
 | YouTube send: "Chat is disabled" | The stream has chat turned off or is not live. |
 | Some languages aren't read aloud offline | Offline TTS uses the voices installed in Windows. Check *Settings → Time & language → Speech* for a Chinese / Japanese voice, or set `TTS_USE_GTTS=true`. |

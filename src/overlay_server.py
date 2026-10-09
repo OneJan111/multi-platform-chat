@@ -1,20 +1,38 @@
-"""Local, read-only browser source for the live chat overlay."""
+"""Read-only browser source for the live chat overlay (local by default; see OVERLAY_HOST)."""
 from __future__ import annotations
 
 import json
+import re
 import socket
 import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Callable
+from urllib.parse import parse_qs, urlparse
 
 from src import emotes
+from src.config import OVERLAY_HOST, OVERLAY_PORT
 
-PORT = 8502
+PORT = OVERLAY_PORT
 MAX_MESSAGES = 50
+DEFAULT_CHANNEL = "main"
+MAX_CHANNELS = 50
+_EMPTY = {"messages": [], "paid": [], "custom_text": ""}
+_CHANNEL_RE = re.compile(r"[^A-Za-z0-9_-]")
+SITES = ("youtube", "bilibili", "missevan")
+SITE_ALIASES = {
+    "youtube": "youtube", "yt": "youtube",
+    "bilibili": "bilibili", "bili": "bilibili",
+    "missevan": "missevan", "me": "missevan", "maoer": "missevan",
+}
 # Streamlit re-imports edited modules, so module globals would forget the running
 # server; keep the singleton on `sys`, which survives reloads.
 _STATE = sys.__dict__.setdefault("_multi_platform_chat_overlay", {"lock": threading.Lock(), "server": None})
+
+
+def clean_channel(name: str) -> str:
+    """Overlay channel name: letters, digits, '-' and '_' only (max 40); empty means the default."""
+    return _CHANNEL_RE.sub("", name or "")[:40] or DEFAULT_CHANNEL
 
 
 def is_superchat(msg: dict) -> bool:
@@ -33,13 +51,13 @@ def snapshot(messages: list[dict], translate_enabled: bool, target: str,
     """
     count = max(1, min(int(count), MAX_MESSAGES))
     paid_count = max(0, min(int(paid_count), MAX_MESSAGES))
-    chat = [
+    chat = _last_per_site([
         m for m in messages
         if m.get("type") in ("textMessageEvent", "danmaku") and m.get("text")
-    ][-count:]
+    ], count)
     if paid_messages is None:
         paid_messages = [m for m in messages if is_superchat(m)]
-    paid = [m for m in paid_messages if m.get("text")][-paid_count:] if paid_count else []
+    paid = _last_per_site([m for m in paid_messages if m.get("text")], paid_count) if paid_count else []
 
     def item_for(msg: dict) -> dict:
         text = msg["text"]
@@ -69,6 +87,50 @@ def snapshot(messages: list[dict], translate_enabled: bool, target: str,
         "paid": [item_for(m) for m in paid],
         "messages": [item_for(m) for m in chat],
         "custom_text": custom_text,
+        "count": count,
+        "paid_count": paid_count,
+    }
+
+
+def _last_per_site(messages: list[dict], n: int) -> list[dict]:
+    """The last `n` messages of each site, in their original order.
+
+    Kept per site so an overlay showing only one site (?site=…) still gets `n` lines.
+    """
+    kept: dict[str, int] = {}
+    out = []
+    for msg in reversed(messages):
+        site = msg.get("platform", "")
+        if kept.get(site, 0) < n:
+            kept[site] = kept.get(site, 0) + 1
+            out.append(msg)
+    out.reverse()
+    return out
+
+
+def parse_sites(values: list[str]) -> set[str]:
+    """`?site=youtube,bili&site=me` -> {"youtube", "bilibili", "missevan"}; empty = every site."""
+    sites = set()
+    for value in values:
+        for part in value.lower().split(","):
+            if (site := SITE_ALIASES.get(part.strip())):
+                sites.add(site)
+    return sites
+
+
+def view(data: dict, sites: set[str]) -> dict:
+    """What one overlay URL shows: only `sites` (all when empty), trimmed to the configured counts."""
+    def pick(items: list[dict], n: int) -> list[dict]:
+        if sites:
+            items = [m for m in items if m.get("platform") in sites]
+        return items[-n:] if n else []
+
+    count = data.get("count", MAX_MESSAGES)
+    paid_count = data.get("paid_count", MAX_MESSAGES)
+    return {
+        "paid": pick(data.get("paid", []), paid_count),
+        "messages": pick(data.get("messages", []), count),
+        "custom_text": data.get("custom_text", ""),
     }
 
 
@@ -146,7 +208,7 @@ function renderList(id, messages, cls) {
 }
 async function refresh() {
   try {
-    const response = await fetch("/overlay/data", {cache: "no-store"});
+    const response = await fetch("/overlay/data" + location.search, {cache: "no-store"});
     if (!response.ok) throw new Error(`Overlay HTTP ${response.status}`);
     const data = await response.json();
     renderList("paid", data.paid, "message paid-item");
@@ -165,11 +227,16 @@ setInterval(refresh, 2000);
 
 class _Handler(BaseHTTPRequestHandler):
     def do_GET(self):
-        if self.path == "/overlay":
+        url = urlparse(self.path)
+        if url.path == "/overlay":
             body, content_type = _PAGE, "text/html; charset=utf-8"
-        elif self.path == "/overlay/data":
+        elif url.path == "/overlay/data":
+            query = parse_qs(url.query)
+            channel = clean_channel(query.get("ch", [""])[0])
+            sites = parse_sites(query.get("site", []))
             with self.server.snapshot_lock:
-                body = json.dumps(self.server.data, ensure_ascii=False).encode("utf-8")
+                data = self.server.channels.get(channel, _EMPTY)
+            body = json.dumps(view(data, sites), ensure_ascii=False).encode("utf-8")
             content_type = "application/json; charset=utf-8"
         else:
             self.send_error(404)
@@ -196,21 +263,38 @@ class OverlayServer(ThreadingHTTPServer):
             self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
         super().server_bind()
 
-    def __init__(self, port: int = PORT):
-        super().__init__(("127.0.0.1", port), _Handler)
+    def __init__(self, port: int = OVERLAY_PORT, host: str = "127.0.0.1"):
+        super().__init__((host, port), _Handler)
         self.snapshot_lock = threading.Lock()
-        self.data: dict = {"messages": [], "custom_text": ""}
+        # One snapshot per overlay channel, so several dashboards can each drive their own overlay.
+        self.channels: dict[str, dict] = {}
 
-    def publish(self, data: dict) -> None:
+    @property
+    def data(self) -> dict:
         with self.snapshot_lock:
-            self.data = data
+            return self.channels.get(DEFAULT_CHANNEL, _EMPTY)
+
+    def publish(self, data: dict, channel: str = DEFAULT_CHANNEL) -> None:
+        channel = clean_channel(channel)
+        with self.snapshot_lock:
+            if channel not in self.channels and len(self.channels) >= MAX_CHANNELS:
+                self.channels.pop(next(iter(self.channels)))
+            self.channels[channel] = data
 
 
 def ensure_started() -> OverlayServer:
     """Keep one server alive across Streamlit reruns; propagate bind failures."""
     with _STATE["lock"]:
+        old = _STATE["server"]
+        if old is not None and isinstance(old, ThreadingHTTPServer) and (
+            not hasattr(old, "channels") or old.server_address[0] != OVERLAY_HOST
+        ):
+            # Started by an older version of this module (or with another OVERLAY_HOST): replace it.
+            old.shutdown()
+            old.server_close()
+            _STATE["server"] = None
         if _STATE["server"] is None:
-            server = OverlayServer()
+            server = OverlayServer(OVERLAY_PORT, OVERLAY_HOST)
             threading.Thread(target=server.serve_forever, name="chat-overlay", daemon=True).start()
             _STATE["server"] = server
         return _STATE["server"]

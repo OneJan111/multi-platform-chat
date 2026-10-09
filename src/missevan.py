@@ -3,16 +3,16 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import re
 import threading
 import time
 import uuid
 from datetime import datetime
-from pathlib import Path
 from typing import Optional
 
 import requests
+
+from src import user_login
 
 log = logging.getLogger(__name__)
 
@@ -21,7 +21,6 @@ _API = "https://fm.missevan.com/api"
 _WS_URL = "wss://im.missevan.com/ws?room_id={room_id}"
 _HEARTBEAT = "\u2764\ufe0f"  # the site's keep-alive frame is literally "❤️"
 _HEARTBEAT_EVERY = 25
-_ENV_FILE = Path(__file__).resolve().parent.parent / ".env"
 
 
 def parse_room_id(text: str) -> str:
@@ -42,7 +41,8 @@ def parse_cookie_string(raw: str) -> dict[str, str]:
 
 
 def login_cookies() -> dict[str, str]:
-    return parse_cookie_string(os.getenv("MISSEVAN_COOKIE", ""))
+    """The current user's MissEvan cookies (per browser session, see user_login)."""
+    return user_login.get("missevan")
 
 
 def has_login() -> bool:
@@ -69,23 +69,18 @@ def verify_login(cookies: Optional[dict[str, str]] = None) -> dict:
         return {"is_login": False, "username": "", "user_id": 0, "error": str(exc)}
 
 
-def save_login(cookies: dict[str, str], persist: bool = False) -> None:
-    """Apply the cookies (as one Cookie-header string) to the running process; also write .env when `persist`."""
-    value = "; ".join(f"{k}={v}" for k, v in cookies.items())
-    if persist:
-        from dotenv import set_key
-
-        _ENV_FILE.touch(exist_ok=True)
-        set_key(str(_ENV_FILE), "MISSEVAN_COOKIE", value)
-    os.environ["MISSEVAN_COOKIE"] = value
+def save_login(cookies: dict[str, str]) -> None:
+    """Use these cookies for the current user only."""
+    user_login.set_site("missevan", cookies)
 
 
 def send_message(room_id: str, message: str) -> tuple[bool, str]:
     """Post a chat message to a live room as the logged-in user. Returns (ok, error message)."""
-    if not has_login():
+    cookies = login_cookies()
+    if not cookies:
         return False, "Not logged in to MissEvan — import cookies in the 🍪 Cookies tab."
     try:
-        s = _session()
+        s = _session(cookies)
         body = {"room_id": int(room_id), "message": message, "uuid": str(uuid.uuid4())}
         csrf = s.cookies.get("bili_jct")
         if csrf:
@@ -171,6 +166,8 @@ class MissEvanListener:
         self._creator_id: Optional[int] = None
         self._admins: set[int] = set()
         self._seen: set[str] = set()
+        # The starting user's login, captured here: the listener thread has no Streamlit session.
+        self._cookies = login_cookies()
 
     @property
     def running(self) -> bool:
@@ -214,7 +211,7 @@ class MissEvanListener:
         delay = 2
         while self._running:
             try:
-                s = _session()
+                s = _session(self._cookies)
                 self._admins = _admins(s, self.room_id)
                 if first:
                     self._load_history(s)

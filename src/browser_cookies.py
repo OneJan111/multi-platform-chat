@@ -1,11 +1,9 @@
 """Read login cookies for Bilibili / YouTube from a locally installed browser."""
 from __future__ import annotations
 
-import os
-from pathlib import Path
-
 import requests
-from dotenv import dotenv_values, set_key, unset_key
+
+from src import user_login
 
 try:
     import browser_cookie3
@@ -13,17 +11,10 @@ try:
 except ImportError:
     BROWSER_COOKIE_LIB_OK = False
 
-ENV_FILE = Path(__file__).resolve().parent.parent / ".env"
-
 BROWSERS = {"Firefox": "firefox", "Chrome": "chrome", "Edge": "edge"}
 SITES = {"Bilibili": "bilibili.com", "YouTube": "youtube.com", "MissEvan": "missevan.com"}
 
-BILIBILI_ENV_KEYS = {
-    "SESSDATA": "BILIBILI_SESSDATA",
-    "bili_jct": "BILIBILI_BILI_JCT",
-    "buvid3": "BILIBILI_BUVID3",
-    "DedeUserID": "BILIBILI_DEDEUSERID",
-}
+BILIBILI_LOGIN_COOKIES = ("SESSDATA", "bili_jct", "buvid3", "DedeUserID")
 YOUTUBE_LOGIN_COOKIES = ("SID", "HSID", "SSID", "APISID", "SAPISID", "LOGIN_INFO")
 
 
@@ -57,6 +48,57 @@ def read_cookies(browser: str, domain: str) -> dict[str, str]:
     return cookies
 
 
+def parse_cookie_text(text: str, domain: str) -> dict[str, str]:
+    """Parse pasted/exported cookies for `domain`.
+
+    Accepts a Netscape cookies.txt export, a JSON export (list of {name, value, domain}
+    objects, e.g. Cookie-Editor), or a raw "name=value; name2=value2" Cookie header.
+    """
+    text = (text or "").strip().lstrip("\ufeff")
+    if not text:
+        return {}
+
+    def _matches(cookie_domain: str) -> bool:
+        cookie_domain = (cookie_domain or "").lstrip(".").lower()
+        return not cookie_domain or cookie_domain == domain or cookie_domain.endswith("." + domain)
+
+    if text[0] in "[{":
+        import json
+
+        try:
+            data = json.loads(text)
+        except ValueError as exc:
+            raise CookieReadError(f"Couldn't parse the JSON cookie export: {exc}") from exc
+        items = data.get("cookies", []) if isinstance(data, dict) else data
+        return {
+            str(c["name"]): str(c.get("value", ""))
+            for c in items
+            if isinstance(c, dict) and "name" in c and _matches(c.get("domain", ""))
+        }
+
+    lines = [ln for ln in text.splitlines() if ln.strip()]
+    tab_rows = [ln.split("\t") for ln in lines if not ln.startswith("#") or ln.startswith("#HttpOnly_")]
+    if any(len(row) >= 7 for row in tab_rows):
+        cookies: dict[str, str] = {}
+        for row in tab_rows:
+            if len(row) < 7:
+                continue
+            host = row[0].removeprefix("#HttpOnly_")
+            if _matches(host):
+                cookies[row[5]] = row[6].strip()
+        return cookies
+
+    header = " ".join(lines)
+    if header.lower().startswith("cookie:"):
+        header = header[7:]
+    cookies = {}
+    for part in header.split(";"):
+        name, sep, value = part.strip().partition("=")
+        if sep and name:
+            cookies[name.strip()] = value.strip()
+    return cookies
+
+
 def _co_initialize():
     """Initialise COM for the current thread; return pythoncom to uninitialise later, or None."""
     try:
@@ -84,6 +126,12 @@ def _friendly_error(browser: str, exc: Exception) -> str:
             f"Could not decrypt {browser.title()} cookies ({exc}). Close the browser completely "
             "and retry, or use Firefox."
         )
+    if "profile" in str(exc).lower() and "find" in str(exc).lower():
+        return (
+            f"{browser.title()} isn't installed (or has no profile) on the computer running this app. "
+            "If the app runs on a server, export the cookies from your own browser and use "
+            "📋 Paste / upload cookies instead."
+        )
     if "permission" in str(exc).lower() or "locked" in str(exc).lower():
         return f"{browser.title()} cookie database is locked. Close the browser and retry."
     return f"{name}: {exc}"
@@ -100,7 +148,7 @@ def verify_bilibili_login(cookies: dict[str, str]) -> dict:
     try:
         resp = requests.get(
             "https://api.bilibili.com/x/web-interface/nav",
-            cookies={k: cookies[k] for k in BILIBILI_ENV_KEYS if k in cookies},
+            cookies={k: cookies[k] for k in BILIBILI_LOGIN_COOKIES if k in cookies},
             headers={"User-Agent": "Mozilla/5.0", "Referer": "https://www.bilibili.com"},
             timeout=5,
         )
@@ -114,29 +162,13 @@ def verify_bilibili_login(cookies: dict[str, str]) -> dict:
         return {"is_login": False, "uname": "", "mid": 0, "error": str(exc)}
 
 
-def save_bilibili_credentials(cookies: dict[str, str], persist: bool = False) -> list[str]:
-    """Apply Bilibili cookies to the running process; also write them to .env when `persist`."""
-    if persist:
-        ENV_FILE.touch(exist_ok=True)
-    saved = []
-    for cookie_name, env_key in BILIBILI_ENV_KEYS.items():
-        value = cookies.get(cookie_name)
-        if value:
-            if persist:
-                set_key(str(ENV_FILE), env_key, value)
-            os.environ[env_key] = value
-            saved.append(env_key)
-    return saved
+def save_bilibili_credentials(cookies: dict[str, str]) -> list[str]:
+    """Use these Bilibili cookies for the current user only. Returns the cookie names kept."""
+    kept = {name: cookies[name] for name in BILIBILI_LOGIN_COOKIES if cookies.get(name)}
+    user_login.set_site("bilibili", kept)
+    return list(kept)
 
 
-def clear_login(env_keys: list[str]) -> list[str]:
-    """Remove login cookies from the running process and from .env. Returns the keys removed from .env."""
-    for key in env_keys:
-        os.environ.pop(key, None)
-    if not ENV_FILE.exists():
-        return []
-    present = dotenv_values(ENV_FILE)
-    removed = [key for key in env_keys if key in present]
-    for key in removed:
-        unset_key(str(ENV_FILE), key)
-    return removed
+def clear_login(site: str) -> bool:
+    """Forget the current user's login for `site` ("youtube"/"bilibili"/"missevan")."""
+    return user_login.clear_site(site)
