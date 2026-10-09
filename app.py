@@ -10,6 +10,7 @@ import base64
 import html as html_lib
 import json
 import os
+import re
 import time
 from datetime import datetime, timezone
 from typing import Optional
@@ -30,6 +31,7 @@ st.set_page_config(
 from src import bilibili as bili
 from src import browser_cookies as bc
 from src import emotes
+from src import highlights as hl
 if not hasattr(emotes, "safe_chat_image_url"):  # stateless; reload after a code update
     import importlib
     emotes = importlib.reload(emotes)
@@ -37,7 +39,7 @@ from src import i18n
 from src import missevan as me
 from src import obs_ctrl as obs
 from src import overlay_server
-if not hasattr(overlay_server.OverlayServer, "mirror"):  # stale copy from before a code update (state survives reload)
+if not hasattr(overlay_server, "render_html"):  # stale copy from before a code update (state survives reload)
     import importlib
     overlay_server = importlib.reload(overlay_server)
 from src import reading
@@ -115,6 +117,23 @@ h3 .site-icon { margin-right: 0.15em; position: relative; top: -0.08em; }
 .badge-sc   { background:#ff6600; color:#fff; }
 .badge-member { background:#2e7d32; color:#fff; }
 .badge-member-icon { height:1.3em; width:auto; vertical-align:middle; margin-right:2px; }
+.yt-stamp-preview { max-width: 34rem; line-height: 2; word-break: break-word; }
+.yt-stamp-preview img { height: 28px !important; vertical-align: middle; }
+[class*="st-key-emote_grid_"] { gap: 4px !important; align-items: center; }
+.emote-pack-label { display: inline-block; font-size: 0.72rem; line-height: 1.2; max-width: 4.5em; padding: 2px 6px;
+    border-left: 3px solid #fb7299; opacity: 0.8; }
+[class*="st-key-emote_grid_"] [data-testid="stMarkdownContainer"] p { margin: 0; }
+/* Divider between emote packs: takes a full row so each pack starts on its own line */
+[class*="st-key-emote_grid_"] [data-testid="stElementContainer"]:has(.emote-pack-sep) {
+    flex: 0 0 100% !important; width: 100% !important; }
+.emote-pack-sep { margin: 2px 0 !important; border: 0; border-top: 1px solid rgba(250, 250, 250, 0.2); }
+[class*="st-key-emote_grid_"] [data-testid="stElementContainer"] { width: auto !important; }
+[class*="st-key-emote_grid_"] button { padding: 1px 2px; min-height: 0; }
+[class*="st-key-emote_grid_"] button img { height: 32px !important; max-height: 32px !important; width: auto; }
+/* Emote pickers: wide enough to show a whole pack without scrolling */
+[data-testid="stPopoverBody"]:has([class*="st-key-emote_grid_"]) {
+    max-width: min(64rem, 92vw) !important; width: min(64rem, 92vw) !important; max-height: 88vh !important;
+}
 .status-dot {
     display: inline-block;
     width: 10px; height: 10px;
@@ -289,6 +308,8 @@ def _init_state():
         "_tts_browser_cmd": "",       # "skip" / "stop" for the browser speech player
         "last_poll": 0.0,
         "viewer_history": [],         # list of {time, yt, bili}
+        "activity_log": [],           # compact record of every message this session, for 🔥 hotspots
+        "stream_starts": {},          # site -> epoch seconds the current stream went live
         # ?lang=zh in the URL lets a bookmark or refresh keep the chosen page language.
         "ui_lang": st.query_params.get("lang", "en") if st.query_params.get("lang") in i18n.UI_LANGUAGES else "en",
         # Chat timestamps: "" = server time; ?tz=Asia/Tokyo in the URL keeps a choice across refreshes.
@@ -334,6 +355,42 @@ try:
     overlay_server.ensure_started()  # standalone overlays (?youtube=…) work without opening the OBS tab
 except OSError:
     pass  # reported in the 🎬 OBS tab
+
+
+def _render_overlay_page() -> None:
+    """?view=overlay: just the overlay, served through the dashboard's own address.
+
+    Hosts like Streamlit Community Cloud only expose the Streamlit port, so OBS can't reach the
+    separate overlay server (port 8502) there; this page shows the same thing on the normal URL."""
+    query = {name: st.query_params.get_all(name) for name in st.query_params}
+    st.markdown(
+        "<style>"
+        "header, footer, [data-testid='stHeader'], [data-testid='stToolbar'], [data-testid='stDecoration'],"
+        "[data-testid='stStatusWidget'], [data-testid='stSidebar'], [data-testid='stSidebarCollapsedControl']"
+        "{display:none !important;}"
+        "html, body, .stApp, [data-testid='stAppViewContainer'], [data-testid='stMain'], [data-testid='stBottom']"
+        "{background:transparent !important;}"
+        "[data-testid='stMainBlockContainer'], .block-container {padding:0 !important;}"
+        "[data-stale='true'] {opacity:1 !important; transition:none !important;}"
+        + overlay_server._PAGE_CSS + "</style>",
+        unsafe_allow_html=True,
+    )
+
+    @st.fragment(run_every=2)
+    def _live():
+        try:
+            server = overlay_server.ensure_started()
+        except OSError:
+            server = None
+        st.markdown(overlay_server.render_html(overlay_server.overlay_data(query, server)),
+                    unsafe_allow_html=True)
+
+    _live()
+
+
+if st.query_params.get("view") == "overlay":
+    _render_overlay_page()
+    st.stop()
 
 
 def t(text: str, **kwargs) -> str:
@@ -766,7 +823,11 @@ def _poll_chat():
             )
 
     # Update history; join events go to their own feed, never into chat
+    _now = time.time()
+    _log = st.session_state["activity_log"]
     for m in allowed:
+        if m.get("type") != "enter":
+            _log.append(hl.log_entry(m, is_paid(m) or is_gift(m), _now))
         if is_paid(m) or is_gift(m):
             st.session_state["paid_messages"].append(m)
         if m.get("type") == "enter":
@@ -777,6 +838,8 @@ def _poll_chat():
         st.session_state["paid_messages"] = st.session_state["paid_messages"][-1000:]
     if len(st.session_state["join_messages"]) > 500:
         st.session_state["join_messages"] = st.session_state["join_messages"][-300:]
+    if len(_log) > hl.MAX_LOG:
+        st.session_state["activity_log"] = _log[-hl.MAX_LOG:]
 
     st.session_state["blocked_msgs"].extend(blocked)
 
@@ -784,6 +847,24 @@ def _poll_chat():
     max_disp = st.session_state["max_chat_display"]
     if len(st.session_state["chat_messages"]) > max_disp * 2:
         st.session_state["chat_messages"] = st.session_state["chat_messages"][-max_disp:]
+
+
+def _note_stream_start(site: str, value: str, zone: str = "") -> None:
+    """Remember when `site`'s stream went live (hotspot clip times are measured from it).
+    `zone` is the time zone of naive date strings (Bilibili reports Beijing time)."""
+    value = (value or "").strip()
+    if not value or value.startswith("0000") or value == "0":
+        return
+    if value.isdigit():
+        st.session_state["stream_starts"][site] = float(value)
+        return
+    try:
+        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=ZoneInfo(zone)) if zone else dt.astimezone()
+    st.session_state["stream_starts"][site] = dt.timestamp()
 
 
 def _record_viewer_snapshot(yt_viewers: int, bili_viewers: int, me_viewers: int = 0):
@@ -1357,6 +1438,7 @@ with tab_status:
                     st.metric(t("Viewers"), f"{info['viewers']:,}")
                     if info["actual_start"]:
                         st.caption(t("Live since: {t}", t=info["actual_start"]))
+                        _note_stream_start("youtube", info["actual_start"])
                     yt_viewers_now = info["viewers"]
                 elif info["broadcast"] == "upcoming" and info["scheduled_start"]:
                     st.caption(t("Scheduled: {t}", t=info["scheduled_start"]))
@@ -1437,6 +1519,7 @@ with tab_status:
                 st.metric(t("Viewers"), f"{viewers:,}")
                 if info.get("start_time") and live_status == 1:
                     st.caption(t("Live since: {t}", t=info["start_time"]))
+                    _note_stream_start("bilibili", str(info["start_time"]), "Asia/Shanghai")
 
     # ── MissEvan status ───────────────────────────────────────────────────────
     me_viewers_now = 0
@@ -1507,6 +1590,8 @@ with tab_status:
                 st.caption(t("Followers: {n}", n=f"{info.get('followers', 0):,}"))
                 if info.get("start_time"):
                     st.caption(t("Live since: {t}", t=info["start_time"]))
+                    if info["live"]:
+                        _note_stream_start("missevan", info["start_time"])
 
     if yt_viewers_now or bili_viewers_now or me_viewers_now:
         _record_viewer_snapshot(yt_viewers_now, bili_viewers_now, me_viewers_now)
@@ -1514,6 +1599,161 @@ with tab_status:
 # ═══════════════════════════════════════════════════════════════════════════════
 # TAB: CHAT
 # ═══════════════════════════════════════════════════════════════════════════════
+
+_EMOTE_TTL = 600
+
+
+def _emote_button(e: dict, key: str, locked_help: str, on_pick=None) -> bool:
+    alt = re.sub(r"[\[\]()\\]", "", e["name"])[:24] or "emote"
+    locked = e.get("locked") is True
+    tip = e["name"] + (f"\n\n🔒 {e.get('hint') or locked_help}" if locked else "")
+    return st.button(f"![{alt}]({e['url']})", key=key, help=tip, disabled=locked,
+                     on_click=on_pick, args=(e,) if on_pick else None)
+
+
+def _emote_buttons(items: list[dict], key: str, locked_help: str, on_pick=None) -> dict | None:
+    """Image buttons for emotes; returns the clicked one (or calls on_pick(emote) as a click callback)."""
+    picked = None
+    with st.container(horizontal=True, gap="small", key=f"emote_grid_{key}"):
+        for i, e in enumerate(items):
+            if _emote_button(e, f"emo_{key}_{i}", locked_help, on_pick):
+                picked = e
+    return picked
+
+
+def _emote_packs(packs: list[dict], key: str, locked_help: str) -> dict | None:
+    """All packs in one flowing grid, each starting with its name, so nothing needs tabs or scrolling."""
+    picked = None
+    with st.container(horizontal=True, gap="small", key=f"emote_grid_{key}"):
+        for n, pack in enumerate(packs):
+            if n:
+                st.markdown('<hr class="emote-pack-sep">', unsafe_allow_html=True)
+            label = ("⭐ " if pack.get("owner") else "") + (pack["name"] or "?")
+            st.markdown(f'<span class="emote-pack-label">{html_lib.escape(label)}</span>',
+                        unsafe_allow_html=True, width="content")
+            for i, e in enumerate(pack["emotes"]):
+                if _emote_button(e, f"emo_{key}{n}_{i}", locked_help):
+                    picked = e
+    return picked
+
+
+_YT_STAMP_MAX = 200  # YouTube's chat message length limit
+
+
+# The draft lives in its own key: widget state inside a closed popover is discarded.
+def _add_yt_stamp(emote: dict) -> None:
+    draft = st.session_state.get("yt_stamp_draft", "")
+    if len(draft) + len(emote["code"]) <= _YT_STAMP_MAX:
+        st.session_state["yt_stamp_draft"] = draft + emote["code"]
+
+
+def _sync_yt_stamp_input() -> None:
+    st.session_state["yt_stamp_draft"] = st.session_state.get("yt_stamp_input", "")
+
+
+def _send_yt_stamps(yt_chat: str, yt_vid: str) -> None:
+    draft = st.session_state.get("yt_stamp_draft", "").strip()
+    if not draft:
+        return
+    ok, err = yt.send_chat(yt_chat, yt_vid, draft)
+    st.session_state["yt_stamp_result"] = (ok, err)
+    if ok:
+        st.session_state["yt_stamp_draft"] = ""
+
+
+def _report_send(site: str, ok: bool, err: str) -> None:
+    # A toast, not st.error: the picker popover closes on the rerun that sends.
+    if ok:
+        st.toast(t("Sent to {site} ✓", site=site))
+    else:
+        st.toast(t("Failed to send to {site}: {err}", site=site, err=t(err) if err else "?"), icon="⚠️", duration="long")
+
+
+_EMOTE_IMG_JS = """<script>(() => {
+  if (window.__mpcEmoteImgs2) return;
+  window.__mpcEmoteImgs2 = true;
+  // Bilibili's CDN refuses hotlinked images; markdown images in buttons can't set referrerpolicy.
+  const fix = (root) => root.querySelectorAll('[class*="st-key-emote_grid_"] img').forEach((img) => {
+    if (img.referrerPolicy === 'no-referrer') return;
+    img.referrerPolicy = 'no-referrer';
+    const src = img.getAttribute('src');
+    img.removeAttribute('src');
+    img.setAttribute('src', src);
+  });
+  fix(document);
+  // Keep emote popovers inside the window: when they open low, the bottom (last packs) was unreachable.
+  const fit = () => document.querySelectorAll('[data-testid="stPopoverBody"]').forEach((p) => {
+    if (!p.querySelector('[class*="st-key-emote_grid_"]')) return;
+    const room = Math.max(240, Math.floor(window.innerHeight - p.getBoundingClientRect().top - 12));
+    if (p.style.maxHeight !== room + 'px') p.style.setProperty('max-height', room + 'px', 'important');
+  });
+  new MutationObserver(() => { fix(document); fit(); }).observe(document.body, {childList: true, subtree: true});
+  window.addEventListener('resize', fit);
+})();</script>"""
+
+
+def _site_emote_row(yt_chat: str, yt_vid: str, bili_room: str) -> None:
+    """One picker per site, each sending only to its own site. YouTube stamps are collected into a
+    draft (several stamps plus text per message); a Bilibili emote is a danmaku of its own."""
+    st.html(_EMOTE_IMG_JS, unsafe_allow_javascript=True)
+    row = st.container(horizontal=True, vertical_alignment="center", gap="small")
+    row.markdown(f"**{t('Site emotes')}:**", width="content")
+    yt_pop = row.popover("YouTube", icon="😀", key="emo_pop_yt", on_change="rerun", disabled=not yt_chat,
+                         help=None if yt_chat else t("Start the YouTube listener first."))
+    bili_pop = row.popover("Bilibili", icon="😀", key="emo_pop_bili", on_change="rerun", disabled=not bili_room,
+                           help=None if bili_room else t("Enter a Bilibili room ID first."))
+    row.caption(t("Each site's own emotes, sent only to that site."), width="content")
+
+    result = st.session_state.pop("yt_stamp_result", None)
+    if result:
+        _report_send("YouTube", *result)
+
+    if yt_pop.open:
+        with yt_pop:
+            refresh = st.button(t("🔄 Refresh"), key="emo_yt_refresh")
+            items = ytw.channel_emojis(yt_vid, fetch=True, refresh=refresh)
+            st.caption(t("Sent only to YouTube. Click stamps to add them (as many as you like), add text if you "
+                         "want, then send. Channel stamps show up here once someone uses them in chat; with a "
+                         "YouTube login (🍪 Cookies tab) the full set is listed and 🔒 marks member-only stamps "
+                         "you can't use."))
+            if not items:
+                st.info(t("No channel stamps seen yet."))
+            _emote_buttons(items, "yt", t("Members only"), on_pick=_add_yt_stamp)
+            draft = st.session_state.setdefault("yt_stamp_draft", "")
+            st.session_state["yt_stamp_input"] = draft
+            st.text_input(t("Message"), key="yt_stamp_input", max_chars=_YT_STAMP_MAX, on_change=_sync_yt_stamp_input,
+                          placeholder=t("Click stamps above…"), label_visibility="collapsed")
+            if draft.strip():
+                emote_map = {c: e["url"] for e in items for c in e.get("shortcuts") or [e["code"]]}
+                st.markdown(f'<div class="yt-stamp-preview">{emotes.text_to_html(draft, emote_map)}</div>',
+                            unsafe_allow_html=True)
+            act = st.container(horizontal=True, gap="small")
+            act.button(t("Send to YouTube"), key="emo_yt_send", type="primary", disabled=not draft.strip(),
+                       on_click=_send_yt_stamps, args=(yt_chat, yt_vid))
+            act.button(t("Clear"), key="emo_yt_clear", disabled=not draft,
+                       on_click=lambda: st.session_state.update(yt_stamp_draft=""))
+
+    if bili_pop.open:
+        with bili_pop:
+            cache = st.session_state.setdefault("bili_emotes", {})
+            refresh = st.button(t("🔄 Refresh"), key="emo_bili_refresh")
+            if refresh or cache.get("room") != bili_room or time.time() - cache.get("ts", 0) > _EMOTE_TTL:
+                packs, err = bili.get_emoticons(bili_room)
+                cache.update(room=bili_room, ts=time.time(), packs=packs, err=err)
+            st.caption(t("Sent only to Bilibili, as a sticker danmaku. 🔒 emotes need e.g. this room's fan medal, "
+                         "a guard membership, or charging (充电) the streamer for the 充电表情 tab."))
+            if cache.get("err"):
+                st.warning(t(cache["err"]))
+            packs = cache.get("packs") or []
+            if packs:
+                # get_emoticons lists the room owner's packs (⭐) first; the sort is a fallback for old caches.
+                packs = sorted(packs, key=lambda p: 0 if p.get("owner") else 1)
+                picked = _emote_packs(packs, "bili", t("Locked"))
+                if picked:
+                    _report_send("Bilibili", *bili.send_emoticon(bili_room, picked["unique"]))
+            elif not cache.get("err"):
+                st.info(t("This room has no emotes you can send."))
+
 
 with tab_chat:
     _poll_chat()  # fetch new messages every rerun
@@ -1542,20 +1782,34 @@ with tab_chat:
         else t("Log in to MissEvan in the 🍪 Cookies tab first.") if not me_logged_in
         else t("Enter a MissEvan room first."),
     )
+    _yt_emo_vid = _yt_video_id() or (yt_chat[len(yt.WEB_CHAT_PREFIX):] if yt.is_web_chat(yt_chat) else "")
+    _emotes_ready = hasattr(ytw, "channel_emojis") and hasattr(bili, "get_emoticons")
+    _yt_emojis = ytw.channel_emojis(_yt_emo_vid) if _emotes_ready and _yt_emo_vid else []
+    if _emotes_ready:
+        _site_emote_row(yt_chat, _yt_emo_vid, bili_room_send)
     with st.form("send_form", clear_on_submit=True), st.container(key="send_box"):
         send_cols = st.columns([8, 1])
         outgoing = send_cols[0].text_input(t("Message"), label_visibility="collapsed", placeholder=t("Type a message…"))
         submitted = send_cols[1].form_submit_button(t("Send"))
         if submitted and outgoing:
+            # YouTube stamp codes (:_name:) only mean something on YouTube; don't spam them elsewhere.
+            other = ytw.strip_emoji_codes(outgoing, _yt_emojis) if _emotes_ready else outgoing
             targets = []
             if send_yt and yt_chat:
                 targets.append(("YouTube", lambda: yt.send_chat(
                     yt_chat, _yt_video_id(), outgoing)))
             if send_bili and bili_room_send:
-                targets.append(("Bilibili", lambda: (bili.send_danmaku(bili_room_send, outgoing), "")))
+                if other:
+                    targets.append(("Bilibili", lambda: (bili.send_danmaku(bili_room_send, other), "")))
+                else:
+                    st.info(t("Only YouTube stamps — not sent to {site}.", site="Bilibili"))
             if send_me and me_room_send and me_logged_in:
-                targets.append(("MissEvan", lambda: me.send_message(me_room_send, outgoing)))
-            if not targets:
+                if other:
+                    targets.append(("MissEvan", lambda: me.send_message(me_room_send, other)))
+                else:
+                    st.info(t("Only YouTube stamps — not sent to {site}.", site=t("MissEvan")))
+            if not (send_yt and yt_chat) and not (send_bili and bili_room_send) and not (
+                    send_me and me_room_send and me_logged_in):
                 st.warning(t("Tick at least one site to send to."))
             for name, send in targets:
                 ok, err = send()
@@ -1818,6 +2072,17 @@ with tab_obs:
         _overlay_base = OVERLAY_PUBLIC_URL
     else:
         _overlay_base = f"http://{_req_host_url}:{overlay_server.PORT}"
+    # Remote browser + overlay server bound to loopback (e.g. Streamlit Community Cloud, which only exposes
+    # the Streamlit port): OBS can't reach port 8502, so link to the dashboard's own ?view=overlay page.
+    _via_dashboard = not OVERLAY_PUBLIC_URL and OVERLAY_HOST in _loopback and _req_host not in _loopback
+    _dash_parts = urlsplit(st.context.url or "")
+    _dash_base = (f"{_dash_parts.scheme}://{_dash_parts.netloc}{_dash_parts.path or '/'}"
+                  if _dash_parts.netloc else f"http://{_req_host_url}/")
+
+    def _overlay_link(query: str) -> str:
+        if _via_dashboard:
+            return _dash_base + "?view=overlay" + (f"&{query}" if query else "")
+        return f"{_overlay_base}/overlay" + (f"?{query}" if query else "")
     _overlay_site_labels = {"youtube": "YouTube", "bilibili": "Bilibili", "missevan": t("MissEvan")}
     st.multiselect(
         t("Sites on this overlay"), list(_overlay_site_labels), key="overlay_sites",
@@ -1832,12 +2097,19 @@ with tab_obs:
         ([f"ch={_overlay_ch}"] if _overlay_ch != overlay_server.DEFAULT_CHANNEL else [])
         + ([f"site={','.join(_overlay_sites)}"] if _overlay_sites else [])
     )
-    _overlay_url = f"{_overlay_base}/overlay" + (f"?{_overlay_query}" if _overlay_query else "")
+    _overlay_url = _overlay_link(_overlay_query)
     st.info(t(
         "**How to use**: Add a Browser Source in OBS pointing to `{url}`. "
         "Keep the dashboard open for live updates.", url=_overlay_url,
     ))
-    if OVERLAY_HOST in _loopback:
+    if _via_dashboard:
+        st.caption(t(
+            "This server only lets browsers reach the dashboard's own address, so these overlay links open the "
+            "dashboard in overlay-only mode (?view=overlay). If its background isn't transparent in OBS, add "
+            "this to the Browser Source's Custom CSS: {css}",
+            css="body, .stApp { background: transparent !important; }",
+        ))
+    elif OVERLAY_HOST in _loopback:
         if not OVERLAY_PUBLIC_URL and _req_host not in _loopback:
             st.warning(t(
                 "This overlay URL uses the address you opened the dashboard with ({host}), but the overlay only "
@@ -1894,7 +2166,7 @@ with tab_obs:
             _params["tr"] = st.session_state["translate_target"]
         if st.session_state["overlay_visible"] and overlay_text:
             _params["text"] = overlay_text
-        _standalone_url = f"{_overlay_base}/overlay?" + urlencode(_params, safe="@,")
+        _standalone_url = _overlay_link(urlencode(_params, safe="@,"))
         st.markdown("**" + t("Standalone overlay (no dashboard needed)") + "**")
         st.code(_standalone_url, language=None)
         st.caption(t(
@@ -2056,6 +2328,97 @@ with tab_analytics:
             st.dataframe(top, width="stretch", hide_index=True)
     else:
         st.info(t("Chat stats will appear once messages arrive."))
+
+    # ── Hotspots for clipping ─────────────────────────────────────────────────
+    st.subheader(t("🔥 Hotspots for clipping"))
+    st.caption(t(
+        "Moments when chat, gifts and Super Chats spike well above this stream's usual activity, timed from "
+        "the stream start so you can cut them from the recording. Covers messages received while this "
+        "dashboard page is open."
+    ))
+    _log = st.session_state["activity_log"]
+    if not _log:
+        st.info(t("Hotspots will appear once messages arrive."))
+    else:
+        _site_names = {"youtube": "YouTube", "bilibili": "Bilibili", "missevan": t("MissEvan")}
+        _origins = {f"site:{s}": v for s, v in st.session_state["stream_starts"].items()}
+        _origins["first"] = min(e["ts"] for e in _log)
+        # A remembered choice can vanish (e.g. that site's stream start is gone after a reconnect).
+        if st.session_state.get("hl_origin") not in (*_origins, "custom"):
+            st.session_state["hl_origin"] = "first"
+        hc = st.columns(4)
+        _origin_key = hc[0].selectbox(
+            t("Time 0 (start of the recording)"), [*_origins, "custom"],
+            format_func=lambda k: t("{site} stream start", site=_site_names.get(k[5:], k[5:])) if k.startswith("site:")
+            else t("First message received") if k == "first" else t("Custom clock time"),
+            key="hl_origin",
+            help=t("Clip times count from here. Pick the site whose recording you are cutting."),
+        )
+        if _origin_key == "custom":
+            _tz = _chat_tz()
+            _first_local = datetime.fromtimestamp(_origins["first"], tz=_tz or datetime.now().astimezone().tzinfo)
+            _clock = hc[0].time_input(t("Recording started at"), value=_first_local.time().replace(microsecond=0),
+                                      step=1, key="hl_origin_clock")
+            _origin = _first_local.replace(hour=_clock.hour, minute=_clock.minute, second=_clock.second).timestamp()
+        else:
+            _origin = _origins.get(_origin_key, _origins["first"])
+        _window = hc[1].number_input(t("Window (seconds)"), 10, 300, 30, step=10, key="hl_window")
+        _sens = hc[2].slider(t("Sensitivity"), 1.0, 5.0, 2.0, 0.5, key="hl_sens",
+                             help=t("How far above the usual activity a moment must be. Higher = fewer, bigger hotspots."))
+        _top = hc[3].number_input(t("Max hotspots"), 1, 100, 20, key="hl_top")
+        rc = st.columns(4)
+        _pre = rc[0].number_input(t("Lead-in (seconds)"), 0, 300, 20, step=5, key="hl_pre",
+                                  help=t("Chat reacts after the moment happens, so clips start this much earlier."))
+        _post = rc[1].number_input(t("Tail (seconds)"), 0, 300, 10, step=5, key="hl_post")
+        _fps = rc[2].selectbox(t("EDL frame rate"), [30, 60, 25, 50, 24], key="hl_fps")
+        _hour = rc[3].selectbox(t("EDL timeline start"), [0, 1], index=1, key="hl_hour",
+                                format_func=lambda h: f"{h:02d}:00:00:00",
+                                help=t("DaVinci Resolve timelines start at 01:00:00:00 by default."))
+
+        clips = hl.find_highlights(_log, window=int(_window), sensitivity=float(_sens), top=int(_top),
+                                   pre_roll=int(_pre), post_roll=int(_post))
+        if not clips:
+            st.info(t("No hotspots yet — chat hasn't spiked above its usual level. Try a lower sensitivity."))
+        else:
+            _tz = _chat_tz()
+
+            def _clock_str(epoch: float) -> str:
+                return datetime.fromtimestamp(epoch, tz=_tz or datetime.now().astimezone().tzinfo).strftime("%H:%M:%S")
+
+            rows = [{
+                "#": n,
+                t("Start"): hl.offset(c["start"] - _origin),
+                t("End"): hl.offset(c["end"] - _origin),
+                t("Length (s)"): int(c["end"] - max(c["start"], _origin)),
+                t("Peak"): hl.offset(c["peak"] - _origin),
+                t("Clock time"): _clock_str(c["start"]),
+                t("Heat"): c["score"],
+                t("Messages"): c["chat"],
+                t("Gifts / SC"): c["paid"],
+                t("Sites"): ", ".join(_site_names.get(p, p) for p in c["platforms"]),
+                t("Hot phrases"): hl.summary(c),
+            } for n, c in enumerate(clips, 1)]
+            st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
+
+            _stamp = datetime.fromtimestamp(_origin).strftime("%Y%m%d_%H%M")
+            _txt = "\n".join(
+                f'{r[t("Start")]} - {r[t("End")]}  #{r["#"]}  {t("Heat")} {r[t("Heat")]} · '
+                f'{t("Messages")} {r[t("Messages")]} · {t("Gifts / SC")} {r[t("Gifts / SC")]}  {r[t("Hot phrases")]}'
+                for r in rows
+            ) + "\n"
+            dc = st.columns(3)
+            dc[0].download_button(t("⬇️ CSV (Excel)"), hl.to_csv(rows), f"hotspots_{_stamp}.csv",
+                                  "text/csv", width="stretch")
+            dc[1].download_button(t("⬇️ Timestamps (.txt)"), _txt.encode("utf-8"), f"hotspots_{_stamp}.txt",
+                                  "text/plain", width="stretch")
+            dc[2].download_button(t("⬇️ Markers (.edl)"),
+                                  hl.to_edl(clips, _origin, fps=int(_fps), hour=int(_hour), title=f"Hotspots {_stamp}"),
+                                  f"hotspots_{_stamp}.edl", "text/plain", width="stretch")
+            st.caption(t(
+                "EDL: in DaVinci Resolve, put the recording on a timeline, then right-click the timeline in the "
+                "Media Pool > Timelines > Import > Timeline Markers from EDL. Each hotspot becomes a red marker "
+                "spanning the clip."
+            ))
 
     # ── Blocked message log ───────────────────────────────────────────────────
     with st.expander(t("🛡️ Filtered / blocked messages")):

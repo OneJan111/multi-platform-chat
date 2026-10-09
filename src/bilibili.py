@@ -164,6 +164,12 @@ def _guard_icon(level) -> str:
     return _GUARD_ICON.format(level) if level in _GUARD_NAMES else ""
 
 
+def _is_red_pocket_gift(data: dict) -> bool:
+    """SEND_GIFT for a 红包 purchase (gift 13000); handled with the POPULARITY_RED_POCKET_* packets."""
+    return str(data.get("giftId") or data.get("gift_id") or "") == "13000" or (
+        (data.get("giftName") or data.get("gift_name")) == "红包")
+
+
 def _guard_name(level) -> str:
     try:
         return _GUARD_NAMES.get(int(level or 0), "")
@@ -356,15 +362,33 @@ class DanmakuListener:
             @danmaku.on("SEND_GIFT")
             async def on_gift(event):
                 data = event["data"]["data"]
-                if self._new_gift(data):
+                if _is_red_pocket_gift(data):
+                    self._red_pocket("gift", data)
+                elif self._new_gift(data):
                     self.messages.append(self._gift_message(data))
 
             # Newer clients receive gifts (e.g. batched ×20 sends) as protobuf.
             @danmaku.on("SEND_GIFT_V2")
             async def on_gift_v2(event):
                 for data in _decode_send_gift_v2(event["data"]["data"].get("pb", "")):
-                    if self._new_gift(data):
+                    if _is_red_pocket_gift(data):
+                        self._red_pocket("gift", data)
+                    elif self._new_gift(data):
                         self.messages.append(self._gift_message(data))
+
+            # 红包: NEW = bought (like a gift), START = draw opens with its contents,
+            # WINNER_LIST = who grabbed what.
+            @danmaku.on("POPULARITY_RED_POCKET_NEW")
+            async def on_red_pocket(event):
+                self._red_pocket("new", event["data"]["data"])
+
+            @danmaku.on("POPULARITY_RED_POCKET_START")
+            async def on_red_pocket_start(event):
+                self._red_pocket("start", event["data"]["data"])
+
+            @danmaku.on("POPULARITY_RED_POCKET_WINNER_LIST")
+            async def on_red_pocket_winners(event):
+                self._red_pocket("winners", event["data"]["data"])
 
             @danmaku.on("COMBO_SEND")
             async def on_combo_gift(event):
@@ -494,6 +518,87 @@ class DanmakuListener:
         # Mutate in place so a toast arriving after GUARD_BUY corrects the shown price.
         entry["msg"]["text"] = self._guard_text(entry["data"], paid_coins, entry["list"] or 0)
 
+    def _red_pocket(self, kind: str, data: dict) -> None:
+        """Track a 红包 from purchase to draw.
+
+        The purchase (POPULARITY_RED_POCKET_NEW, or SEND_GIFT 红包 on some clients — whichever
+        arrives first) is one paid gift row; the draw's contents are added to it in place.
+        The winner list is a separate free row, so it's shown but not read aloud.
+        """
+        now = time.time()
+        lots = self.__dict__.setdefault("_red_lots", {})      # lot_id -> entry
+        recent = self.__dict__.setdefault("_red_recent", {})  # sender uid -> entry from the last minute
+        for d, ttl in ((lots, 1800), (recent, 60)):
+            for k in [k for k, v in d.items() if now - v["at"] > ttl]:
+                del d[k]
+        lot = data.get("lot_id")
+
+        if kind == "winners":
+            entry = lots.get(lot)
+            awards = data.get("awards") or {}
+            winners = []
+            for w in data.get("winner_info") or []:
+                if isinstance(w, list) and len(w) > 1:
+                    prize = (awards.get(str(w[3])) or {}).get("award_name", "") if len(w) > 3 else ""
+                    winners.append(f"{w[1]}({prize})" if prize else str(w[1]))
+            shown = "、".join(winners[:15]) + (f" 等{len(winners)}人" if len(winners) > 15 else "")
+            sender = entry["msg"]["author"] if entry else ""
+            msg = self._gift_msg(sender or "红包", entry["msg"]["author_id"] if entry else "",
+                                 entry["msg"]["avatar"] if entry else "",
+                                 f"🧧 红包开奖 · {len(winners)}人抢到: {shown}".rstrip(": "), free=True)
+            msg["winners"] = [{"uid": str(w[0]), "name": w[1]} for w in data.get("winner_info") or []
+                              if isinstance(w, list) and len(w) > 1]
+            self.messages.append(msg)
+            return
+
+        uid = str(data.get("uid") or data.get("sender_uid") or "")
+        entry = lots.get(lot) if lot else None
+        if entry is None and kind != "start":
+            entry = recent.get(uid)
+        if entry is None and kind == "start":
+            # START also follows the purchase within seconds; reuse it unless it already has a draw.
+            cand = recent.get(uid)
+            entry = cand if cand and cand.get("lot") in (None, lot) else None
+        if entry is None:
+            name = data.get("uname") or data.get("sender_name") or ""
+            face = data.get("face") or data.get("sender_face") or ""
+            msg = self._gift_msg(name, uid, face, "")
+            entry = {"at": now, "msg": msg, "num": 1, "coins": 0, "awards": "", "lot": None}
+            self.messages.append(msg)
+            recent[uid] = entry
+        elif kind == "gift" and entry.get("gift_seen"):
+            return  # duplicate SEND_GIFT / SEND_GIFT_V2 packet
+
+        if kind in ("new", "gift"):
+            entry["num"] = int(data.get("num") or 1)
+            if kind == "gift":
+                entry["gift_seen"] = True
+                coins = data.get("total_coin") or (data.get("price") or 0) * entry["num"]
+            else:
+                coins = (data.get("price") or 0) * 100 * entry["num"]  # price is in 电池 (1 = 100 gold coins)
+            entry["coins"] = entry["coins"] or coins
+            medal = data.get("medal_info") or {}
+            guard = data.get("guard_level") or medal.get("guard_level")
+            if guard:
+                entry["msg"]["membership"] = _guard_name(guard)
+                entry["msg"]["membership_icon"] = _guard_icon(guard)
+        elif kind == "start":
+            entry["awards"] = " ".join(
+                f"{a.get('gift_name', '')}×{a.get('num', 1)}" for a in data.get("awards") or [] if a.get("gift_name")
+            )
+            if not entry["coins"] and data.get("total_price"):
+                entry["coins"] = round(data["total_price"] / 0.8)  # total_price is the 80% that goes into the draw
+        if lot:
+            entry["lot"] = lot
+            lots[lot] = entry
+        text = f"🧧 红包 ×{entry['num']}"
+        if entry["coins"]:
+            text += f" (¥{_yuan(entry['coins'])})"
+        if entry["awards"]:
+            text += f" · 内含 {entry['awards']}"
+        # Mutate in place: the row may already be on screen when the draw's contents arrive.
+        entry["msg"]["text"] = text
+
     @staticmethod
     def _gift_msg(author: str, uid, avatar: str, text: str, free: bool = False) -> dict:
         return {
@@ -533,7 +638,272 @@ def send_danmaku(room_id: str, message: str) -> bool:
         return False
 
 
-# ── Moderation (block user) ────────────────────────────────────────────────────
+def get_emoticons(room_id: str) -> tuple[list[dict], str]:
+    """The room's emote packs usable for danmaku, plus the streamer's 充电 pack. Returns (packs, error).
+
+    Each pack: {"name", "type", "emotes": [{"name", "unique", "url", "locked", "hint"}]}.
+    `unique` is what send_emoticon posts; `locked` emotes need e.g. a fan medal, a guard or 充电.
+    Without a login only the 充电 pack is listed (all locked), with the login error.
+    """
+    if not BILIBILI_LIB_OK:
+        return [], "bilibili-api-python is not installed."
+    upower, up_err = fetch_upower_emotes(room_id)
+    if not has_login_credentials():
+        return upower, "Not logged in to Bilibili — import cookies in the 🍪 Cookies tab."
+    try:
+        room = live.LiveRoom(room_display_id=int(room_id), credential=_credential())
+        resp = _run(room.get_emoticons())
+    except Exception as exc:
+        return upower, str(exc) or type(exc).__name__
+    packs = parse_emoticons(resp)
+    uid, uname = _room_owner(room_id)
+    # Skip ours only if Bilibili already lists *this* streamer's 充电 pack (it may list other streamers' ones).
+    ours = {e["unique"] for p in upower for e in p["emotes"]}
+    if not (ours and any(e["unique"] in ours for p in packs for e in p["emotes"])):
+        packs = packs + upower
+    else:
+        up_err = ""
+    garb = garb_packs_owned_by(uid, [p for p in packs if _pack_kind(p) == "garb"])
+    return (rank_packs(packs, uid, uname, garb),
+            f"充电表情 couldn't be loaded: {up_err}" if up_err else "")
+
+
+_GARB_RE = re.compile(r"^upower_\[(.+)_[^_\]]+\]$")
+
+
+def _pack_kind(p: dict) -> str:
+    """"charge" (充电), "room" (房间专属), "general" (通用) or "garb" (装扮)."""
+    if p.get("type") == "upower" or any(e["unique"].startswith("upower_[UPOWER_") for e in p["emotes"]):
+        return "charge"
+    return {1: "general", 2: "room"}.get(p.get("type"), "garb")
+
+
+def garb_name(p: dict) -> str:
+    """The 装扮 the pack comes from: Bilibili's live client names its emotes `upower_[<装扮名>_<emote>]`."""
+    for e in p["emotes"]:
+        m = _GARB_RE.match(e["unique"])
+        if m:
+            return m.group(1)
+    return p.get("name") or ""
+
+
+_garb_owner_cache: dict[str, set[int]] = {}
+
+
+def _garb_owners(name: str) -> set[int]:
+    """UIDs of the streamers whose 装扮 shop items match `name` (from the items' `fan_mid`)."""
+    if name in _garb_owner_cache:
+        return _garb_owner_cache[name]
+    owners: set[int] = set()
+    try:
+        resp = requests.get("https://api.bilibili.com/x/garb/v2/mall/home/search",
+                            params={"key_word": name, "pn": 1, "ps": 20}, timeout=5,
+                            headers={"User-Agent": _BROWSER_UA, "Referer": "https://www.bilibili.com/"})
+        items = ((resp.json().get("data") or {}).get("list")) or []
+    except (requests.RequestException, ValueError, AttributeError):
+        return owners  # not cached: retry on the next refresh
+    key = name.lower()
+    for it in items:
+        item_name = str(it.get("name") or "").lower()
+        mid = str((it.get("properties") or {}).get("fan_mid") or "")
+        if mid.isdigit() and item_name and (key in item_name or item_name in key):
+            owners.add(int(mid))
+    _garb_owner_cache[name] = owners
+    return owners
+
+
+def garb_packs_owned_by(uid: int, packs: list[dict]) -> set[str]:
+    """Names (as from garb_name) of the given 装扮 packs that the 装扮 shop says belong to `uid`."""
+    names = {garb_name(p) for p in packs} - {"", "装扮表情"}
+    if not uid or not names:
+        return set()
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=min(8, len(names))) as pool:
+        owners = dict(zip(names, pool.map(_garb_owners, names)))
+    return {n for n, mids in owners.items() if uid in mids}
+
+
+def _name_tokens(uname: str) -> list[str]:
+    return [t for t in re.split(r"[\s_\-・·.|/()（）【】\[\]]+", uname or "") if len(t) >= 2]
+
+
+def rank_packs(packs: list[dict], uid: int = 0, uname: str = "", owned_garb: set[str] = frozenset()) -> list[dict]:
+    """Mark the room owner's packs (`owner: True`) and list them first: 充电, room-exclusive, then the
+    streamer's own 装扮 packs (per the 装扮 shop, or named after them); then 通用; then other 装扮 and
+    other streamers' 充电 packs."""
+    tokens = [t.lower() for t in _name_tokens(uname)]
+    own_charge = f"upower_[UPOWER_{uid}_" if uid else None
+
+    def rank(p):
+        kind = _pack_kind(p)
+        if kind == "charge":
+            owner = p.get("type") == "upower" or bool(own_charge and any(
+                e["unique"].startswith(own_charge) for e in p["emotes"]))
+        elif kind == "garb":
+            name = garb_name(p)
+            owner = name in owned_garb or any(t in f"{p.get('name') or ''} {name}".lower() for t in tokens)
+        else:
+            owner = kind == "room"
+        p["owner"] = owner
+        if owner:
+            return {"charge": 0, "room": 1}.get(kind, 2)
+        return {"general": 3, "garb": 4}.get(kind, 5)
+
+    return sorted(packs, key=rank)
+
+
+_room_uids: dict[str, int] = {}
+_room_names: dict[str, str] = {}
+
+
+def _room_owner(room_id: str) -> tuple[int, str]:
+    """(uid, uname) of the room's streamer; (0, "") if unknown."""
+    rid = str(room_id)
+    if rid not in _room_names:
+        try:
+            resp = requests.get("https://api.live.bilibili.com/live_user/v1/UserInfo/get_anchor_in_room",
+                                params={"roomid": rid}, timeout=5, headers={"User-Agent": _BROWSER_UA})
+            info = (resp.json().get("data") or {}).get("info") or {}
+            if info.get("uid"):
+                _room_uids.setdefault(rid, int(info["uid"]))
+                _room_names[rid] = str(info.get("uname") or "")
+        except (requests.RequestException, ValueError, AttributeError, TypeError):
+            pass
+    return _room_owner_uid(rid), _room_names.get(rid, "")
+_BROWSER_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
+               "Chrome/126.0 Safari/537.36")
+
+
+def _room_owner_uid(room_id: str) -> int:
+    rid = str(room_id)
+    if rid in _room_uids:
+        return _room_uids[rid]
+    uid = 0
+    try:
+        resp = requests.get("https://api.live.bilibili.com/room/v1/Room/get_info",
+                            params={"room_id": rid}, timeout=5, headers={"User-Agent": _BROWSER_UA})
+        uid = int((resp.json().get("data") or {}).get("uid") or 0)
+    except (requests.RequestException, ValueError, AttributeError):
+        pass
+    if not uid and BILIBILI_LIB_OK:
+        try:  # the library signs requests, which gets past some risk-control blocks
+            info = _run(live.LiveRoom(room_display_id=int(rid), credential=_credential()).get_room_info())
+            uid = int((info.get("room_info") or {}).get("uid") or 0)
+        except Exception:
+            pass
+    if uid:
+        _room_uids[rid] = uid
+    return uid
+
+
+def get_upower_emotes(room_id: str) -> list[dict]:
+    return fetch_upower_emotes(room_id)[0]
+
+
+def fetch_upower_emotes(room_id: str) -> tuple[list[dict], str]:
+    """The streamer's 充电 (upower) emote pack, as a one-item pack list, and an error ("" if fine).
+
+    The live emote API doesn't list it; the web client posts it as `upower_[UPOWER_<uid>_<name>]`.
+    With a login, `locked` reflects whether this account is charging the streamer.
+    An empty list with no error means the streamer has no 充电表情.
+    """
+    uid = _room_owner_uid(room_id)
+    if not uid:
+        return [], "couldn't find the streamer's UID for this room"
+    c = user_login.get("bilibili")
+    login = {k: c.get(k, "") for k in ("SESSDATA", "bili_jct", "buvid3", "DedeUserID") if c.get(k)}
+    # Try with the login (shows what this account unlocked); if Bilibili's risk control rejects it,
+    # fall back to an anonymous request so the pack is at least listed.
+    err = ""
+    for cookies in ([login, None] if login else [None]):
+        try:
+            resp = requests.get(
+                "https://api.bilibili.com/x/upowerv2/gw/rights/index", params={"up_mid": uid}, timeout=8,
+                headers={"User-Agent": _BROWSER_UA, "Referer": f"https://live.bilibili.com/{room_id}",
+                         "Origin": "https://live.bilibili.com"},
+                cookies=cookies,
+            )
+            data = resp.json()
+        except (requests.RequestException, ValueError) as exc:
+            err = f"HTTP {getattr(getattr(exc, 'response', None), 'status_code', '')} {type(exc).__name__}".strip()
+            continue
+        if data.get("code") != 0:
+            err = f"Bilibili code {data.get('code')} {data.get('message', '')}".strip()
+            continue
+        packs = parse_upower_emotes(data, uid)
+        if packs:
+            return packs, ""
+        err = ""  # a valid answer without emotes: the streamer has no 充电表情
+    return [], err
+
+
+def parse_upower_emotes(resp: dict, uid: int) -> list[dict]:
+    rights = ((resp or {}).get("data") or {}).get("privilege_rights") or {}
+    # Each charging tier lists the emote set; prefer one this account has unlocked.
+    sets = [r["emote"] for _, r in sorted(rights.items()) if isinstance(r, dict) and isinstance(r.get("emote"), dict)]
+    if not sets:
+        return []
+    chosen = next((s for s in sets if s.get("locked") is False), sets[0])
+    locked = chosen.get("locked") is not False
+    items, seen = [], set()
+    for e in chosen.get("emojis") or []:
+        name, url = str(e.get("name") or ""), emotes.safe_image_url(e.get("icon", ""))
+        if not name or not url or name in seen:
+            continue
+        seen.add(name)
+        items.append({"name": name, "unique": f"upower_[UPOWER_{uid}_{name}]", "url": url,
+                      "locked": locked, "hint": "为主播充电后可用"})
+    return [{"name": "充电表情", "type": "upower", "emotes": items}] if items else []
+
+
+def parse_emoticons(resp) -> list[dict]:
+    raw = resp.get("data") if isinstance(resp, dict) else resp
+    packs = []
+    for pkg in raw if isinstance(raw, list) else []:
+        if not isinstance(pkg, dict):
+            continue
+        items = []
+        for e in pkg.get("emoticons") or []:
+            unique = str(e.get("emoticon_unique") or "")
+            url = emotes.safe_image_url(e.get("url", ""))
+            if not unique or not url:
+                continue
+            items.append({
+                "name": str(e.get("emoji") or e.get("descript") or unique),
+                "unique": unique,
+                "url": url,
+                "locked": e.get("perm", 1) != 1,
+                "hint": str(e.get("unlock_show_text") or ""),
+            })
+        if items:
+            pack = {"name": str(pkg.get("pkg_name") or ""), "type": pkg.get("pkg_type"), "emotes": items}
+            packs.extend(_split_garb_pack(pack))
+    return packs
+
+
+def _split_garb_pack(pack: dict) -> list[dict]:
+    """Bilibili may put every 装扮's emotes in one "装扮表情" pack; split it into one pack per 装扮."""
+    if _pack_kind(pack) != "garb":
+        return [pack]
+    groups: dict[str, list[dict]] = {}
+    for e in pack["emotes"]:
+        m = _GARB_RE.match(e["unique"])
+        groups.setdefault(m.group(1) if m else "", []).append(e)
+    if len(groups) < 2:
+        return [pack]
+    return [{**pack, "name": name or pack["name"], "emotes": items} for name, items in groups.items()]
+
+
+def send_emoticon(room_id: str, unique: str) -> tuple[bool, str]:
+    """Send one emote (sticker danmaku) from get_emoticons. Returns (ok, error)."""
+    if not BILIBILI_LIB_OK:
+        return False, "bilibili-api-python is not installed."
+    try:
+        room = live.LiveRoom(room_display_id=int(room_id), credential=_credential())
+        _run(room.send_emoticon(live.Danmaku(text=unique)))
+        return True, ""
+    except Exception as exc:
+        return False, str(exc) or type(exc).__name__
 
 def block_user(room_id: str, uid: int, hours: int = -1) -> tuple[bool, str]:
     """Mute a user in the live room. hours: -1 = permanent, 0 = until this stream ends, else 1–720.

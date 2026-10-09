@@ -122,6 +122,34 @@ class BilibiliGiftTests(unittest.TestCase):
 
         self.assertEqual(listener.messages[0]["text"], "🎁 舰长 ×1月 (¥198)")
 
+    def test_red_pocket_purchase_draw_and_winners(self):
+        listener = DanmakuListener.__new__(DanmakuListener)
+        listener.messages = []
+        listener._red_pocket("new", {"lot_id": 5, "uid": 7, "uname": "boss", "num": 1, "price": 20,
+                                     "gift_name": "红包", "medal_info": {"guard_level": 3}})
+        listener._red_pocket("gift", {"uid": 7, "uname": "boss", "giftId": 13000, "num": 1, "total_coin": 2000})
+        listener._red_pocket("start", {"lot_id": 5, "sender_uid": 7, "sender_name": "boss", "total_price": 1600,
+                                       "awards": [{"gift_name": "打call", "num": 2}, {"gift_name": "牛哇", "num": 3}]})
+        listener._red_pocket("winners", {"lot_id": 5, "winner_info": [[1, "a", 0, 31212], [2, "b", 0, 31214]],
+                                         "awards": {"31212": {"award_name": "打call"}, "31214": {"award_name": "牛哇"}}})
+
+        self.assertEqual(len(listener.messages), 2)
+        bought, winners = listener.messages
+        self.assertEqual(bought["text"], "🧧 红包 ×1 (¥2) · 内含 打call×2 牛哇×3")
+        self.assertFalse(bought["free"])
+        self.assertEqual(bought["membership"], "舰长")
+        self.assertEqual(winners["author"], "boss")
+        self.assertEqual(winners["text"], "🧧 红包开奖 · 2人抢到: a(打call)、b(牛哇)")
+        self.assertTrue(winners["free"])
+
+    def test_red_pocket_start_alone_uses_draw_value(self):
+        listener = DanmakuListener.__new__(DanmakuListener)
+        listener.messages = []
+        listener._red_pocket("start", {"lot_id": 9, "sender_uid": 7, "sender_name": "boss", "total_price": 1600,
+                                       "awards": []})
+
+        self.assertEqual(listener.messages[0]["text"], "🧧 红包 ×1 (¥2)")
+
     def test_send_gift_v2_protobuf_batch(self):
         item = b"".join([
             _field(1, 31039), _field(2, "牛哇牛哇"), _field(3, 20), _field(4, 0),
@@ -186,6 +214,109 @@ class MissEvanMembershipTests(unittest.TestCase):
 
         self.assertEqual(_membership(user), "大咖 · 超粉")
         self.assertEqual(_membership({}), "")
+
+
+class BilibiliEmoticonTests(unittest.TestCase):
+    def test_room_upower_pack_kept_when_another_streamers_is_listed(self):
+        from unittest import mock
+        from src import bilibili as b
+        ours = [{"name": "充电表情", "type": "upower", "emotes": [
+            {"name": "盯", "unique": "upower_[UPOWER_42_盯]", "url": "u", "locked": True, "hint": ""}]}]
+        other = [{"name": "别人的充电表情", "type": 2, "emotes": [
+            {"name": "x", "unique": "upower_[UPOWER_7_x]", "url": "u", "locked": False, "hint": ""}]}]
+        if not b.BILIBILI_LIB_OK:
+            self.skipTest("bilibili-api-python not installed")
+        with mock.patch.object(b, "fetch_upower_emotes", return_value=(ours, "")), \
+             mock.patch.object(b, "_room_owner", return_value=(42, "")), \
+             mock.patch.object(b, "garb_packs_owned_by", return_value=set()), \
+             mock.patch.object(b, "has_login_credentials", return_value=True), \
+             mock.patch.object(b, "_credential"), mock.patch.object(b.live, "LiveRoom"), \
+             mock.patch.object(b, "_run"), mock.patch.object(b, "parse_emoticons", return_value=other):
+            packs, err = b.get_emoticons("1")
+            self.assertEqual([p["name"] for p in packs], ["充电表情", "别人的充电表情"])
+            with mock.patch.object(b, "parse_emoticons", return_value=other + ours):
+                packs, _ = b.get_emoticons("1")
+                self.assertEqual(len(packs), 2)  # already listed by Bilibili: not added twice
+
+    def test_room_owner_packs_listed_first(self):
+        from src.bilibili import rank_packs
+
+        def pack(name, type_, unique="x"):
+           return {"name": name, "type": type_, "emotes": [{"name": "e", "unique": unique, "url": "u"}]}
+        packs = [pack("别人装扮", 5, "upower_[别人装扮_a]"), pack("通用表情", 1), pack("别人的充电", 5, "upower_[UPOWER_7_x]"),
+                pack("Ya酱的装扮表情", 5, "upower_[Ya酱的装扮表情_b]"), pack("房间专属表情", 2),
+                pack("夏日集", 5, "upower_[夏日集_c]"), pack("主播充电", 5, "upower_[UPOWER_42_y]")]
+        ranked = rank_packs(packs, 42, "やーちゃん_Ya酱", {"夏日集"})
+        self.assertEqual([p["name"] for p in ranked], ["主播充电", "房间专属表情", "Ya酱的装扮表情", "夏日集",
+                                                      "通用表情", "别人装扮", "别人的充电"])
+        self.assertEqual([p["owner"] for p in ranked], [True] * 4 + [False] * 3)
+
+    def test_garb_owner_from_shop_fan_mid(self):
+        from unittest import mock
+        from src import bilibili as b
+        resp = mock.Mock()
+        resp.json.return_value = {"data": {"list": [
+            {"name": "夏日集个性装扮", "properties": {"fan_mid": "42"}},
+            {"name": "无关装扮", "properties": {"fan_mid": "7"}}]}}
+        b._garb_owner_cache.clear()
+        with mock.patch.object(b.requests, "get", return_value=resp):
+            pk = {"name": "装扮表情", "type": 5, "emotes": [{"unique": "upower_[夏日集_好耶]"}]}
+            self.assertEqual(b.garb_packs_owned_by(42, [pk]), {"夏日集"})
+            self.assertEqual(b.garb_packs_owned_by(7, [pk]), set())
+        b._garb_owner_cache.clear()
+
+    def test_combined_garb_pack_split_per_garb(self):
+        from src.bilibili import parse_emoticons
+
+        def emo(u):
+            return {"emoticon_unique": u, "emoji": u, "url": "https://i0.hdslb.com/bfs/emote/a.png", "perm": 1}
+        resp = {"data": [{"pkg_name": "装扮表情", "pkg_type": 5,
+                         "emoticons": [emo("upower_[甲_1]"), emo("upower_[乙_2]"), emo("upower_[甲_3]")]}]}
+        packs = parse_emoticons(resp)
+        self.assertEqual([(p["name"], len(p["emotes"])) for p in packs], [("甲", 2), ("乙", 1)])
+
+    def test_upower_pack_prefers_unlocked_tier(self):
+        from src.bilibili import parse_upower_emotes
+        emojis = [{"id": 1, "name": "盯", "icon": "https://i0.hdslb.com/bfs/garb/a.png"},
+                  {"id": 2, "name": "好耶", "icon": "https://i0.hdslb.com/bfs/garb/b.png"}]
+        resp = {"data": {"privilege_rights": {
+            "10": {"emote": {"locked": True, "emojis": emojis}},
+            "100": {"emote": {"locked": False, "emojis": emojis}, "medal": {"locked": True}},
+        }}}
+
+        packs = parse_upower_emotes(resp, 42)
+
+        self.assertEqual(len(packs), 1)
+        self.assertEqual(packs[0]["name"], "充电表情")
+        self.assertEqual([e["unique"] for e in packs[0]["emotes"]],
+                         ["upower_[UPOWER_42_盯]", "upower_[UPOWER_42_好耶]"])
+        self.assertFalse(packs[0]["emotes"][0]["locked"])
+        self.assertEqual(parse_upower_emotes({"data": {"privilege_rights": {}}}, 42), [])
+
+    def test_emoticon_packs_parsed_with_locks(self):
+        from src.bilibili import parse_emoticons
+        resp = {"data": [
+            {"pkg_name": "房间专属表情", "pkg_type": 2, "emoticons": [
+                {"emoji": "冲鸭", "emoticon_unique": "room_25760587_1", "url": "http://i0.hdslb.com/bfs/live/a.png",
+                 "perm": 1},
+                {"emoji": "贴贴", "emoticon_unique": "room_25760587_2", "url": "//i0.hdslb.com/bfs/live/b.png",
+                 "perm": 0, "unlock_show_text": "粉丝勋章 5 级解锁"},
+                {"emoji": "坏", "emoticon_unique": "x", "url": "https://evil.example/c.png", "perm": 1},
+            ]},
+            {"pkg_name": "空", "emoticons": []},
+        ], "fans_brand": 1}
+
+        packs = parse_emoticons(resp)
+
+        self.assertEqual(len(packs), 1)
+        self.assertEqual(packs[0]["name"], "房间专属表情")
+        self.assertEqual(packs[0]["emotes"], [
+            {"name": "冲鸭", "unique": "room_25760587_1", "url": "https://i0.hdslb.com/bfs/live/a.png",
+             "locked": False, "hint": ""},
+            {"name": "贴贴", "unique": "room_25760587_2", "url": "https://i0.hdslb.com/bfs/live/b.png",
+             "locked": True, "hint": "粉丝勋章 5 级解锁"},
+        ])
+        self.assertEqual(parse_emoticons(None), [])
 
 
 if __name__ == "__main__":

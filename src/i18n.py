@@ -15,7 +15,7 @@ UI_LANGUAGES: dict[str, str] = {
 _STRINGS: dict[str, tuple[str, str]] = {
     # ── Sidebar ──────────────────────────────────────────────────────────────
     "🎙️ Streaming Dashboard": ("🎙️ 直播仪表板", "🎙️ 配信ダッシュボード"),
-    "YouTube chat listener active ✓": ("YouTube 聊天监听中 ✓", "YouTube チャット受信中 ✓"),
+    "YouTube chat listener active ✓": ("YouTube 弹幕监听中 ✓", "YouTube チャット受信中 ✓"),
     "Room ID": ("房间号", "ルーム ID"),
     "Room ID or URL": ("房间号或链接", "ルームIDまたはURL"),
     "Could not find a room ID in that text.": ("无法从输入中找到房间号。", "入力からルームIDが見つかりません。"),
@@ -34,10 +34,10 @@ _STRINGS: dict[str, tuple[str, str]] = {
     ),
     "OBS functions are off.": ("OBS 功能已关闭。", "OBS 機能はオフです。"),
     "📝 OBS Text source": ("📝 OBS 文本源", "📝 OBS テキストソース"),
-    "Send chat to OBS Text source": ("将聊天发送到 OBS 文本源", "チャットを OBS テキストソースに送信"),
+    "Send chat to OBS Text source": ("将弹幕发送到 OBS 文本源", "チャットを OBS テキストソースに送信"),
     "OBS Text source": ("OBS 文本源", "OBS テキストソース"),
     "Add a Text source in OBS to display chat.": (
-        "请在 OBS 中添加文本源以显示聊天。",
+        "请在 OBS 中添加文本源以显示弹幕。",
         "チャットを表示するには OBS にテキストソースを追加してください。",
     ),
     "Couldn't list OBS Text sources: {err}": (
@@ -45,17 +45,122 @@ _STRINGS: dict[str, tuple[str, str]] = {
         "OBS テキストソースを取得できません：{err}",
     ),
     "Couldn't update OBS chat text: {err}": (
-        "无法更新 OBS 聊天文本：{err}",
+        "无法更新 OBS 弹幕文本：{err}",
         "OBS のチャットテキストを更新できません：{err}",
     ),
     "🌐 Translation": ("🌐 翻译", "🌐 翻訳"),
-    "Translate chat": ("翻译聊天", "チャットを翻訳"),
-    "🕒 Chat time zone": ("🕒 聊天时区", "🕒 チャットのタイムゾーン"),
+    "Translate chat": ("翻译弹幕", "チャットを翻訳"),
+    "Site emotes": ("特制表情包", "サイト専用スタンプ"),
+    "Each site's own emotes, sent only to that site.": ("各网站的特制表情包，只发到该网站。", "各サイト専用のスタンプは、そのサイトにだけ送信されます。"),
+    "🔄 Refresh": ("🔄 刷新", "🔄 更新"),
+    "Members only": ("仅限会员", "メンバー限定"),
+    "Locked": ("未解锁", "ロック中"),
+    "No channel stamps seen yet.": ("还没有看到频道表情包。", "チャンネルのスタンプはまだ見つかっていません。"),
+    "Sent only to YouTube. Click stamps to add them (as many as you like), add text if you want, then send. "
+    "Channel stamps show up here once someone uses them in chat; with a YouTube login (🍪 Cookies tab) the "
+    "full set is listed and 🔒 marks member-only stamps you can't use.": (
+        "只发到 YouTube。点击表情包加入（可以加多个），也可以再输入文字，然后一次发送。有人在弹幕中使用频道表情包后，"
+        "它们会出现在这里；登录 YouTube（🍪 Cookies 标签页）后会列出全部表情包，🔒 表示你无法使用的会员专属表情包。",
+        "YouTube にだけ送信されます。スタンプをクリックして追加し（いくつでも）、必要なら文字も入れてまとめて送信します。"
+        "チャットで誰かが使ったチャンネルスタンプがここに表示されます。YouTube にログイン（🍪 Cookies タブ）すると"
+        "全スタンプが表示され、🔒 は使えないメンバー限定スタンプです。",
+    ),
+    "Click stamps above…": ("点击上方表情包…", "上のスタンプをクリック…"),
+    "Send to YouTube": ("发送到 YouTube", "YouTube に送信"),
+    "Clear": ("清空", "クリア"),
+    "Sent only to Bilibili, as a sticker danmaku. 🔒 emotes need e.g. this room's fan medal, a guard "
+    "membership, or charging (充电) the streamer for the 充电表情 tab.": (
+        "只发到 B站，作为表情包弹幕。🔒 表情包需要本房间的粉丝勋章、大航海等条件；「充电表情」需要为主播充电。",
+        "Bilibili にだけスタンプ弾幕として送信されます。🔒 のスタンプにはこの部屋のファンメダルや大航海などが必要です。"
+        "「充电表情」は配信者への充電（充电）が必要です。",
+    ),
+    "This room has no emotes you can send.": ("这个房间没有你可以发送的表情包。", "この部屋で送信できるスタンプはありません。"),
+    "Only YouTube stamps — not sent to {site}.": ("只有 YouTube 表情包——未发送到 {site}。", "YouTube スタンプのみのため、{site} には送信しませんでした。"),
+    "Not logged in to Bilibili — import cookies in the 🍪 Cookies tab.": (
+        "未登录 B站——请在 🍪 Cookies 标签页导入 Cookie。", "Bilibili に未ログインです。🍪 Cookies タブで Cookie を読み込んでください。"),
+    "Not logged in to YouTube — import cookies in the 🍪 Cookies tab.": (
+        "未登录 YouTube——请在 🍪 Cookies 标签页导入 Cookie。", "YouTube に未ログインです。🍪 Cookies タブで Cookie を読み込んでください。"),
+    "Not logged in to YouTube — import YouTube cookies in the 🍪 Cookies tab.": (
+        "未登录 YouTube——请在 🍪 Cookies 标签页导入 YouTube Cookie。",
+        "YouTube に未ログインです。🍪 Cookies タブで YouTube の Cookie を読み込んでください。"),
+    "🔥 Hotspots for clipping": ("🔥 热点切片", "🔥 切り抜き用ホットスポット"),
+    "Moments when chat, gifts and Super Chats spike well above this stream's usual activity, timed from "
+    "the stream start so you can cut them from the recording. Covers messages received while this "
+    "dashboard page is open.": (
+        "弹幕、礼物和醒目留言明显高于本场平时水平的时刻，按开播后的时间标注，方便从录像中切片。"
+        "只统计此仪表板页面打开期间收到的消息。",
+        "チャット・ギフト・スーパーチャットが普段より大きく盛り上がった場面を、配信開始からの時間で示します。"
+        "録画からの切り抜きに使えます。このダッシュボードを開いている間に受信したメッセージが対象です。",
+    ),
+    "Hotspots will appear once messages arrive.": ("收到消息后将显示热点。", "メッセージが届くとホットスポットが表示されます。"),
+    "Time 0 (start of the recording)": ("时间零点（录像开始）", "0 秒の位置（録画の開始）"),
+    "{site} stream start": ("{site} 开播时间", "{site} 配信開始"),
+    "First message received": ("收到第一条消息时", "最初のメッセージ受信時"),
+    "Custom clock time": ("自定义时刻", "時刻を指定"),
+    "Clip times count from here. Pick the site whose recording you are cutting.": (
+        "切片时间从这里开始计算。请选择你要剪辑的那个网站的录像。",
+        "切り抜きの時間はここから数えます。切り抜く録画のサイトを選んでください。",
+    ),
+    "Recording started at": ("录像开始时刻", "録画開始時刻"),
+    "Window (seconds)": ("统计窗口（秒）", "集計間隔（秒）"),
+    "Sensitivity": ("灵敏度", "感度"),
+    "How far above the usual activity a moment must be. Higher = fewer, bigger hotspots.": (
+        "需要比平时活跃多少倍才算热点。越高 = 热点越少、越大。",
+        "普段よりどれだけ盛り上がればホットスポットとみなすか。高いほど少なく大きな場面だけになります。",
+    ),
+    "Max hotspots": ("最多热点数", "最大ホットスポット数"),
+    "Lead-in (seconds)": ("提前（秒）", "前余白（秒）"),
+    "Chat reacts after the moment happens, so clips start this much earlier.": (
+        "弹幕总是在事情发生之后才刷屏，所以切片会提前这么多秒开始。",
+        "チャットは出来事の後に反応するので、切り抜きはこの秒数だけ早く始まります。",
+    ),
+    "Tail (seconds)": ("延后（秒）", "後余白（秒）"),
+    "EDL frame rate": ("EDL 帧率", "EDL フレームレート"),
+    "EDL timeline start": ("EDL 时间线起点", "EDL タイムライン開始"),
+    "DaVinci Resolve timelines start at 01:00:00:00 by default.": (
+        "DaVinci Resolve 的时间线默认从 01:00:00:00 开始。",
+        "DaVinci Resolve のタイムラインは既定で 01:00:00:00 から始まります。",
+    ),
+    "No hotspots yet — chat hasn't spiked above its usual level. Try a lower sensitivity.": (
+        "暂无热点——弹幕还没有明显高于平时水平。可以试试降低灵敏度。",
+        "まだホットスポットはありません。チャットが普段より盛り上がっていません。感度を下げてみてください。",
+    ),
+    "Start": ("开始", "開始"),
+    "End": ("结束", "終了"),
+    "Length (s)": ("时长（秒）", "長さ（秒）"),
+    "Peak": ("峰值", "ピーク"),
+    "Clock time": ("实际时刻", "時刻"),
+    "Heat": ("热度", "熱度"),
+    "Messages": ("弹幕数", "メッセージ数"),
+    "Gifts / SC": ("礼物 / SC", "ギフト / SC"),
+    "Sites": ("网站", "サイト"),
+    "Hot phrases": ("热词", "頻出ワード"),
+    "⬇️ CSV (Excel)": ("⬇️ CSV（Excel）", "⬇️ CSV（Excel）"),
+    "⬇️ Timestamps (.txt)": ("⬇️ 时间戳（.txt）", "⬇️ タイムスタンプ（.txt）"),
+    "⬇️ Markers (.edl)": ("⬇️ 剪辑标记（.edl）", "⬇️ マーカー（.edl）"),
+    "EDL: in DaVinci Resolve, put the recording on a timeline, then right-click the timeline in the "
+    "Media Pool > Timelines > Import > Timeline Markers from EDL. Each hotspot becomes a red marker "
+    "spanning the clip.": (
+        "EDL：在 DaVinci Resolve 中把录像放到时间线上，然后在媒体池中右键该时间线 > 时间线 > 导入 > "
+        "从 EDL 导入时间线标记。每个热点会成为一个覆盖整个片段的红色标记。",
+        "EDL：DaVinci Resolve で録画をタイムラインに置き、メディアプールでそのタイムラインを右クリック > "
+        "タイムライン > 読み込み > EDL からタイムラインマーカーを読み込み。各ホットスポットが区間付きの赤いマーカーになります。",
+    ),
+    "This server only lets browsers reach the dashboard's own address, so these overlay links open the "
+    "dashboard in overlay-only mode (?view=overlay). If its background isn't transparent in OBS, add "
+    "this to the Browser Source's Custom CSS: {css}": (
+        "此服务器只开放仪表板本身的网址，因此这些叠加层链接会以仅叠加层模式（?view=overlay）打开仪表板。"
+        "如果在 OBS 中背景不透明，请在浏览器来源的自定义 CSS 中加入：{css}",
+        "このサーバーではダッシュボード自体のアドレスにしかアクセスできないため、これらのオーバーレイリンクは"
+        "ダッシュボードをオーバーレイ専用モード（?view=overlay）で開きます。OBS で背景が透明にならない場合は、"
+        "ブラウザソースのカスタム CSS に次を追加してください：{css}",
+    ),
+    "🕒 Chat time zone": ("🕒 弹幕时区", "🕒 チャットのタイムゾーン"),
     "Server time ({tz})": ("服务器时间（{tz}）", "サーバー時刻（{tz}）"),
     "{tz} (this browser)": ("{tz}（此浏览器）", "{tz}（このブラウザ）"),
-    "Time zone for the times shown on chat messages.": ("聊天消息上显示的时间所用的时区。", "チャットメッセージに表示する時刻のタイムゾーン。"),
+    "Time zone for the times shown on chat messages.": ("弹幕消息上显示的时间所用的时区。", "チャットメッセージに表示する時刻のタイムゾーン。"),
     "Shows a translation under each chat message.": (
-        "在每条聊天消息下方显示翻译。",
+        "在每条弹幕消息下方显示翻译。",
         "各チャットメッセージの下に翻訳を表示します。",
     ),
     "Translate to": ("翻译为", "翻訳先"),
@@ -83,16 +188,16 @@ _STRINGS: dict[str, tuple[str, str]] = {
         "自动检测会用每条消息自身的语言朗读全部消息。选择某种语言后，只朗读用该语言写的弹幕。",
         "自動検出ではすべてのメッセージをその言語で読み上げます。言語を選ぶと、その言語で書かれたチャットだけを読み上げます。",
     ),
-    "Ignore emoji": ("忽略表情", "絵文字を無視"),
+    "Ignore emoji": ("忽略表情包", "絵文字を無視"),
     "Skip emoji-only messages and stickers, and don't read emoji inside messages.": (
         "跳过纯表情消息和表情包，并且不朗读消息中的表情。",
         "絵文字のみのメッセージやスタンプをスキップし、メッセージ内の絵文字も読み上げません。",
     ),
-    "Read translated chat": ("朗读翻译后的聊天", "翻訳したチャットを読み上げ"),
+    "Read translated chat": ("朗读翻译后的弹幕", "翻訳したチャットを読み上げ"),
     "Always announce gifts & Super Chats": ("总是播报礼物和醒目留言", "ギフトとスーパーチャットを常に読み上げ"),
     "Reads gifts, Super Chats and memberships in any language, ahead of normal chat "
     "(normal chat waits until they're done).": (
-        "无论语言都会播报礼物、醒目留言和会员，并优先于普通聊天（普通聊天会等它们读完）。",
+        "无论语言都会播报礼物、醒目留言和会员，并优先于普通弹幕（普通弹幕会等它们读完）。",
         "言語に関係なくギフト・スーパーチャット・メンバーシップを通常のチャットより優先して読み上げます（通常のチャットはその後に読み上げ）。",
     ),
     "When the TTS language matches \"Translate to\" (Translation section), every message is "
@@ -104,7 +209,7 @@ _STRINGS: dict[str, tuple[str, str]] = {
         "⚠️ 未生效：请把 TTS 语言设为与「翻译为」相同的语言（{target}）。",
         "⚠️ 無効：TTS の言語を「翻訳先」と同じ言語（{target}）にしてください。",
     ),
-    "Don't read usernames for regular chat": ("普通聊天不朗读用户名", "通常のチャットではユーザー名を読み上げない"),
+    "Don't read usernames for regular chat": ("普通弹幕不朗读用户名", "通常のチャットではユーザー名を読み上げない"),
     "Reads only the message text. Gifts and Super Chats still say who sent them.": (
         "只朗读消息内容。礼物和醒目留言仍会说出发送者。",
         "メッセージ本文のみを読み上げます。ギフトとスーパーチャットは送り主の名前も読み上げます。",
@@ -131,7 +236,7 @@ _STRINGS: dict[str, tuple[str, str]] = {
     "Volume": ("音量", "音量"),
     "Show join events": ("显示进场消息", "入室イベントを表示"),
     "Max messages displayed": ("最多显示消息数", "最大表示メッセージ数"),
-    "🗑️ Clear chat history": ("🗑️ 清空聊天记录", "🗑️ チャット履歴を消去"),
+    "🗑️ Clear chat history": ("🗑️ 清空弹幕记录", "🗑️ チャット履歴を消去"),
     # Option labels from src modules
     "Auto-detect": ("自动检测", "自動検出"),
     "Chinese (中文)": ("中文", "中国語（中文）"),
@@ -154,7 +259,7 @@ _STRINGS: dict[str, tuple[str, str]] = {
     "Read this message aloud": ("朗读这条消息", "このメッセージを読み上げる"),
     "translating…": ("翻译中…", "翻訳中…"),
     # ── Tabs ─────────────────────────────────────────────────────────────────
-    "💬 Chat": ("💬 聊天", "💬 チャット"),
+    "💬 Chat": ("💬 弹幕", "💬 チャット"),
     "📡 Stream Monitoring": ("📡 直播监控", "📡 配信モニタリング"),
     "🎬 OBS": ("🎬 OBS", "🎬 OBS"),
     "📊 Analytics": ("📊 数据分析", "📊 分析"),
@@ -169,13 +274,13 @@ _STRINGS: dict[str, tuple[str, str]] = {
     "by name": ("按名称", "名前で"),
     "Unblock": ("取消屏蔽", "ブロック解除"),
     "Waits for the channel to go live, then reads its chat automatically.": (
-        "等待频道开播，然后自动读取聊天。", "チャンネルの配信開始を待ち、自動でチャットを読み込みます。"),
+        "等待频道开播，然后自动读取弹幕。", "チャンネルの配信開始を待ち、自動でチャットを読み込みます。"),
     "👀 Watching {name} — not live yet": ("👀 正在监视 {name}——尚未开播", "👀 {name} を監視中 — まだ配信していません"),
     "👀 Watching {name} — stream scheduled: {title}": (
         "👀 正在监视 {name}——已预定直播：{title}", "👀 {name} を監視中 — 配信予定: {title}"),
     "Checks every {s}s · last checked {time}": ("每 {s} 秒检查一次 · 上次检查 {time}", "{s} 秒ごとに確認 · 最終確認 {time}"),
     "Live now: {title}": ("正在直播：{title}", "配信中: {title}"),
-    "{channel} is live — reading chat": ("{channel} 开播了——正在读取聊天", "{channel} が配信開始 — チャットを読み込み中"),
+    "{channel} is live — reading chat": ("{channel} 开播了——正在读取弹幕", "{channel} が配信開始 — チャットを読み込み中"),
     "The YouTube stream ended — watching the channel for the next one.": (
         "YouTube 直播已结束——继续监视频道等待下一场。", "YouTube の配信が終了しました — 次の配信に備えてチャンネルを監視します。"),
     "Watching the channel — it isn't live yet.": ("正在监视频道——尚未开播。", "チャンネルを監視中 — まだ配信していません。"),
@@ -189,7 +294,7 @@ _STRINGS: dict[str, tuple[str, str]] = {
     "Message": ("消息", "メッセージ"),
     "Type a message…": ("输入消息…", "メッセージを入力…"),
     "Send": ("发送", "送信"),
-    "Chat": ("聊天", "チャット"),
+    "Chat": ("弹幕", "チャット"),
     "Gifts & Super Chats": ("礼物和醒目留言", "ギフトとスーパーチャット"),
     "{n} to thank": ("{n} 条待感谢", "未お礼 {n} 件"),
     "{n} total": ("共 {n} 条", "合計 {n} 件"),
@@ -210,7 +315,7 @@ _STRINGS: dict[str, tuple[str, str]] = {
     # ── Stream status tab ────────────────────────────────────────────────────
     "Enter a stream URL above to see its status.": ("在上方输入直播 URL 以查看状态。", "上に配信 URL を入力するとステータスが表示されます。"),
     "Status needs a stream URL or video ID (a raw chat ID has no video info).": (
-        "需要直播 URL 或视频 ID 才能显示状态（聊天 ID 不包含视频信息）。",
+        "需要直播 URL 或视频 ID 才能显示状态（弹幕 ID 不包含视频信息）。",
         "状況の表示には配信 URL または動画 ID が必要です（チャット ID には動画情報がありません）。",
     ),
     "That video is not a live stream.": ("该视频不是直播。", "この動画はライブ配信ではありません。"),
@@ -311,11 +416,11 @@ _STRINGS: dict[str, tuple[str, str]] = {
     "Message Rate (per minute)": ("消息速率（每分钟）", "メッセージ数（毎分）"),
     "Messages per Minute": ("每分钟消息数", "1分あたりのメッセージ数"),
     "Top Chatters": ("发言排行", "発言ランキング"),
-    "Chat stats will appear once messages arrive.": ("收到消息后将显示聊天统计。", "メッセージが届くとチャット統計が表示されます。"),
+    "Chat stats will appear once messages arrive.": ("收到消息后将显示弹幕统计。", "メッセージが届くとチャット統計が表示されます。"),
     "🛡️ Filtered / blocked messages": ("🛡️ 已过滤 / 屏蔽的消息", "🛡️ フィルター / ブロックされたメッセージ"),
     "No blocked messages.": ("没有被屏蔽的消息。", "ブロックされたメッセージはありません。"),
     # ── Filters tab ──────────────────────────────────────────────────────────
-    "🛡️ Chat Filters": ("🛡️ 聊天过滤", "🛡️ チャットフィルター"),
+    "🛡️ Chat Filters": ("🛡️ 弹幕过滤", "🛡️ チャットフィルター"),
     "Keyword / Regex Block Patterns": ("关键词 / 正则屏蔽规则", "キーワード / 正規表現ブロック"),
     "Each pattern is a Python regex (case-insensitive by default).": (
         "每条规则都是 Python 正则表达式（默认不区分大小写）。",
@@ -332,9 +437,9 @@ _STRINGS: dict[str, tuple[str, str]] = {
     "Block by user ID / channel ID": ("按用户 ID / 频道 ID 屏蔽", "ユーザー ID / チャンネル ID でブロック"),
     "Block": ("屏蔽", "ブロック"),
     # ── Overlay tab ──────────────────────────────────────────────────────────
-    "🖥️ Chat Overlay": ("🖥️ 聊天叠加层", "🖥️ チャットオーバーレイ"),
+    "🖥️ Chat Overlay": ("🖥️ 弹幕叠加层", "🖥️ チャットオーバーレイ"),
     "Use the overlay URL in OBS as a **Browser Source** to show a transparent chat on stream.": (
-        "在 OBS 中将叠加层 URL 添加为**浏览器来源**，即可在直播画面显示透明聊天框。",
+        "在 OBS 中将叠加层 URL 添加为**浏览器来源**，即可在直播画面显示透明弹幕框。",
         "OBS でオーバーレイ URL を**ブラウザソース**として追加すると、配信画面に透過チャットを表示できます。",
     ),
     "**How to use**: Add a Browser Source in OBS pointing to `{url}`. "
@@ -347,7 +452,7 @@ _STRINGS: dict[str, tuple[str, str]] = {
     "Overlay channel": ("叠加层频道", "オーバーレイチャンネル"),
     "Sites on this overlay": ("此叠加层显示的网站", "このオーバーレイに表示するサイト"),
     "Show only some sites' chat — e.g. one Browser Source per site. Adds ?site=… to the overlay URL; leave all selected (or empty) for every site.": (
-        "只显示部分网站的聊天——例如每个网站一个浏览器源。会在叠加层网址中加入 ?site=…；全部选中（或留空）则显示所有网站。",
+        "只显示部分网站的弹幕——例如每个网站一个浏览器源。会在叠加层网址中加入 ?site=…；全部选中（或留空）则显示所有网站。",
         "一部のサイトのチャットだけを表示します（例：サイトごとにブラウザソースを 1 つ）。オーバーレイ URL に ?site=… を追加します。すべて選択（または空）ですべてのサイトを表示します。",
     ),
     "Each dashboard user can pick their own channel name so their overlays don't overwrite each other. Letters, digits, - and _ only.": (
@@ -363,7 +468,7 @@ _STRINGS: dict[str, tuple[str, str]] = {
         "このオーバーレイ URL はダッシュボードを開いたアドレス（{host}）を使いますが、オーバーレイはこのコンピューターからの接続のみ受け付けます。OBS で読み込めるよう .env に OVERLAY_HOST=0.0.0.0 を設定して再起動してください。",
     ),
     "Couldn't start the chat overlay on port {port}: {err}": (
-        "无法在端口 {port} 启动聊天叠加层：{err}",
+        "无法在端口 {port} 启动弹幕叠加层：{err}",
         "ポート {port} でチャットオーバーレイを起動できません：{err}",
     ),
     "Custom overlay message (shown permanently on stream)": (
@@ -375,10 +480,10 @@ _STRINGS: dict[str, tuple[str, str]] = {
     "Messages shown in OBS overlay": ("OBS 叠加层显示的消息数", "OBS オーバーレイに表示するメッセージ数"),
     "Super Chats & gifts shown in OBS overlay": ("OBS 叠加层显示的醒目留言和礼物数", "OBS オーバーレイに表示するスーパーチャット・ギフト数"),
     "Super Chats, gifts and memberships are pinned to the top of the overlay, apart from regular chat, so busy chat never pushes them away. Set to 0 to hide them.": (
-        "醒目留言、礼物和会员固定在叠加层顶部，与普通聊天分开，聊天再多也不会把它们挤走。设为 0 则隐藏。",
+        "醒目留言、礼物和会员固定在叠加层顶部，与普通弹幕分开，弹幕再多也不会把它们挤走。设为 0 则隐藏。",
         "スーパーチャット・ギフト・メンバーシップはオーバーレイ上部に固定され、通常チャットとは別なので、チャットが多くても押し出されません。0 で非表示。",
     ),
-    "Recent Chat Preview (last {n} messages)": ("最近聊天预览（最后 {n} 条）", "最近のチャットプレビュー（最新 {n} 件）"),
+    "Recent Chat Preview (last {n} messages)": ("最近弹幕预览（最后 {n} 条）", "最近のチャットプレビュー（最新 {n} 件）"),
     # ── Cookies tab ──────────────────────────────────────────────────────────
     "🍪 Import login cookies": ("🍪 导入登录 Cookie", "🍪 ログイン Cookie をインポート"),
     "🧭 Browser on this computer": ("🧭 本机浏览器", "🧭 このパソコンのブラウザ"),
@@ -468,12 +573,12 @@ _STRINGS: dict[str, tuple[str, str]] = {
         "YouTube によるとこの Cookie はログインしていません（期限切れまたはログアウト済み）。",
     ),
     "Not logged in — chat is read-only. Import cookies in the 🍪 Cookies tab to send.": (
-        "未登录——只能查看聊天。要发送消息，请在 🍪 Cookie 标签页导入 Cookie。",
+        "未登录——只能查看弹幕。要发送消息，请在 🍪 Cookie 标签页导入 Cookie。",
         "未ログイン — チャットは閲覧のみです。送信するには 🍪 Cookie タブで Cookie をインポートしてください。",
     ),
     "All cookie names (values masked)": ("所有 Cookie 名称（值已隐藏）", "すべての Cookie 名（値は伏せ字）"),
     "A live stream URL or video ID, or a channel link like https://www.youtube.com/@name — a channel's chat is picked up automatically when it goes live.": (
-        '直播链接或视频 ID，或频道链接（如 https://www.youtube.com/@name）— 频道开播时会自动读取其聊天。',
+        '直播链接或视频 ID，或频道链接（如 https://www.youtube.com/@name）— 频道开播时会自动读取其弹幕。',
         'ライブ配信の URL または動画 ID、またはチャンネルリンク（例: https://www.youtube.com/@name）— チャンネルが配信を始めると自動でチャットを読み取ります。',
     ),
     'Cookie login is unofficial (it works like youtube.com itself) and may break if YouTube changes it.': (
@@ -493,7 +598,7 @@ _STRINGS: dict[str, tuple[str, str]] = {
         'UID {mid}',
     ),
     'You can now send YouTube chat.': (
-        '现在可以发送 YouTube 聊天了。',
+        '现在可以发送 YouTube 弹幕了。',
         'YouTube チャットを送信できるようになりました。',
     ),
     '⏹ Stop listening': (
@@ -526,12 +631,12 @@ _STRINGS: dict[str, tuple[str, str]] = {
     ),
     "Send as": ("发送身份", "送信するチャンネル"),
     "This Google login owns several YouTube channels — pick which one your chat messages come from.": (
-        "此 Google 账号拥有多个 YouTube 频道——选择以哪个频道发送聊天消息。",
+        "此 Google 账号拥有多个 YouTube 频道——选择以哪个频道发送弹幕消息。",
         "この Google アカウントには複数の YouTube チャンネルがあります。チャットを送信するチャンネルを選んでください。",
     ),
     "🚪 Clear login": ("🚪 清除登录", "🚪 ログインを解除"),
     "Forget your login cookies for this site (also removed from this browser). Chat keeps working read-only.": (
-        "清除你在此网站的登录 Cookie（也会从此浏览器删除）。聊天仍可只读查看。",
+        "清除你在此网站的登录 Cookie（也会从此浏览器删除）。弹幕仍可只读查看。",
         "このサイトのあなたのログイン Cookie を削除します（このブラウザからも削除）。チャットは閲覧のみで引き続き使えます。",
     ),
     "Login saved for you only — kept encrypted in this browser, not shared with other users.": (
@@ -552,7 +657,7 @@ _STRINGS: dict[str, tuple[str, str]] = {
         '🔑 ログインの期限切れ — 🍪 Cookies タブで Cookie を取り込み直してください。',
     ),
     '🔑 Not logged in — chat is read-only. Import cookies in the 🍪 Cookies tab to send.': (
-        '🔑 未登录 — 聊天为只读。在 🍪 Cookies 标签页导入 Cookie 后即可发送。',
+        '🔑 未登录 — 弹幕为只读。在 🍪 Cookies 标签页导入 Cookie 后即可发送。',
         '🔑 未ログイン — チャットは閲覧のみ。送信するには 🍪 Cookies タブで Cookie を取り込んでください。',
     ),
 }

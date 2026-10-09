@@ -1,5 +1,7 @@
 # 🎙️ Streaming Dashboard
 
+**English** | [简体中文](README.zh-CN.md) | [日本語](README.ja.md)
+
 A Streamlit dashboard for live streamers and their audience. It merges live chat from **YouTube**, **Bilibili** and **MissEvan (猫耳FM)** into one screen, with sending, moderation, translation, text-to-speech, a gifts/Super Chat tracker, OBS control and analytics.
 
 The UI is available in **English / 简体中文 / 日本語** and fits PC and tablet screens (landscape and portrait).
@@ -8,9 +10,9 @@ The UI is available in **English / 简体中文 / 日本語** and fits PC and ta
 
 | Area | What it does |
 |---|---|
-| 💬 **Chat** | Live chat from YouTube, Bilibili and MissEvan in one feed, with platform badges, membership badges with the site's own icon (the YouTube channel's member badge, Bilibili's 舰长/提督/总督 icons; MissEvan 贵族/超粉 shows 💎), per-site show/hide checkboxes and **A− / A+** text size buttons on each feed. Message times use the server's time zone by default; pick another in the sidebar under **🕒 Chat time zone** (remembered in the URL as `?tz=`). |
+| 💬 **Chat** | Live chat from YouTube, Bilibili and MissEvan in one feed, with platform badges, membership badges with the site's own icon (the YouTube channel's member badge, Bilibili's 舰长/提督/总督 icons; MissEvan 贵族/超粉 shows 💎), per-site show/hide checkboxes and **A− / A+** text size buttons on each feed. Message times use the server's time zone by default; pick another in the sidebar under **🕒 Chat time zone** (remembered in the URL as `?tz=`). **Site emotes** pickers next to the send box send a site's own emotes to that site only: the YouTube channel's member stamps (collected from chat; with a YouTube login the full set, with 🔒 on stamps you can't use) and the Bilibili room's emote packs (needs a Bilibili login; 🔒 emotes need e.g. the fan medal) plus the streamer's **充电表情** (charging-supporter emotes; listed even without a login, usable once you charge the streamer). All packs show on one page; the streamer's own packs (⭐: 充电表情, 房间专属表情 and their own 装扮 packs) come first. Typed YouTube codes such as `:_wave:` become stamps on YouTube and are left out of the copy sent to Bilibili/MissEvan. MissEvan has no emote picker. |
 | ✉️ **Send** | Post one message to several sites at once (tick YouTube / Bilibili / MissEvan). |
-| 🎁 **Gifts & Super Chats** | Gifts (including free gifts), Super Chats, Super Stickers, memberships and paid questions appear in their own column. Mark each one 🙏 *thanked* (it is greyed out) or *Mark all thanked*. |
+| 🎁 **Gifts & Super Chats** | Gifts (including free gifts), Super Chats, Super Stickers, memberships and paid questions appear in their own column. YouTube gift memberships show the gifter's purchase ("Gifted 10 memberships") and each recipient ("received a gift membership by …"). Bilibili 🧧 红包 show the sender, price and contents, then the winners when the draw ends. Recipients and winners are listed but not read aloud. Mark each one 🙏 *thanked* (it is greyed out) or *Mark all thanked*. |
 | 👋 **Joins** | Viewers entering the room are listed in their own feed under the gifts, not mixed into chat (toggle *Show join events* in the sidebar). |
 | 🛡️ **Moderation** | 🚫 on any message blocks that user. Blocked users, keyword & regex filters and allow-lists are saved to `chat_filters.json` and kept after restarts. |
 | 🌐 **Translation** | Inline translation of chat to Chinese (Simplified/Traditional), English, Japanese or Korean. No API key needed. |
@@ -18,7 +20,7 @@ The UI is available in **English / 简体中文 / 日本語** and fits PC and ta
 | 🔊 **Text-to-speech** | Reads chat aloud on this computer (offline `pyttsx3` or online gTTS) or **in the viewer's browser with the device's own voices** (used automatically when the dashboard is opened from another device or Streamlit Cloud). Includes: language filter, emoji skipping, reading the translated text (when the TTS language matches *Translate to*), skipping usernames for regular chat, **announcing gifts & Super Chats first**, a 🔊 replay button on every message, and **⏭ Skip / ⏹ Stop TTS** buttons to cut off a sensitive comment instantly. |
 | 📡 **Stream Monitoring** | Per-site controls (stream URL / room ID, start/stop listener, login status) plus live / offline state, title and viewer count for each platform. |
 | 🎬 **OBS** | One streamer-only tab for everything OBS: connect, start/stop stream & recording, switch scenes and sources (OBS WebSocket v5), send chat to an OBS Text source, and the chat-only Browser Source overlay. Off until you turn on *Connect to OBS* in that tab. |
-| 📊 **Analytics** | Viewer count (sampled from Stream Monitoring) and messages-per-minute charts, top chatters. |
+| 📊 **Analytics** | Viewer count (sampled from Stream Monitoring) and messages-per-minute charts, top chatters, and 🔥 hotspots for clipping (CSV, timestamp list and DaVinci Resolve EDL markers). |
 | 🍪 **Cookies** | Import login cookies for Bilibili, MissEvan and YouTube — read from a browser on this computer (Chrome / Edge / Firefox), or paste / upload cookies exported from any browser (for servers). |
 
 ## Requirements
@@ -137,6 +139,18 @@ To show chat in OBS, add a **Text (GDI+)** source (or a FreeType text source), t
 Alternatively, add an OBS **Browser Source** pointed at `http://localhost:8502/overlay` (not `:8501/overlay`). This page pins Super Chats, gifts and memberships (Bilibili SC and gifts, MissEvan paid questions and gifts, YouTube Super Chats/Stickers and memberships) to the top of the overlay and regular chat to the bottom, so busy chat never pushes paid events away (3 by default; set **Super Chats & gifts shown in OBS overlay** to 0 to hide), then the most recent regular chat messages (5 by default; change **Messages shown in OBS overlay** in the 🎬 OBS tab, 1–50), available translations only when **Translate chat** is enabled, and the optional custom overlay message. In the 🎬 OBS tab, turn off **Show usernames in OBS overlay** to display chat text without usernames (on by default); the preview follows the same setting. Bilibili custom emotes (e.g. `[doge]`), sticker danmaku, YouTube channel custom emojis (member stamps such as `:_wave:`) and Super Sticker images appear as images in the dashboard, preview and Browser Source; the OBS Text source can only show the text code. Keep the dashboard open for updates. Port 8502 (`OVERLAY_PORT`) must be free; an error in the 🎬 OBS tab reports if the overlay server cannot start. The Browser Source works even when *Connect to OBS* is off. By default the overlay listens only on `127.0.0.1`; when the dashboard runs on a server, set `OVERLAY_HOST=0.0.0.0` (and open the port in the firewall) so OBS on your PC can load `http://<server>:8502/overlay` — the 🎬 OBS tab shows the exact URL. The overlay is read-only and only shows public chat. If several people use the same dashboard, give each one a different **Overlay channel** in the 🎬 OBS tab (adds `?ch=name` to the overlay URL); otherwise every open dashboard publishes to the same overlay and the last one wins.
 
 To show only some sites on an overlay, pick them under **Sites on this overlay** in the 🎬 OBS tab, or add `site=` to the URL yourself: `/overlay?site=youtube`, `/overlay?site=bilibili,missevan`, `/overlay?ch=alice&site=bili` (short names `yt`, `bili`, `me` also work). Each URL gets its own full message counts, so you can add one Browser Source per site (e.g. YouTube chat on one side, Bilibili on the other). Without `site=` every site is shown.
+
+**Streamlit Community Cloud / hosted dashboards:** only the dashboard port is public there, so `:8502/overlay` cannot be reached. The 🎬 OBS tab then shows dashboard links instead, e.g. `https://your-app.streamlit.app/?view=overlay&youtube=@channel&n=10&sc=5`. That page shows only the overlay and refreshes every 2 seconds. If the background is not transparent in OBS, add `body, .stApp { background: transparent !important; }` to the Browser Source's *Custom CSS*.
+
+### 🔥 Hotspots for clipping
+
+The 📊 Analytics tab finds moments where chat, gifts and Super Chats spike well above the stream's usual level (score = messages + 5 × gifts/SC per window, compared with the median). Each hotspot lists start/end times counted from the stream start (taken automatically from Stream Monitoring, or the first message, or a clock time you enter), its peak, and the hot phrases. Lead-in (20 s by default) moves clip starts earlier, because chat reacts after the moment happens. Download as:
+
+- **CSV** (opens in Excel), with times, counts and phrases;
+- **Timestamps (.txt)**, `HH:MM:SS` lines you can paste into a video description or note;
+- **Markers (.edl)** for DaVinci Resolve: put the recording on a timeline, then right-click the timeline in the Media Pool > *Timelines > Import > Timeline Markers from EDL*. *EDL timeline start* must match the timeline start (`01:00:00:00` by default, as in Resolve).
+
+Only messages received while the dashboard page is open are counted.
 
 ## Project structure
 

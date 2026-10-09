@@ -90,6 +90,102 @@ def _custom_emotes(obj: dict) -> dict[str, str]:
     return found
 
 
+_emoji_lock = threading.Lock()
+_channel_emojis: dict[str, OrderedDict] = {}  # video_id -> emojiId -> emoji entry (this channel's stamps)
+_picker_fetched: dict[str, float] = {}  # video_id -> when the logged-in emoji picker was last read
+_PICKER_TTL = 600
+_MAX_EMOJIS = 500
+_YT_CODE_RE = re.compile(r":_[^:\s]+:")
+
+
+def _emoji_entry(emoji: dict) -> dict | None:
+    emoji_id = emoji.get("emojiId", "")
+    # Channel stamps have ids like "UCxxxx/yyyy"; standard emoji use the character itself.
+    if not (emoji.get("isCustomEmoji") or "/" in emoji_id) or not emoji_id:
+        return None
+    shortcuts = [s for s in emoji.get("shortcuts") or [] if isinstance(s, str) and s]
+    thumbs = emoji.get("image", {}).get("thumbnails", [])
+    url = emotes.safe_chat_image_url(thumbs[-1].get("url", "")) if thumbs else ""
+    if not shortcuts or not url:
+        return None
+    label = emoji.get("image", {}).get("accessibility", {}).get("accessibilityData", {}).get("label", "")
+    return {"id": emoji_id, "code": shortcuts[0], "shortcuts": shortcuts, "name": label or shortcuts[0].strip(":_"),
+            "url": url, "locked": bool(emoji["isLocked"]) if "isLocked" in emoji else None}
+
+
+def _collect_emojis(node, found: dict) -> None:
+    if isinstance(node, dict):
+        entry = _emoji_entry(node) if "emojiId" in node else None
+        if entry:
+            found[entry["id"]] = entry
+        for value in node.values():
+            if isinstance(value, (dict, list)):
+                _collect_emojis(value, found)
+    elif isinstance(node, list):
+        for value in node:
+            _collect_emojis(value, found)
+
+
+def _remember_emojis(video_id: str, node) -> None:
+    found: dict = {}
+    _collect_emojis(node, found)
+    if not found:
+        return
+    with _emoji_lock:
+        known = _channel_emojis.setdefault(video_id, OrderedDict())
+        for emoji_id, entry in found.items():
+            old = known.get(emoji_id)
+            # Only the logged-in picker knows whether *you* can use a stamp; chat messages don't.
+            if entry["locked"] is None:
+                entry["locked"] = old["locked"] if old else None
+            known[emoji_id] = entry
+        while len(known) > _MAX_EMOJIS:
+            known.popitem(last=False)
+
+
+def channel_emojis(video_id: str, fetch: bool = False, refresh: bool = False) -> list[dict]:
+    """The stream channel's custom emojis (member stamps) seen so far.
+
+    Chat messages reveal the stamps people use; with `fetch` and a login, the chat window's emoji
+    picker adds the full set and marks the ones this account can't use (`locked`).
+    """
+    if fetch and video_id and has_login() and (
+            refresh or time.time() - _picker_fetched.get(video_id, 0) > _PICKER_TTL):
+        _picker_fetched[video_id] = time.time()
+        try:
+            page = _auth_session(login_cookies()).get(
+                _CHAT_PAGE, params={"is_popout": 1, "v": video_id}, timeout=_TIMEOUT).text
+            _remember_emojis(video_id, _initial_data(page, "ytInitialData"))
+        except requests.RequestException:
+            pass
+    with _emoji_lock:
+        return list(_channel_emojis.get(video_id, {}).values())
+
+
+def message_segments(message: str, emojis: list[dict]) -> list[dict]:
+    """Split a message into innertube text segments, turning known `:shortcut:` codes into emoji."""
+    ids = {code: e["id"] for e in emojis for code in e.get("shortcuts") or [e["code"]]}
+    if not ids:
+        return [{"text": message}]
+    pattern = re.compile("|".join(re.escape(code) for code in sorted(ids, key=len, reverse=True)))
+    segments, pos = [], 0
+    for m in pattern.finditer(message):
+        if m.start() > pos:
+            segments.append({"text": message[pos:m.start()]})
+        segments.append({"emojiId": ids[m.group(0)]})
+        pos = m.end()
+    if pos < len(message):
+        segments.append({"text": message[pos:]})
+    return segments
+
+
+def strip_emoji_codes(message: str, emojis: list[dict] = ()) -> str:
+    """Remove YouTube-only stamp codes (e.g. for the same text sent to other sites)."""
+    for code in sorted({c for e in emojis for c in e.get("shortcuts") or []}, key=len, reverse=True):
+        message = message.replace(code, "")
+    return re.sub(r"\s{2,}", " ", _YT_CODE_RE.sub("", message)).strip()
+
+
 def _sticker_url(renderer: dict) -> str:
     thumbs = renderer.get("sticker", {}).get("thumbnails", [])
     return emotes.safe_chat_image_url(thumbs[-1].get("url", "")) if thumbs else ""
@@ -150,6 +246,7 @@ def _parse_action(action: dict) -> dict | None:
         }}
     kind, r = next(iter(item.items()))
     text = _runs_text(r.get("message", {}))
+    extra: dict = {}
     if kind == "liveChatTextMessageRenderer":
         msg_type = "textMessageEvent"
     elif kind == "liveChatPaidMessageRenderer":
@@ -166,11 +263,22 @@ def _parse_action(action: dict) -> dict | None:
         # "Gifted 5 memberships": the author details live in the header renderer.
         msg_type = "membershipGiftingEvent"
         header = r.get("header", {}).get("liveChatSponsorshipsHeaderRenderer", {})
-        text = f"[{_runs_text(header.get('primaryText', {}))}]"
+        primary = _runs_text(header.get("primaryText", {}))
+        text = f"[{primary}]"
+        count = re.search(r"\d[\d,]*", primary)
+        extra["gift_count"] = int(count.group().replace(",", "")) if count else 1
         r = {**header, "id": r.get("id", ""), "authorExternalChannelId": r.get("authorExternalChannelId", ""),
              "timestampUsec": r.get("timestampUsec", "")}
+    elif kind == "liveChatSponsorshipsGiftRedemptionAnnouncementRenderer":
+        # "X received a gift membership by Y": the gifter is the bold run of the message.
+        msg_type = "giftMembershipReceivedEvent"
+        runs = r.get("message", {}).get("runs", [])
+        bold = [run.get("text", "") for run in runs if run.get("bold")]
+        extra["gifted_by"] = bold[-1].strip() if bold else ""
+        text = f"[Gift membership] {text}".strip()
+        extra["free"] = True  # the recipient paid nothing; the gifter's purchase is announced instead
     else:
-        return None  # placeholders, system banners, polls, gift announcements
+        return None  # placeholders, system banners, polls
     badges = _badges(r)
     member_label, member_icon = _membership(r)
     photos = r.get("authorPhoto", {}).get("thumbnails", [])
@@ -191,6 +299,7 @@ def _parse_action(action: dict) -> dict | None:
         "type": msg_type,
         "timestamp": _iso(r.get("timestampUsec", "")),
         "avatar": photos[-1]["url"] if photos else "",
+        **extra,
     }
 
 
@@ -268,6 +377,7 @@ def get_messages(video_id: str, continuation: str = "",
     if not chat:
         return [], "", 10000  # chat closed or continuation expired; reopen next time
     next_cont, timeout_ms = _next_continuation(chat.get("continuations", []))
+    _remember_emojis(video_id, chat.get("actions", []))
 
     messages = []
     with _lock:
@@ -539,6 +649,8 @@ def send_message(video_id: str, message: str) -> tuple[bool, str]:
         page = s.get(_CHAT_PAGE, params={"is_popout": 1, "v": video_id}, timeout=_TIMEOUT).text
         if '"LOGGED_IN":true' not in page:
             return False, "YouTube says these cookies are signed out — re-import them in the 🍪 Cookies tab."
+        _remember_emojis(video_id, _initial_data(page, "ytInitialData"))
+        _picker_fetched[video_id] = time.time()
         params = re.search(r'"sendLiveChatMessageEndpoint":\{"params":"([^"]+)"', page)
         if not params:
             data = _initial_data(page, "ytInitialData")
@@ -552,7 +664,7 @@ def send_message(video_id: str, message: str) -> tuple[bool, str]:
         body = {
             "context": {"client": {"clientName": "WEB", "clientVersion": ver.group(1) if ver else _FALLBACK_CLIENT_VERSION}},
             "params": params.group(1),
-            "richMessage": {"textSegments": [{"text": message}]},
+            "richMessage": {"textSegments": message_segments(message, channel_emojis(video_id))},
         }
         resp = s.post(_SEND, params={"prettyPrint": "false"}, json=body, headers=_auth_headers(cookies), timeout=_TIMEOUT)
         data = resp.json()

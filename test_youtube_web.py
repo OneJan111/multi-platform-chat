@@ -59,6 +59,27 @@ class YouTubeWebChatTests(unittest.TestCase):
         self.assertEqual(message["emotes"], {":_wave:": "https://yt3.ggpht.com/wave=w48"})
         self.assertEqual(message["sticker_url"], "")
 
+    def test_channel_stamps_remembered_for_sending(self):
+        from src import youtube_web as w
+        wave = {"emojiId": "UC1/wave", "isCustomEmoji": True, "shortcuts": [":_wave:", ":wave:"],
+                "image": {"thumbnails": [{"url": "https://yt3.ggpht.com/wave=w48"}],
+                          "accessibility": {"accessibilityData": {"label": "wave"}}}}
+        w._channel_emojis.pop("vid1", None)
+        w._remember_emojis("vid1", [{"emoji": wave}, {"emoji": {"emojiId": "😀", "shortcuts": [":grinning:"]}}])
+        # The logged-in picker marks member-only stamps; a later chat sighting keeps that.
+        w._remember_emojis("vid1", {"emojis": [dict(wave, emojiId="UC1/hug", shortcuts=[":_hug:"], isLocked=True)]})
+        w._remember_emojis("vid1", [{"emoji": dict(wave, emojiId="UC1/hug", shortcuts=[":_hug:"])}])
+
+        emojis = w.channel_emojis("vid1")
+        self.assertEqual([(e["id"], e["code"], e["locked"]) for e in emojis],
+                         [("UC1/wave", ":_wave:", None), ("UC1/hug", ":_hug:", True)])
+        self.assertEqual(w.message_segments("hi :_wave::wave: bye", emojis),
+                         [{"text": "hi "}, {"emojiId": "UC1/wave"}, {"emojiId": "UC1/wave"}, {"text": " bye"}])
+        self.assertEqual(w.message_segments("plain", []), [{"text": "plain"}])
+        self.assertEqual(w.strip_emoji_codes("hi :_wave: :wave: :_other: there", emojis), "hi there")
+        self.assertEqual(w.strip_emoji_codes(":_wave:", emojis), "")
+        self.assertEqual(w.strip_emoji_codes("time 12:30:45", emojis), "time 12:30:45")
+
     def test_super_sticker_keeps_amount_with_image(self):
         from src.emotes import text_to_html
         message = _parse_action({"addChatItemAction": {"item": {"liveChatPaidStickerRenderer": {
@@ -96,6 +117,31 @@ class YouTubeWebChatTests(unittest.TestCase):
         }}}})
 
         self.assertEqual(message["membership"], "")
+
+    def test_membership_gift_purchase_and_redemption(self):
+        bought = _parse_action({"addChatItemAction": {"item": {
+            "liveChatSponsorshipsGiftPurchaseAnnouncementRenderer": {
+                "id": "g1", "authorExternalChannelId": "UCgifter", "timestampUsec": "1700000000000000",
+                "header": {"liveChatSponsorshipsHeaderRenderer": {
+                    "authorName": {"simpleText": "Gifter"},
+                    "primaryText": {"runs": [{"text": "Gifted "}, {"text": "10"}, {"text": " Ya-chan memberships"}]},
+                }},
+            }}}})
+        got = _parse_action({"addChatItemAction": {"item": {
+            "liveChatSponsorshipsGiftRedemptionAnnouncementRenderer": {
+                "id": "r1", "authorExternalChannelId": "UCfan", "authorName": {"simpleText": "Fan"},
+                "message": {"runs": [{"text": "received a gift membership by "}, {"text": "Gifter", "bold": True}]},
+            }}}})
+
+        self.assertEqual(bought["type"], "membershipGiftingEvent")
+        self.assertEqual(bought["author"], "Gifter")
+        self.assertEqual(bought["gift_count"], 10)
+        self.assertEqual(bought["text"], "[Gifted 10 Ya-chan memberships]")
+        self.assertEqual(got["type"], "giftMembershipReceivedEvent")
+        self.assertEqual(got["author"], "Fan")
+        self.assertEqual(got["gifted_by"], "Gifter")
+        self.assertEqual(got["text"], "[Gift membership] received a gift membership by Gifter")
+        self.assertTrue(got["free"])
 
 
 if __name__ == "__main__":

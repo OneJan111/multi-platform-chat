@@ -272,3 +272,29 @@ class OverlayTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class OverlayHtmlTests(unittest.TestCase):
+    def test_render_html_escapes_and_inlines_safe_images(self):
+        out = overlay_server.render_html({
+            "paid": [{"text": "[SC] <b>hi</b>", "author": "A&B", "platform": "youtube", "kind": "gift"}],
+            "messages": [{"text": "yo :_wave: [x]", "platform": "bilibili",
+                          "emotes": {":_wave:": "https://yt3.ggpht.com/w", "[x]": "https://evil.example/x"}}],
+            "custom_text": "<script>",
+        })
+        self.assertIn("[SC] &lt;b&gt;hi&lt;/b&gt;", out)
+        self.assertIn('class="author youtube">A&amp;B<', out)
+        self.assertIn('class="message paid-item gift"', out)
+        self.assertIn('src="https://yt3.ggpht.com/w"', out)
+        self.assertNotIn("evil.example", out)
+        self.assertIn("&lt;script&gt;", out)
+
+    def test_overlay_data_reads_channel_without_http(self):
+        server = overlay_server.OverlayServer(0, "127.0.0.1")
+        try:
+            server.publish({"messages": [{"text": "hi"}], "paid": [], "custom_text": "", "count": 5, "paid_count": 3},
+                           channel="me")
+            self.assertEqual(overlay_server.overlay_data({"ch": ["me"]}, server)["messages"], [{"text": "hi"}])
+            self.assertEqual(overlay_server.overlay_data({"ch": ["me"]}, None)["messages"], [])
+        finally:
+            server.server_close()

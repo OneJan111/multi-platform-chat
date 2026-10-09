@@ -92,7 +92,7 @@ def format_message(author: str, text: str, lang: str = "auto") -> str:
 # Message types that are paid events (gifts, Super Chats, memberships) across platforms.
 PAID_TYPES = {
     "superChatEvent", "superStickerEvent", "superchat", "gift",
-    "newSponsorEvent", "memberMilestoneChatEvent", "membershipGiftingEvent",
+    "newSponsorEvent", "memberMilestoneChatEvent", "membershipGiftingEvent", "giftMembershipReceivedEvent",
 }
 _ANNOUNCE = {
     "superchat": {
@@ -128,7 +128,7 @@ def announcement_text(text: str) -> str:
     """Make a paid-event line speakable: drop tag words / brackets, emoji markers and the × sign."""
     text = re.sub(r"\b(Super Chat|Super Sticker|SC)\b", " ", text)
     text = re.sub(r"[\[\]【】]", " ", text)
-    text = re.sub(r"🎁|💎", " ", text)
+    text = re.sub(r"🎁|💎|🧧", " ", text)
     text = re.sub(r"\s*×\s*(\d+)", r" \1", text)
     return re.sub(r"\s+", " ", text).strip()
 
@@ -138,7 +138,8 @@ def format_announcement(msg_type: str, author: str, text: str, lang: str = "auto
     code = resolve_language(lang, text)
     if msg_type == "gift":
         kind = "gift"
-    elif msg_type in ("membershipGiftingEvent", "newSponsorEvent", "memberMilestoneChatEvent"):
+    elif msg_type in ("membershipGiftingEvent", "newSponsorEvent", "memberMilestoneChatEvent",
+                      "giftMembershipReceivedEvent"):
         kind = "member"
     else:
         kind = "superchat"

@@ -175,6 +175,14 @@ def get_chat_messages(live_chat_id: str, page_token: str = "") -> tuple[list[dic
             elif msg_type == "memberMilestoneChatEvent":
                 mm = snippet.get("memberMilestoneChatDetails", {})
                 text = f"[Member] {mm.get('userComment','')}"
+            extra = {}
+            if msg_type == "membershipGiftingEvent":
+                gd = snippet.get("membershipGiftingDetails", {})
+                extra["gift_count"] = int(gd.get("giftMembershipsCount") or 1)
+                text = f"[{text}]" if text else f"[Gifted {extra['gift_count']} memberships]"
+            elif msg_type == "giftMembershipReceivedEvent":
+                text = f"[Gift membership] {text}".strip()
+                extra["free"] = True  # the gifter's purchase is the paid event
             messages.append(
                 {
                     "id": item["id"],
@@ -189,6 +197,7 @@ def get_chat_messages(live_chat_id: str, page_token: str = "") -> tuple[list[dic
                     "type": msg_type,
                     "timestamp": snippet.get("publishedAt", ""),
                     "avatar": author.get("profileImageUrl", ""),
+                    **extra,
                 }
             )
         return messages, next_token, polling_ms

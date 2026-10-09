@@ -1,6 +1,7 @@
 """Read-only browser source for the live chat overlay (local by default; see OVERLAY_HOST)."""
 from __future__ import annotations
 
+import html
 import json
 import re
 import socket
@@ -177,6 +178,72 @@ def feed_snapshot(key: "overlay_feeds.FeedKey", query: dict) -> dict:
     )
 
 
+_PAGE_CSS = """
+  #paid, #chat { position: fixed; left: 20px; width: min(420px, calc(100vw - 40px)); overflow: hidden;
+                 font: 16px 'Segoe UI', sans-serif; color: white; z-index: 1000; }
+  #paid { top: 20px; max-height: calc(50vh - 30px); }
+  #chat { bottom: 20px; max-height: calc(50vh - 30px); display: flex; flex-direction: column; justify-content: flex-end; }
+  .message { margin: 4px 0; text-shadow: 1px 1px 3px #000; overflow-wrap: anywhere; white-space: pre-wrap; }
+  .author { font-weight: bold; }
+  .youtube { color: #ff6b6b; }
+  .bilibili { color: #5bc8f5; }
+  .missevan { color: #ffad74; }
+  .translation { color: #9fd3ff; padding-left: 8px; }
+  .emote { height: 1.6em; vertical-align: middle; }
+  .sticker { height: 96px; vertical-align: middle; }
+  #custom { color: #ffd700; font-weight: bold; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .paid-item { background: rgba(120, 0, 0, 0.75); border-left: 4px solid #ffd700; border-radius: 6px; padding: 4px 8px; }
+  .paid-item.gift { background: rgba(80, 20, 110, 0.75); border-left-color: #ff8adf; }
+"""
+
+
+def _html_image(url: str, alt: str, cls: str) -> str:
+    alt = html.escape(alt, quote=True)
+    return (f'<img src="{html.escape(url, quote=True)}" alt="{alt}" title="{alt}" class="{cls}" '
+            f'referrerpolicy="no-referrer">')
+
+
+def _html_text(msg: dict) -> str:
+    text = str(msg.get("text", ""))
+    sticker = emotes.safe_chat_image_url(msg.get("sticker"))
+    if sticker:
+        caption = f"{html.escape(text)}<br>" if msg.get("caption") else ""
+        return caption + _html_image(sticker, text, "sticker")
+    codes = sorted((c for c in (msg.get("emotes") or {}) if isinstance(c, str) and c and c in text),
+                   key=len, reverse=True)
+    if not codes:
+        return html.escape(text)
+    out = []
+    for part in re.split("(" + "|".join(map(re.escape, codes)) + ")", text):
+        url = emotes.safe_chat_image_url(msg["emotes"][part]) if part in codes else ""
+        out.append(_html_image(url, part, "emote") if url else html.escape(part))
+    return "".join(out)
+
+
+def _html_list(messages: list[dict], cls: str) -> str:
+    rows = []
+    for msg in messages or []:
+        row_cls = cls + (" gift" if msg.get("kind") == "gift" else "")
+        parts = []
+        if msg.get("author"):
+            site = msg.get("platform") if msg.get("platform") in SITES else ""
+            parts.append(f'<div class="author {site}">{html.escape(str(msg["author"]))}</div>')
+        parts.append(f'<div class="text">{_html_text(msg)}</div>')
+        if msg.get("translation"):
+            parts.append(f'<div class="translation">{html.escape(str(msg["translation"]))}</div>')
+        rows.append(f'<div class="{row_cls}">{"".join(parts)}</div>')
+    return "".join(rows)
+
+
+def render_html(data: dict) -> str:
+    """The overlay body for `overlay_data()` output, as escaped HTML (for pages that can't run scripts)."""
+    return (
+        f'<div id="paid">{_html_list(data.get("paid"), "message paid-item")}</div>'
+        f'<div id="chat"><div id="messages">{_html_list(data.get("messages"), "message")}</div>'
+        f'<div id="custom">{html.escape(str(data.get("custom_text") or ""))}</div></div>'
+    )
+
+
 _PAGE = """<!doctype html>
 <html lang="en">
 <head>
@@ -272,31 +339,38 @@ setInterval(refresh, 2000);
 </html>""".encode("utf-8")
 
 
+def overlay_data(query: dict, server: "OverlayServer | None" = None) -> dict:
+    """What an overlay URL shows. `query` is parse_qs-style ({name: [values]})."""
+    sites = parse_sites(query.get("site", []))
+    key = overlay_feeds.parse_key(query)
+    if key:
+        data = server.mirror(key) if server is not None else None
+        if data is None:
+            data = feed_snapshot(key, query)
+        else:
+            # Keep the feed warm so the overlay continues seamlessly if the dashboard closes.
+            feed = overlay_feeds.get(key)
+            if feed is not None:
+                feed.last_used = time.time()
+            if not sites:
+                sites = {site for site, value in key._asdict().items() if value}
+    elif server is not None:
+        channel = clean_channel(query.get("ch", [""])[0])
+        with server.snapshot_lock:
+            data = server.channels.get(channel, _EMPTY)
+    else:
+        data = _EMPTY
+    return view(data, sites)
+
+
 class _Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         url = urlparse(self.path)
         if url.path == "/overlay":
             body, content_type = _PAGE, "text/html; charset=utf-8"
         elif url.path == "/overlay/data":
-            query = parse_qs(url.query)
-            sites = parse_sites(query.get("site", []))
-            key = overlay_feeds.parse_key(query)
-            if key:
-                data = self.server.mirror(key)
-                if data is None:
-                    data = feed_snapshot(key, query)
-                else:
-                    # Keep the feed warm so the overlay continues seamlessly if the dashboard closes.
-                    feed = overlay_feeds.get(key)
-                    if feed is not None:
-                        feed.last_used = time.time()
-                    if not sites:
-                        sites = {site for site, value in key._asdict().items() if value}
-            else:
-                channel = clean_channel(query.get("ch", [""])[0])
-                with self.server.snapshot_lock:
-                    data = self.server.channels.get(channel, _EMPTY)
-            body = json.dumps(view(data, sites), ensure_ascii=False).encode("utf-8")
+            data = overlay_data(parse_qs(url.query), self.server)
+            body = json.dumps(data, ensure_ascii=False).encode("utf-8")
             content_type = "application/json; charset=utf-8"
         else:
             self.send_error(404)
