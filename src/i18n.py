@@ -62,6 +62,18 @@ _STRINGS: dict[str, tuple[str, str]] = {
     ),
     "🔊 Text-to-Speech": ("🔊 语音朗读", "🔊 読み上げ"),
     "Enable TTS": ("启用语音朗读", "読み上げを有効化"),
+    "Speak on": ("朗读设备", "読み上げ先"),
+    "This computer (Windows voices)": ("本机（Windows 语音）", "このPC（Windowsの音声）"),
+    "This browser (device voices)": ("本浏览器（设备语音）", "このブラウザ（端末の音声）"),
+    "Browser mode uses your device's own voices and only speaks while this page is open.": (
+        "浏览器模式使用你设备自带的语音，仅在此页面打开时朗读。",
+        "ブラウザモードは端末の音声を使い、このページを開いている間だけ読み上げます。",
+    ),
+    "🔈 Speaks with this device's voices while this page is open. Click anywhere on the page once so the browser allows sound.": (
+        "🔈 在此页面打开时用本设备的语音朗读。请先在页面上任意点击一次，浏览器才允许播放声音。",
+        "🔈 このページを開いている間、端末の音声で読み上げます。ブラウザが音声を許可するよう、ページを一度クリックしてください。",
+    ),
+    "⏹ TTS stopped · queue cleared": ("⏹ 已停止朗读 · 已清空队列", "⏹ 読み上げを停止 · キューをクリアしました"),
     "Language": ("语言", "言語"),
     "Auto-detect reads every message in its own language. Picking a language only reads chat written in that language.": (
         "自动检测会用每条消息自身的语言朗读全部消息。选择某种语言后，只朗读用该语言写的弹幕。",

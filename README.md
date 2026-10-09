@@ -15,7 +15,7 @@ The UI is available in **English / 简体中文 / 日本語** and fits PC and ta
 | 🛡️ **Moderation** | 🚫 on any message blocks that user. Blocked users, keyword & regex filters and allow-lists are saved to `chat_filters.json` and kept after restarts. |
 | 🌐 **Translation** | Inline translation of chat to Chinese (Simplified/Traditional), English, Japanese or Korean. No API key needed. |
 | 🔤 **Reading aids** | Pinyin / hiragana ruby over Super Chat text so the streamer can read it aloud. |
-| 🔊 **Text-to-speech** | Reads chat aloud (offline `pyttsx3` or online gTTS). Includes: language filter, emoji skipping, reading the translated text (when the TTS language matches *Translate to*), skipping usernames for regular chat, **announcing gifts & Super Chats first**, a 🔊 replay button on every message, and **⏭ Skip / ⏹ Stop TTS** buttons to cut off a sensitive comment instantly. |
+| 🔊 **Text-to-speech** | Reads chat aloud on this computer (offline `pyttsx3` or online gTTS) or **in the viewer's browser with the device's own voices** (used automatically when the dashboard is opened from another device or Streamlit Cloud). Includes: language filter, emoji skipping, reading the translated text (when the TTS language matches *Translate to*), skipping usernames for regular chat, **announcing gifts & Super Chats first**, a 🔊 replay button on every message, and **⏭ Skip / ⏹ Stop TTS** buttons to cut off a sensitive comment instantly. |
 | 📡 **Stream Monitoring** | Per-site controls (stream URL / room ID, start/stop listener, login status) plus live / offline state, title and viewer count for each platform. |
 | 🎬 **OBS** | One streamer-only tab for everything OBS: connect, start/stop stream & recording, switch scenes and sources (OBS WebSocket v5), send chat to an OBS Text source, and the chat-only Browser Source overlay. Off until you turn on *Connect to OBS* in that tab. |
 | 📊 **Analytics** | Viewer count (sampled from Stream Monitoring) and messages-per-minute charts, top chatters. |
@@ -81,7 +81,7 @@ Each site has a column on the **📡 Stream Monitoring** tab, and every column h
 What goes in **Room ID or URL**:
 
 - **YouTube** — a live stream URL or video ID. Or a **channel link** (e.g. `https://www.youtube.com/@Ya-chan`): the app checks the channel every 60 s, starts reading chat as soon as it goes live, and goes back to watching when the stream ends.
-- **Bilibili** — the room ID or URL (e.g. `https://live.bilibili.com/21452505`). Without login cookies Bilibili masks usernames (e.g. 波***).
+- **Bilibili** — the room ID or URL (e.g. `https://live.bilibili.com/21452505`, or a `b23.tv` share link). Without login cookies Bilibili masks usernames (e.g. 波***).
 - **MissEvan** — the room ID or URL (e.g. `https://fm.missevan.com/live/869215180`).
 
 ### Logging in to send chat
@@ -125,6 +125,8 @@ Configure in the sidebar under **🔊 Text-to-Speech**: *Enable TTS*, *Language*
 To cut off a sensitive comment, use the buttons at the **top right of the 💬 Chat feed** (shown while TTS is on): **⏭ Skip** stops the current message and goes on to the next; **⏹ Stop TTS** stops it and drops everything still queued. New chat arriving afterwards is still read — turn off *Enable TTS* to silence it completely.
 
 The engine (offline pyttsx3 or online gTTS) is chosen with `TTS_USE_GTTS` in `.env`.
+
+**Speak on → This browser (device voices)** uses the browser's Web Speech API instead, so it works on Streamlit Cloud or a remote server (which have no speakers). Remote viewers always get browser voices. The page must stay open, and browsers only allow sound after you've clicked somewhere on the page once.
 
 ### OBS
 

@@ -10,7 +10,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Callable
 from urllib.parse import parse_qs, urlparse
 
-from src import emotes
+from src import emotes, overlay_feeds
 from src.config import OVERLAY_HOST, OVERLAY_PORT
 
 PORT = OVERLAY_PORT
@@ -134,6 +134,43 @@ def view(data: dict, sites: set[str]) -> dict:
     }
 
 
+_LANG_RE = re.compile(r"^[A-Za-z]{2,3}(?:-[A-Za-z]{2,4})?$")
+
+
+def _int_param(query: dict, name: str, default: int) -> int:
+    try:
+        return int((query.get(name) or [default])[0])
+    except (TypeError, ValueError):
+        return default
+
+
+def feed_snapshot(key: "overlay_feeds.FeedKey", query: dict) -> dict:
+    """Snapshot of a standalone feed (?youtube=…&bilibili=…&missevan=…), shaped by URL options:
+    n (chat lines, default 5), sc (paid events, default 3), names=0 (hide usernames),
+    tr=<lang> (add translations), text=<custom message>."""
+    feed = overlay_feeds.get(key)
+    if feed is None:
+        return dict(_EMPTY, custom_text="Overlay server is busy — too many different overlays open.")
+    chat, paid = feed.messages()
+    target = (query.get("tr") or query.get("translate") or [""])[0].strip()
+    if not _LANG_RE.match(target):
+        target = ""
+    get_translation = lambda *_: ""
+    if target:
+        from src import translate
+        translate.prefetch([m["text"] for m in chat[-MAX_MESSAGES:] + paid[-MAX_MESSAGES:]
+                            if m.get("type") != "gift"], target)
+        get_translation = translate.get_translation
+    return snapshot(
+        chat, bool(target), target, get_translation,
+        custom_text=(query.get("text") or [""])[0][:300],
+        show_username=(query.get("names") or ["1"])[0].lower() not in ("0", "false", "no", "off"),
+        count=_int_param(query, "n", 5),
+        paid_count=_int_param(query, "sc", 3),
+        paid_messages=paid,
+    )
+
+
 _PAGE = """<!doctype html>
 <html lang="en">
 <head>
@@ -232,10 +269,14 @@ class _Handler(BaseHTTPRequestHandler):
             body, content_type = _PAGE, "text/html; charset=utf-8"
         elif url.path == "/overlay/data":
             query = parse_qs(url.query)
-            channel = clean_channel(query.get("ch", [""])[0])
             sites = parse_sites(query.get("site", []))
-            with self.server.snapshot_lock:
-                data = self.server.channels.get(channel, _EMPTY)
+            key = overlay_feeds.parse_key(query)
+            if key:
+                data = feed_snapshot(key, query)
+            else:
+                channel = clean_channel(query.get("ch", [""])[0])
+                with self.server.snapshot_lock:
+                    data = self.server.channels.get(channel, _EMPTY)
             body = json.dumps(view(data, sites), ensure_ascii=False).encode("utf-8")
             content_type = "application/json; charset=utf-8"
         else:
@@ -298,3 +339,21 @@ def ensure_started() -> OverlayServer:
             threading.Thread(target=server.serve_forever, name="chat-overlay", daemon=True).start()
             _STATE["server"] = server
         return _STATE["server"]
+
+
+def main() -> None:
+    """Run only the overlay (no dashboard): python -m src.overlay_server"""
+    server = OverlayServer(OVERLAY_PORT, OVERLAY_HOST)
+    print(f"Chat overlay on http://{OVERLAY_HOST}:{OVERLAY_PORT}/overlay"
+          "?youtube=@channel&bilibili=ROOM&missevan=ROOM  (Ctrl+C to stop)")
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        overlay_feeds.stop_all()
+        server.server_close()
+
+
+if __name__ == "__main__":
+    main()

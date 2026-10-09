@@ -8,11 +8,12 @@ from __future__ import annotations
 
 import base64
 import html as html_lib
+import json
 import os
 import time
 from datetime import datetime
 from typing import Optional
-
+from urllib.parse import urlencode
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
@@ -32,6 +33,9 @@ from src import i18n
 from src import missevan as me
 from src import obs_ctrl as obs
 from src import overlay_server
+if not hasattr(overlay_server, "feed_snapshot"):  # stale copy from before a code update (state survives reload)
+    import importlib
+    overlay_server = importlib.reload(overlay_server)
 from src import reading
 from src import translate as tr
 from src import user_login
@@ -44,7 +48,7 @@ from src.config import (
 from src.filters import ChatFilter, make_default_filter
 from src.tts import (
     LANGUAGES as TTS_LANGUAGES, format_announcement, format_message, is_emoji_only, is_paid,
-    matches_language, speak, speak_async, stop_speaking, strip_emoji,
+    matches_language, resolve_language, speak, speak_async, stop_speaking, strip_emoji,
 )
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -261,6 +265,12 @@ def _init_state():
         # ?overlay=name keeps this dashboard's overlay channel across refreshes.
         "overlay_channel": overlay_server.clean_channel(st.query_params.get("overlay", "")),
         "overlay_sites": list(overlay_server.SITES),
+        "live_notify": True,          # toast + desktop notification when a monitored site goes live
+        "live_states": {},            # "site:room" -> last seen live flag
+        "_live_alerts": [],           # desktop notifications waiting to be shown this run
+        "tts_output": "server",       # "server" = this computer's speakers, "browser" = viewer's device voices
+        "_tts_browser": [],           # lines waiting to be sent to the browser speech player
+        "_tts_browser_cmd": "",       # "skip" / "stop" for the browser speech player
         "last_poll": 0.0,
         "viewer_history": [],         # list of {time, yt, bili}
         # ?lang=zh in the URL lets a bookmark or refresh keep the chosen page language.
@@ -302,6 +312,10 @@ def _is_local_client() -> bool:
 
 _restore_user_logins()
 _sync_login_cookie()
+try:
+    overlay_server.ensure_started()  # standalone overlays (?youtube=…) work without opening the OBS tab
+except OSError:
+    pass  # reported in the 🎬 OBS tab
 
 
 def t(text: str, **kwargs) -> str:
@@ -470,8 +484,35 @@ def _block_user(msg: dict):
 _PLATFORM_NAMES = {"youtube": "YouTube", "bilibili": "Bilibili", "missevan": "MissEvan"}
 
 
+def _browser_tts() -> bool:
+    """Speak in the viewer's browser (device voices) instead of on the computer running the app."""
+    return st.session_state["tts_output"] == "browser" or not _is_local_client()
+
+
+def _tts_say(text: str, lang: str = "auto", priority: bool = False) -> None:
+    """Queue speech: browser player (sent at the end of this run) or the server's pyttsx3 worker."""
+    if not _browser_tts():
+        speak_async(text, rate=st.session_state["tts_rate"], volume=st.session_state["tts_volume"],
+                    lang=lang, priority=priority)
+        return
+    code = resolve_language(lang, text)
+    queue = st.session_state["_tts_browser"]
+    queue.append({
+        "id": f"{time.time_ns()}-{len(queue)}",
+        "text": text,
+        "lang": TTS_LANGUAGES[code][2],
+        "rate": round(st.session_state["tts_rate"] / 150, 2),
+        "volume": st.session_state["tts_volume"],
+        "priority": priority,
+    })
+    del queue[:-60]
+
+
 def _play_tts(text: str, lang: str):
     """Speak now; in gTTS mode keep the clip so the browser player survives auto-refresh."""
+    if _browser_tts():
+        _tts_say(text, lang, priority=True)
+        return
     audio = speak(
         text,
         rate=st.session_state["tts_rate"],
@@ -484,6 +525,11 @@ def _play_tts(text: str, lang: str):
 
 def _stop_tts(clear: bool):
     """Cut off the message being read (e.g. a sensitive comment); clear=True also drops the queue."""
+    if _browser_tts():
+        st.session_state["_tts_browser"] = []
+        st.session_state["_tts_browser_cmd"] = "stop" if clear else "skip"
+        st.toast(t("⏹ TTS stopped · queue cleared") if clear else t("⏭ Skipped the current message"))
+        return
     dropped = stop_speaking(clear=clear)
     st.session_state.pop("_tts_audio", None)  # gTTS: removing the player stops browser playback
     if clear:
@@ -671,11 +717,9 @@ def _poll_chat():
                 lang = "auto"  # gift names are product names; translating them gives nonsense
             else:
                 text, lang = _speech_for(text, st.session_state["tts_lang"])
-            speak_async(
+            _tts_say(
                 format_announcement(m["type"], m["author"], text, lang) if paid
                 else _chat_line(m["author"], text, lang),
-                rate=st.session_state["tts_rate"],
-                volume=st.session_state["tts_volume"],
                 lang=lang,
                 priority=paid,
             )
@@ -733,6 +777,92 @@ def _stop_yt_listener():
     st.session_state["yt_live_video"] = ""
 
 
+def _alert_live(msg: str) -> None:
+    st.toast(msg, icon="🔴")
+    st.session_state["_live_alerts"].append(msg)
+
+
+def _notify_live(key: str, site: str, live: bool, title: str = "") -> None:
+    """Alert when a monitored stream goes from offline to live (not when it was already live on first check)."""
+    states = st.session_state["live_states"]
+    was, states[key] = states.get(key), live
+    if live and was is False and st.session_state["live_notify"]:
+        _alert_live(t("{site} is live: {title}", site=site, title=title) if title else t("{site} is live", site=site))
+
+
+def _emit_live_alerts() -> None:
+    """Show queued go-live alerts as desktop notifications (if this browser allowed them)."""
+    alerts = st.session_state["_live_alerts"]
+    if not alerts:
+        return
+    st.session_state["_live_alerts"] = []
+    st.html(
+        "<script>(() => {"
+        "if (!('Notification' in window) || Notification.permission !== 'granted') return;"
+        f"for (const body of {json.dumps(alerts)}) new Notification('Streaming Dashboard', {{body, tag: body}});"
+        "})();</script>",
+        unsafe_allow_javascript=True,
+    )
+
+
+# Browser speech player: lives in the parent page so it keeps talking across Streamlit reruns.
+_TTS_PLAYER_JS = """
+(() => {
+  const w = window.parent || window, synth = w.speechSynthesis;
+  if (!synth) return;
+  const P = w.__mpcTts || (w.__mpcTts = {seen: new Set(), queue: [], speaking: false});
+  const pick = (lang) => {
+    const voices = synth.getVoices(), base = lang.split('-')[0];
+    return voices.find(v => v.lang.replace('_', '-') === lang)
+        || voices.find(v => v.lang.toLowerCase().startsWith(base)) || null;
+  };
+  const next = () => {
+    if (P.speaking || synth.speaking) return;
+    const item = P.queue.shift();
+    if (!item) return;
+    const u = new w.SpeechSynthesisUtterance(item.text);
+    u.lang = item.lang || ''; u.rate = item.rate; u.volume = item.volume;
+    const voice = item.lang ? pick(item.lang) : null;
+    if (voice) u.voice = voice;
+    P.speaking = true;
+    u.onend = u.onerror = () => { P.speaking = false; setTimeout(next, 50); };
+    synth.speak(u);
+  };
+  P.next = next;
+  const cmd = __CMD__;
+  if (cmd) {
+    if (cmd === 'stop') P.queue = [];
+    P.speaking = false;
+    synth.cancel();
+  }
+  for (const item of __ITEMS__) {
+    if (P.seen.has(item.id)) continue;
+    P.seen.add(item.id);
+    if (item.priority) {
+      const at = P.queue.findIndex(q => !q.priority);
+      P.queue.splice(at < 0 ? P.queue.length : at, 0, item);
+    } else P.queue.push(item);
+  }
+  if (P.seen.size > 500) P.seen = new Set([...P.seen].slice(-200));
+  setTimeout(next, 50);
+})();
+"""
+
+
+def _emit_browser_tts() -> None:
+    """Send this run's TTS lines (and skip/stop) to the viewer's browser, which speaks with its own voices."""
+    items, cmd = st.session_state["_tts_browser"], st.session_state["_tts_browser_cmd"]
+    if not items and not cmd:
+        return
+    st.session_state["_tts_browser"] = []
+    st.session_state["_tts_browser_cmd"] = ""
+    st.html(
+        f"<script>/*{time.time_ns()}*/" + _TTS_PLAYER_JS.replace("__CMD__", json.dumps(cmd))
+        .replace("__ITEMS__", json.dumps(items).replace("</", "<\\/")) + "</script>",
+        unsafe_allow_javascript=True,
+    )
+
+
 def _check_watched_channel(force: bool = False):
     """Attach to the watched channel's stream once it goes live; detach when it ends."""
     channel = st.session_state["yt_watch_channel"]
@@ -757,7 +887,11 @@ def _check_watched_channel(force: bool = False):
         st.session_state["selected_chat_id"] = chat_id
         st.session_state["yt_page_token"] = ""
         st.session_state["yt_live_video"] = info["video_id"]
-        st.toast(t("{channel} is live — reading chat", channel=info["channel"] or "YouTube"))
+        msg = t("{channel} is live — reading chat", channel=info["channel"] or "YouTube")
+        if not force and st.session_state["live_notify"]:
+            _alert_live(msg)  # it went live while we were watching
+        else:
+            st.toast(msg)
 
 
 @st.cache_data(ttl=30, show_spinner=False)
@@ -935,6 +1069,18 @@ with st.sidebar:
     st.session_state["tts_enabled"] = st.toggle(
         t("Enable TTS"), value=st.session_state["tts_enabled"]
     )
+    if _is_local_client():
+        _out_keys = ["server", "browser"]
+        st.session_state["tts_output"] = st.radio(
+            t("Speak on"),
+            _out_keys,
+            index=_out_keys.index(st.session_state["tts_output"]),
+            format_func=lambda k: t("This computer (Windows voices)") if k == "server" else t("This browser (device voices)"),
+            horizontal=True,
+            help=t("Browser mode uses your device's own voices and only speaks while this page is open."),
+        )
+    else:
+        st.caption(t("🔈 Speaks with this device's voices while this page is open. Click anywhere on the page once so the browser allows sound."))
     _lang_keys = list(TTS_LANGUAGES)
     st.session_state["tts_lang"] = st.selectbox(
         t("Language"),
@@ -1014,6 +1160,30 @@ tab_chat, tab_status, tab_obs, tab_analytics, tab_filters, tab_cookies = st.tabs
 # ═══════════════════════════════════════════════════════════════════════════════
 
 with tab_status:
+    _notify_col, _allow_col = st.columns([3, 2], vertical_alignment="center")
+    _notify_col.toggle(
+        t("Notify me when a stream goes live"), key="live_notify",
+        help=t("While this dashboard is open, show a pop-up (and a desktop notification, if allowed) "
+               "when the YouTube channel/stream, Bilibili room or MissEvan room below goes live."),
+    )
+    if st.session_state["live_notify"]:
+        with _allow_col:
+            # A real click in the page: browsers only ask for notification permission on a user gesture.
+            st.html(
+                f'<button id="mpc-allow-notify" style="padding:4px 10px;border-radius:6px;cursor:pointer;'
+                f'border:1px solid rgba(128,128,128,.5);background:transparent;color:inherit;font:inherit">'
+                f'{html_lib.escape(t("🔔 Allow desktop notifications"))}</button>'
+                '<script>(() => {'
+                'const b = document.getElementById("mpc-allow-notify");'
+                'if (!b) return;'
+                'if (!("Notification" in window)) { b.disabled = true; return; }'
+                f'const done = {json.dumps(t("🔔 Desktop notifications on"))};'
+                'if (Notification.permission === "granted") { b.textContent = done; b.disabled = true; return; }'
+                'b.onclick = () => Notification.requestPermission().then(p => {'
+                ' if (p === "granted") { b.textContent = done; b.disabled = true; } });'
+                '})();</script>',
+                unsafe_allow_javascript=True,
+            )
     yt_col, bili_col, me_col = st.columns(3)
     yt_viewers_now = 0
     bili_viewers_now = 0
@@ -1106,6 +1276,8 @@ with tab_status:
             elif not info["is_stream"]:
                 st.warning(t("That video is not a live stream."))
             else:
+                _notify_live(f"youtube:{video_id}", "YouTube", info["broadcast"] == "live",
+                             info.get("title", ""))
                 if info["broadcast"] == "live":
                     dot, label = "dot-live", t("🟢 Live")
                 elif info["broadcast"] == "upcoming":
@@ -1184,6 +1356,8 @@ with tab_status:
                 st.error(t("Could not fetch room info."))
             else:
                 live_status = info.get("live_status", 0)
+                _notify_live(f"bilibili:{room_id}", "Bilibili", live_status == 1,
+                             info.get("uname") or info.get("title", ""))
                 status_map = {1: ("dot-live", t("🟢 Live")), 0: ("dot-offline", t("⚫ Offline")), 2: ("dot-offline", t("📼 Playback"))}
                 dot, label = status_map.get(live_status, ("dot-offline", t("Unknown")))
                 st.markdown(
@@ -1256,6 +1430,8 @@ with tab_status:
             if not info:
                 st.error(t("Could not fetch room info."))
             else:
+                _notify_live(f"missevan:{me_room_id}", t("MissEvan"), info["live"],
+                             info.get("uname") or info.get("title", ""))
                 dot, label = ("dot-live", t("🟢 Live")) if info["live"] else ("dot-offline", t("⚫ Offline"))
                 st.markdown(f'<span class="status-dot {dot}"></span>**{label}**', unsafe_allow_html=True)
                 st.subheader(info.get("title", ""))
@@ -1424,12 +1600,21 @@ with tab_chat:
 
 with tab_obs:
     # Everything OBS-related lives here: it's for the streamer only.
-    st.toggle(
-        t("Connect to OBS"), key="obs_enabled", on_change=obs.retry_now,
-        help=t("Off: the dashboard never contacts OBS. On: stream, recording, scene and Text source controls appear here once OBS is connected."),
-    )
+    _obs_local = _is_local_client()
+    if not _obs_local:
+        # The OBS WebSocket can start/stop the stream, so only the computer running the dashboard gets it.
+        st.session_state["obs_enabled"] = False
+        st.info(t("OBS controls are only available on the computer running this dashboard. "
+                  "The chat overlay below works from anywhere."))
+    else:
+        st.toggle(
+            t("Connect to OBS"), key="obs_enabled", on_change=obs.retry_now,
+            help=t("Off: the dashboard never contacts OBS. On: stream, recording, scene and Text source controls appear here once OBS is connected."),
+        )
     obs_status = obs.get_status() if st.session_state["obs_enabled"] else {"connected": False}
-    if not obs_status.get("connected"):
+    if not _obs_local:
+        st.session_state["obs_chat_last"] = None
+    elif not obs_status.get("connected"):
         st.session_state["obs_chat_last"] = None
         if st.session_state["obs_enabled"]:
             code, detail = obs.last_error
@@ -1619,6 +1804,39 @@ with tab_obs:
     )
     overlay_sc_count = int(st.session_state["overlay_sc_count"])
 
+    # Standalone overlay: the overlay server reads the sites itself, no dashboard needed.
+    _yt_source = st.session_state["yt_watch_channel"] or st.session_state["yt_chat_input"]
+    _yt_channel = ytw.channel_url(_yt_source or "")
+    if _yt_channel.startswith("https://www.youtube.com/@"):
+        _yt_source = _yt_channel.rsplit("/", 1)[1]
+    _standalone = {
+        "youtube": (_yt_source or "").strip(),
+        "bilibili": str(st.session_state["bili_room_id"] or "").strip(),
+        "missevan": me.parse_room_id(str(st.session_state["me_room_id"] or "")),
+    }
+    _standalone = {k: v for k, v in _standalone.items() if v and (not _overlay_sites or k in _overlay_sites)}
+    if _standalone:
+        _params = dict(_standalone)
+        if overlay_count != 5:
+            _params["n"] = overlay_count
+        if overlay_sc_count != 3:
+            _params["sc"] = overlay_sc_count
+        if not st.session_state["overlay_show_username"]:
+            _params["names"] = 0
+        if st.session_state["translate_enabled"]:
+            _params["tr"] = st.session_state["translate_target"]
+        if st.session_state["overlay_visible"] and overlay_text:
+            _params["text"] = overlay_text
+        _standalone_url = f"{_overlay_base}/overlay?" + urlencode(_params, safe="@,")
+        st.markdown("**" + t("Standalone overlay (no dashboard needed)") + "**")
+        st.code(_standalone_url, language=None)
+        st.caption(t(
+            "This URL reads the chat by itself, like a logged-out viewer, as long as the overlay server runs — "
+            "you can close the dashboard. Edit the youtube= (@handle, channel or video link), bilibili= and "
+            "missevan= (room ID or link) values to show any channel. Options: n= chat lines, sc= Super Chats & gifts, "
+            "names=0 hides usernames, tr=en adds translations, text= custom message. "
+            "Bilibili hides viewer names from logged-out readers, so they appear masked."
+        ))
     def _on_overlay(m: dict) -> bool:
         return not _overlay_sites or m.get("platform") in _overlay_sites
 
@@ -1993,6 +2211,8 @@ with tab_cookies:
             )
 
 _sync_login_cookie()
+_emit_live_alerts()
+_emit_browser_tts()
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Auto-refresh: a browser-side timer reruns the app. Sleeping + st.rerun() on the

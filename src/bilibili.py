@@ -34,10 +34,36 @@ def has_login_credentials() -> bool:
 
 
 def parse_room_id(text: str) -> str:
-    """Accept a room ID or a room URL such as https://live.bilibili.com/21452505."""
+    """Accept a room ID, a room URL such as https://live.bilibili.com/21452505, or a b23.tv share link."""
     text = (text or "").strip()
-    m = re.search(r"live\.bilibili\.com/(?:h5/|blanc/)?(\d+)", text) or re.fullmatch(r"(\d+)", text)
+    short = re.search(r"(?:https?://)?b23\.tv/[\w-]+", text)
+    if short:
+        text = _resolve_short_link(short.group(0))
+    m = (
+        re.search(r"live\.bilibili\.com/(?:h5/|blanc/)?(\d+)", text)
+        or re.search(r"bilibili\.com/blackboard/live/[^?#]*\?(?:[^#]*&)?cid=(\d+)", text)
+        or re.fullmatch(r"(\d+)", text)
+    )
     return m.group(1) if m else ""
+
+
+_short_links: dict[str, str] = {}
+
+
+def _resolve_short_link(url: str) -> str:
+    """b23.tv links (the app's Share button) redirect to the real live.bilibili.com URL."""
+    if url in _short_links:
+        return _short_links[url]
+    target = url if url.startswith(("http://", "https://")) else "https://" + url
+    try:
+        resp = requests.head(target, allow_redirects=True, timeout=5,
+                             headers={"User-Agent": "Mozilla/5.0"})
+    except requests.RequestException:
+        return ""
+    if len(_short_links) > 256:
+        _short_links.clear()
+    _short_links[url] = resp.url
+    return resp.url
 
 
 def _credential(values: Optional[tuple[str, str, str, str]] = None) -> "Credential":
@@ -136,6 +162,10 @@ class DanmakuListener:
         self.connected_uid: Optional[int] = None
         # The starting user's login, captured here: the listener thread has no Streamlit session.
         self._login = _cookie_values()
+
+    @property
+    def running(self) -> bool:
+        return self._running
 
     @property
     def is_anonymous(self) -> bool:

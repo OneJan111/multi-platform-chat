@@ -141,6 +141,58 @@ class OverlayTests(unittest.TestCase):
             server.server_close()
             thread.join(timeout=2)
 
+    def test_standalone_feed_url_parsing_and_snapshot(self):
+        from src import overlay_feeds
+        key = overlay_feeds.parse_key({
+            "youtube": ["@Ya-chan"], "bilibili": ["https://live.bilibili.com/25760587"],
+            "missevan": ["nonsense"],
+        })
+        self.assertEqual(key, overlay_feeds.FeedKey("https://www.youtube.com/@Ya-chan", "25760587", ""))
+        self.assertEqual(overlay_feeds.parse_key({"yt": ["https://youtu.be/dQw4w9WgXcQ"]}).youtube,
+                         "dQw4w9WgXcQ")
+        self.assertFalse(overlay_feeds.parse_key({"ch": ["alice"]}))
+
+        feed = overlay_feeds.Feed(key)  # not started: no network
+        from src.filters import make_default_filter
+        feed._filter = make_default_filter(None)  # built-in defaults (blocks links), not the saved file
+        feed.add(overlay_feeds._stamp([
+            {"type": "danmaku", "text": f"b{i}", "platform": "bilibili", "author": "x"} for i in range(8)
+        ] + [
+            {"type": "superchat", "text": "[SC ¥30] hi", "platform": "bilibili"},
+            {"type": "gift", "text": "free", "platform": "bilibili", "free": True},
+            {"type": "enter", "text": "entered the room", "platform": "bilibili"},
+            {"type": "danmaku", "text": "spam www.example.com", "platform": "bilibili"},
+        ]))
+        original_get = overlay_feeds.get
+        overlay_feeds.get = lambda k: feed
+        try:
+            data = overlay_server.view(overlay_server.feed_snapshot(
+                key, {"n": ["3"], "names": ["0"], "text": ["hey"]}), set())
+        finally:
+            overlay_feeds.get = original_get
+        self.assertEqual([m["text"] for m in data["messages"]], ["b5", "b6", "b7"])
+        self.assertNotIn("author", data["messages"][0])
+        self.assertEqual([m["text"] for m in data["paid"]], ["[SC ¥30] hi"])
+        self.assertEqual(data["custom_text"], "hey")
+
+    def test_bilibili_room_id_or_url(self):
+        from unittest import mock
+        from src import bilibili
+        for text in ["25760587", " 25760587 ", "https://live.bilibili.com/25760587?live_from=85001",
+                     "live.bilibili.com/h5/25760587", "https://m.live.bilibili.com/25760587",
+                     "https://www.bilibili.com/blackboard/live/live-activity-player.html?enterTheRoom=0&cid=25760587"]:
+            self.assertEqual(bilibili.parse_room_id(text), "25760587", text)
+        for text in ["", "abc", "https://live.bilibili.com/", "https://www.bilibili.com/video/BV1xx411c7mD"]:
+            self.assertEqual(bilibili.parse_room_id(text), "", text)
+        resolved = mock.Mock(url="https://live.bilibili.com/25760587?share_source=copy_link")
+        bilibili._short_links.clear()
+        with mock.patch.object(bilibili.requests, "head", return_value=resolved) as head:
+            self.assertEqual(bilibili.parse_room_id("【直播】 https://b23.tv/AbC123"), "25760587")
+            self.assertEqual(bilibili.parse_room_id("【直播】 https://b23.tv/AbC123"), "25760587")
+        head.assert_called_once()
+        with mock.patch.object(bilibili.requests, "head", side_effect=bilibili.requests.ConnectionError):
+            self.assertEqual(bilibili.parse_room_id("https://b23.tv/Other1"), "")
+
     def test_channels_are_isolated(self):
         server = overlay_server.OverlayServer(0)
         thread = threading.Thread(target=server.serve_forever, daemon=True)

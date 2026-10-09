@@ -184,10 +184,13 @@ def check_chat(video_id: str) -> str:
         return f"Couldn't reach YouTube: {exc.__class__.__name__}"
 
 
-def get_messages(video_id: str, continuation: str = "") -> tuple[list[dict], str, int]:
+def get_messages(video_id: str, continuation: str = "",
+                 seen: OrderedDict | None = None) -> tuple[list[dict], str, int]:
     """
     Fetch new chat messages. Pass "" as continuation to start (returns recent history too).
     Returns (messages, next continuation, suggested poll interval in ms).
+    `seen` lets an independent reader (e.g. the standalone overlay) dedupe on its own, so it
+    doesn't hide messages from a dashboard reading the same stream.
     """
     try:
         if not continuation or video_id not in _client_version:
@@ -210,7 +213,8 @@ def get_messages(video_id: str, continuation: str = "") -> tuple[list[dict], str
 
     messages = []
     with _lock:
-        seen = _seen.setdefault(video_id, OrderedDict())
+        if seen is None:
+            seen = _seen.setdefault(video_id, OrderedDict())
         for action in chat.get("actions", []):
             msg = _parse_action(action)
             if not msg or not msg["id"] or msg["id"] in seen:
