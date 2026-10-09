@@ -853,7 +853,7 @@ def parse_upower_emotes(resp: dict, uid: int) -> list[dict]:
         seen.add(name)
         items.append({"name": name, "unique": f"upower_[UPOWER_{uid}_{name}]", "url": url,
                       "locked": locked, "hint": "为主播充电后可用"})
-    return [{"name": "充电表情", "type": "upower", "emotes": items}] if items else []
+    return [{"name": "充电表情", "type": "upower", "owner": True, "emotes": items}] if items else []
 
 
 def parse_emoticons(resp) -> list[dict]:

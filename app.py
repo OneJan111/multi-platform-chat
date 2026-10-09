@@ -32,21 +32,45 @@ from src import bilibili as bili
 from src import browser_cookies as bc
 from src import emotes
 from src import highlights as hl
-if not hasattr(emotes, "safe_chat_image_url"):  # stateless; reload after a code update
-    import importlib
-    emotes = importlib.reload(emotes)
 from src import i18n
 from src import missevan as me
 from src import obs_ctrl as obs
 from src import overlay_server
-if not hasattr(overlay_server, "render_html"):  # stale copy from before a code update (state survives reload)
-    import importlib
-    overlay_server = importlib.reload(overlay_server)
 from src import reading
+from src import tts as _tts
 from src import translate as tr
 from src import user_login
 from src import youtube as yt
 from src import youtube_web as ytw
+
+
+def _fresh(mod):
+    """Streamlit reruns app.py after a code update (e.g. a push to Streamlit Cloud) but keeps already-imported
+    modules, so new code in src/ would be missing until the server restarts. Reload a module whose file
+    changed since it was loaded (one loaded before this check existed is reloaded once). Only for modules
+    whose module-level state is just caches."""
+    import importlib
+    try:
+        mtime = os.path.getmtime(mod.__file__)
+    except (OSError, TypeError, AttributeError):
+        return mod
+    if getattr(mod, "_loaded_mtime", None) != mtime:
+        mod = importlib.reload(mod)
+        mod._loaded_mtime = mtime
+    return mod
+
+
+# Dependencies first: youtube imports youtube_web; bilibili and youtube_web import emotes.
+emotes = _fresh(emotes)
+i18n = _fresh(i18n)
+_tts = _fresh(_tts)
+hl = _fresh(hl)
+ytw = _fresh(ytw)
+yt = _fresh(yt)
+bili = _fresh(bili)
+if not hasattr(overlay_server, "render_html"):  # stale copy from before a code update (state survives reload)
+    import importlib
+    overlay_server = importlib.reload(overlay_server)
 from src.config import (
     BILIBILI_ROOM_ID, CHAT_POLL_INTERVAL, MISSEVAN_ROOM_ID, OBS_HOST, OBS_PORT, OVERLAY_HOST,
     OVERLAY_PUBLIC_URL, YOUTUBE_CHANNEL,
