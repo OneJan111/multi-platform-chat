@@ -8,11 +8,13 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import time
 from typing import Optional
 
 import requests
 
+from src import emotes
 from src.config import BILIBILI_ROOM_ID
 
 try:
@@ -34,6 +36,13 @@ def _cookie_values() -> tuple[str, str, str, str]:
 
 def has_login_credentials() -> bool:
     return bool(_cookie_values()[0])
+
+
+def parse_room_id(text: str) -> str:
+    """Accept a room ID or a room URL such as https://live.bilibili.com/21452505."""
+    text = (text or "").strip()
+    m = re.search(r"live\.bilibili\.com/(?:h5/|blanc/)?(\d+)", text) or re.fullmatch(r"(\d+)", text)
+    return m.group(1) if m else ""
 
 
 def _credential() -> "Credential":
@@ -177,6 +186,7 @@ class DanmakuListener:
             async def on_danmu(event):
                 info = event["data"]["info"]
                 meta = info[0] if info and isinstance(info[0], list) else []
+                emote_map, sticker = emotes.parse_danmu_emotes(meta)
                 self.messages.append(
                     {
                         "id": f"bili_{time.time_ns()}",
@@ -190,6 +200,8 @@ class DanmakuListener:
                         "type": "danmaku",
                         # dm_type 1 = sticker/emoticon danmaku (big emote image)
                         "is_emoticon": len(meta) > 12 and meta[12] == 1,
+                        "emotes": emote_map,
+                        "sticker_url": sticker,
                         "timestamp": str(int(time.time())),
                         "avatar": "",
                         "color": meta[3] if len(meta) > 3 else 16777215,

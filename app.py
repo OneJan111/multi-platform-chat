@@ -6,7 +6,9 @@ Run with:
 """
 from __future__ import annotations
 
+import base64
 import html as html_lib
+import os
 import time
 from datetime import datetime
 from typing import Optional
@@ -25,14 +27,16 @@ st.set_page_config(
 
 from src import bilibili as bili
 from src import browser_cookies as bc
+from src import emotes
 from src import i18n
 from src import missevan as me
 from src import obs_ctrl as obs
+from src import overlay_server
 from src import reading
 from src import translate as tr
 from src import youtube as yt
 from src import youtube_web as ytw
-from src.config import CHAT_POLL_INTERVAL, MISSEVAN_ROOM_ID
+from src.config import BILIBILI_ROOM_ID, CHAT_POLL_INTERVAL, MISSEVAN_ROOM_ID, YOUTUBE_CHANNEL
 from src.filters import ChatFilter, make_default_filter
 from src.tts import (
     LANGUAGES as TTS_LANGUAGES, format_announcement, format_message, is_emoji_only, is_paid,
@@ -54,24 +58,27 @@ st.markdown(
     line-height: 1.4;
     word-break: break-word;
 }
-.chat-yt   { background: #1a1a2e; border-left: 3px solid #ff0000; }
-.chat-bili { background: #1a1a2e; border-left: 3px solid #23ade5; }
-.chat-me   { background: #1a1a2e; border-left: 3px solid #ff7a45; }
-.chat-gift { background: #2a1a2e !important; }
+/* Translucent tints and currentColor mixes so the chat reads well in both light and dark themes */
+.chat-yt   { background: rgba(128,128,160,0.13); border-left: 3px solid #ff0000; }
+.chat-bili { background: rgba(128,128,160,0.13); border-left: 3px solid #23ade5; }
+.chat-me   { background: rgba(128,128,160,0.13); border-left: 3px solid #ff7a45; }
+.chat-gift { background: rgba(156,39,176,0.16) !important; }
 .chat-thanked { opacity: 0.45; }
 .chat-mod  { border-left-color: #ffd700 !important; }
-.chat-sc   { background: #3a1a00 !important; border-left-color: #ff6600 !important; }
-.chat-superchat { background: #3a0000 !important; border-left-color: #ff0000 !important; }
+.chat-sc   { background: rgba(255,120,0,0.17) !important; border-left-color: #ff6600 !important; }
+.chat-superchat { background: rgba(230,0,0,0.16) !important; border-left-color: #ff0000 !important; }
 .chat-translation {
     margin-top: 3px;
     padding-top: 3px;
-    border-top: 1px dashed #444;
-    color: #9fd3ff;
+    border-top: 1px dashed rgba(128,128,128,0.45);
+    color: color-mix(in srgb, #2f8fe0 65%, currentColor);
     font-size: 0.95em;
 }
-.chat-translation.pending { color: #777; font-style: italic; }
+.chat-translation.pending { color: color-mix(in srgb, currentColor 50%, transparent); font-style: italic; }
+/* Message text sits on its own line under the badges / time / username */
+.chat-text { margin-top: 2px; }
 .chat-reading { line-height: 2.2; }
-.chat-reading rt { font-size: 0.62em; color: #ffcc80; letter-spacing: 0; }
+.chat-reading rt { font-size: 0.62em; color: color-mix(in srgb, #f08c00 70%, currentColor); letter-spacing: 0; }
 .badge {
     display: inline-block;
     font-size: 0.77em;
@@ -81,9 +88,9 @@ st.markdown(
     margin-right: 4px;
     vertical-align: middle;
 }
-.badge-yt   { background:#ff0000; color:#fff; }
-.badge-bili { background:#23ade5; color:#fff; }
-.badge-me   { background:#ff7a45; color:#fff; }
+.site-icon { display: inline-block; vertical-align: middle; object-fit: contain; border-radius: 22%; }
+h3 .site-icon { margin-right: 0.15em; position: relative; top: -0.08em; }
+.badge-icon { margin-right: 4px; }
 .badge-mod  { background:#ffd700; color:#000; }
 .badge-owner{ background:#cc0000; color:#fff; }
 .badge-sc   { background:#ff6600; color:#fff; }
@@ -129,15 +136,15 @@ st.markdown(
     height: 130px;
     overflow-y: auto;
     font-size: calc(0.82rem * var(--chat-scale, 1));
-    color: #aaa;
+    color: color-mix(in srgb, currentColor 70%, transparent);
     border: 1px solid rgba(128,128,128,0.25);
     border-radius: 6px;
     padding: 4px 8px;
 }
 .join-row { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; line-height: 1.6; }
-.join-row b { color: #ccc; font-weight: 500; margin-left: 4px; }
-.join-time { color: #777; margin-right: 6px; font-size: 0.9em; }
-.join-empty { color: #777; font-style: italic; }
+.join-row b { color: color-mix(in srgb, currentColor 85%, transparent); font-weight: 500; margin-left: 4px; }
+.join-time { color: color-mix(in srgb, currentColor 55%, transparent); margin-right: 6px; font-size: 0.9em; }
+.join-empty { color: color-mix(in srgb, currentColor 55%, transparent); font-style: italic; }
 /* Portrait tablets: stack chat above gifts (must precede the row rules below) */
 @media (max-width: 900px) {
     .st-key-chat_paid [data-testid="stHorizontalBlock"] { flex-wrap: wrap !important; }
@@ -226,24 +233,29 @@ def _init_state():
         "sc_reading": "auto",
         "show_enter_events": True,
         "obs_enabled": False,         # never contact OBS unless the streamer turns this on
+        "obs_chat_enabled": False,
+        "obs_chat_source": "",
+        "obs_chat_last": None,
+        "obs_chat_last_at": 0.0,
         "text_scale": {"chat": 100, "paid": 100, "join": 100},  # text size in % per feed
         "max_chat_display": 200,
         "selected_chat_id": "",
-        "yt_chat_input": "",
+        "yt_chat_input": YOUTUBE_CHANNEL.strip(),
         "yt_watch_channel": "",       # channel URL being watched for its next live stream
         "yt_watch_info": {},          # last ytw.find_live_video() result
         "yt_watch_last": 0.0,
         "yt_live_video": "",          # video ID of the stream the watcher attached to
         "yt_chat_error": "",
-        "bili_room_id": "",
+        "bili_room_id": bili.parse_room_id(BILIBILI_ROOM_ID),
         "me_listener": None,
         "me_room_id": MISSEVAN_ROOM_ID,
         "overlay_text": "",
         "overlay_visible": False,
+        "overlay_show_username": True,
+        "overlay_count": 5,
+        "overlay_sc_count": 3,
         "last_poll": 0.0,
         "viewer_history": [],         # list of {time, yt, bili}
-        "yt_auth_url": "",
-        "yt_auth_code": "",
         # ?lang=zh in the URL lets a bookmark or refresh keep the chosen page language.
         "ui_lang": st.query_params.get("lang", "en") if st.query_params.get("lang") in i18n.UI_LANGUAGES else "en",
     }
@@ -269,13 +281,33 @@ def t(text: str, **kwargs) -> str:
 # Helpers
 # ──────────────────────────────────────────────────────────────────────────────
 
+_ICON_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "icons")
+_ICON_FILES = {"youtube": "youtube.png", "bilibili": "bilibili.svg", "missevan": "missevan.png"}
+
+
+@st.cache_resource
+def _site_icon_uris() -> dict[str, str]:
+    uris = {}
+    for platform, name in _ICON_FILES.items():
+        mime = "image/svg+xml" if name.endswith(".svg") else "image/png"
+        with open(os.path.join(_ICON_DIR, name), "rb") as f:
+            uris[platform] = f"data:{mime};base64,{base64.b64encode(f.read()).decode()}"
+    return uris
+
+
+def _site_icon(platform: str, size: str = "1.1em", cls: str = "site-icon") -> str:
+    name = _PLATFORM_NAMES.get(platform, platform)
+    return (f'<img class="{cls}" src="{_site_icon_uris()[platform]}" alt="{name}" title="{name}" '
+            f'style="width:{size};height:{size}">')
+
+
+def _site_heading(platform: str) -> None:
+    st.markdown(f"### {_site_icon(platform)} {_PLATFORM_NAMES[platform]}", unsafe_allow_html=True)
+
+
 def _platform_badge(msg: dict) -> str:
     p = msg.get("platform", "")
-    if p == "youtube":
-        return '<span class="badge badge-yt">YT</span>'
-    if p == "missevan":
-        return '<span class="badge badge-me">猫耳</span>'
-    return '<span class="badge badge-bili">bili</span>'
+    return _site_icon(p if p in _ICON_FILES else "bilibili", size="1.25em", cls="site-icon badge-icon")
 
 
 def _role_badges(msg: dict) -> str:
@@ -342,7 +374,7 @@ def _render_message(msg: dict, key_prefix: str = "", thank: bool = False):
     ts = _fmt_time(msg.get("timestamp", ""))
     author = html_lib.escape(msg.get("author", ""))
     text = msg.get("text", "")
-    text_html = html_lib.escape(text)
+    text_html = emotes.text_to_html(text, msg.get("emotes"), msg.get("sticker_url", ""))
     if "super" in msg.get("type", "").lower():
         annotated = reading.annotate_html(text, st.session_state["sc_reading"])
         if annotated:
@@ -357,8 +389,9 @@ def _render_message(msg: dict, key_prefix: str = "", thank: bool = False):
     html = (
         f'<div class="chat-bubble {bubble}">'
         f'{badges}'
-        f'<span style="color:#aaa;font-size:0.85em;">[{ts}]</span> '
-        f'<strong>{author}</strong>: {text_html}'
+        f'<span style="color:color-mix(in srgb, currentColor 60%, transparent);font-size:0.85em;">[{ts}]</span> '
+        f'<strong>{author}</strong>'
+        f'<div class="chat-text">{text_html}</div>'
         f"{translation_html}"
         f"</div>"
     )
@@ -438,10 +471,11 @@ def _change_text_size(feed: str, step: int):
     scales[feed] = _TEXT_SIZES[max(0, min(len(_TEXT_SIZES) - 1, i + step))]
 
 
-def _text_size_buttons(container, feed: str):
+def _text_size_buttons(container, feed: str, stretch: bool = True):
     """A− / A+ at the right end of a feed's header row."""
     size = st.session_state["text_scale"][feed]
-    container.space("stretch")
+    if stretch:
+        container.space("stretch")
     container.button(
         "A−", key=f"size_{feed}_dec", type="tertiary", disabled=size <= _TEXT_SIZES[0],
         on_click=_change_text_size, args=(feed, -1), help=t("Smaller text ({p}%)", p=size),
@@ -450,6 +484,35 @@ def _text_size_buttons(container, feed: str):
         "A+", key=f"size_{feed}_inc", type="tertiary", disabled=size >= _TEXT_SIZES[-1],
         on_click=_change_text_size, args=(feed, 1), help=t("Bigger text ({p}%)", p=size),
     )
+
+
+def _sync_obs_chat():
+    if not st.session_state["obs_enabled"] or not st.session_state["obs_chat_enabled"]:
+        st.session_state["obs_chat_last"] = None
+        return
+    source = st.session_state["obs_chat_source"]
+    if not source:
+        return
+    chat = st.session_state["chat_messages"]
+    if st.session_state["translate_enabled"]:
+        tr.prefetch(
+            [m["text"] for m in obs.recent_chat(chat)],
+            st.session_state["translate_target"],
+        )
+    text = obs.format_chat_text(
+        chat, st.session_state["translate_enabled"], st.session_state["translate_target"], tr.get_translation,
+    )
+    last = st.session_state["obs_chat_last"]
+    now = time.monotonic()
+    if last == (source, text) and now - st.session_state["obs_chat_last_at"] < 30:
+        return
+    try:
+        obs.set_text_source(source, text)
+    except Exception as exc:
+        st.warning(t("Couldn't update OBS chat text: {err}", err=str(exc)))
+        return
+    st.session_state["obs_chat_last"] = (source, text)
+    st.session_state["obs_chat_last_at"] = now
 
 
 def _tts_stop_buttons(container, prefix: str):
@@ -677,27 +740,120 @@ def _cached_me_room_info(room_id: str) -> dict:
     return me.get_room_info(room_id)
 
 
+@st.cache_data(ttl=300, show_spinner=False)
+def _cached_yt_cookie_login(cookie: str, page_id: str = "") -> dict:
+    # `cookie`/`page_id` are the cache key so new cookies or a channel switch re-check immediately.
+    return ytw.verify_login()
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def _cached_yt_channels(cookie: str) -> dict:
+    return ytw.list_channels()
+
+
+def _set_yt_channel(choices: dict[str, str]) -> None:
+    ytw.select_channel(choices.get(st.session_state["yt_send_as"], ""), persist=_cookie_persist())
+
+
+def _render_yt_channel_picker() -> None:
+    """'Send as' picker when the Google login owns more than one YouTube channel (brand accounts)."""
+    channels = _cached_yt_channels(os.getenv("YOUTUBE_COOKIE", "")).get("channels", [])
+    if len(channels) < 2:
+        return
+    choices = {}
+    for ch in channels:
+        label = ch["name"] + (f" ({ch['handle']})" if ch["handle"] and ch["handle"] != ch["name"] else "")
+        choices[label] = ch["page_id"]
+    current = ytw.selected_page_id()
+    labels = list(choices)
+    index = next((i for i, lbl in enumerate(labels) if choices[lbl] == current), 0)
+    st.selectbox(
+        t("Send as"), labels, index=index, key="yt_send_as",
+        on_change=_set_yt_channel, args=(choices,),
+        help=t("This Google login owns several YouTube channels — pick which one your chat messages come from."),
+    )
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _cached_me_cookie_login(cookie: str) -> dict:
+    return me.verify_login()
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _cached_bili_login(sessdata: str) -> dict:
+    return bc.verify_bilibili_login({name: os.getenv(env, "") for name, env in bc.BILIBILI_ENV_KEYS.items()})
+
+
+def _clear_login(site: str, env_keys: list[str]) -> None:
+    removed = bc.clear_login(env_keys)
+    for key in ("_yt_saved_name", "_yt_saved_msg", "_me_saved_msg", "yt_send_as"):
+        st.session_state.pop(key, None)
+    st.toast(t("Cleared the {site} login (memory and .env).", site=site) if removed
+             else t("Cleared the {site} login.", site=site))
+
+
+def _render_login(state: Optional[dict], name: str, detail: str = "",
+                  site: str = "", env_keys: Optional[list[str]] = None) -> None:
+    """Login line shared by every site; `state` is the verify result, or None when no cookies are set."""
+    if state and state.get("is_login"):
+        st.success(t("🔑 Logged in as **{name}**", name=name) + (f" · {detail}" if detail else ""))
+    elif state and state.get("error"):
+        st.warning(t("🔑 Couldn't check the login: {err}", err=state["error"]))
+    elif state:
+        st.warning(t("🔑 Login expired — re-import cookies in the 🍪 Cookies tab."))
+    else:
+        st.info(t("🔑 Not logged in — chat is read-only. Import cookies in the 🍪 Cookies tab to send."))
+    if state is not None and env_keys:
+        st.button(
+            t("🚪 Clear login"), key=f"clear_login_{env_keys[0]}", type="tertiary",
+            on_click=_clear_login, args=(site, env_keys),
+            help=t("Forget this site's login cookies (also removed from .env). Chat keeps working read-only."),
+        )
+
+
+def _render_listener(site: str, running: bool, level: str, msg: str, detail: str = "",
+                     can_start: bool = True) -> Optional[str]:
+    """Listener line plus Start/Stop button shared by every site. Returns "start"/"stop" when clicked."""
+    if msg:
+        {"ok": st.success, "info": st.info, "warn": st.warning}[level](msg)
+    elif not running:
+        st.caption(t("🎧 Not listening."))
+    if detail:
+        st.caption(detail)
+    if running:
+        return "stop" if st.button(t("⏹ Stop listening"), key=f"{site}_listen_stop") else None
+    clicked = st.button(t("▶ Start listening"), key=f"{site}_listen_start", type="primary", disabled=not can_start)
+    return "start" if clicked else None
+
+
+def _me_login_state() -> Optional[dict]:
+    """Verified MissEvan cookie login, or None when no cookies are saved."""
+    return _cached_me_cookie_login(os.getenv("MISSEVAN_COOKIE", "")) if me.has_login() else None
+
+
+def _cookie_persist() -> bool:
+    return bool(st.session_state.get("cookie_persist"))
+
+
+def _cookie_applied_msg(keys: str) -> str:
+    if _cookie_persist():
+        return t("Saved {keys} to .env and applied.", keys=keys)
+    return t("Applied {keys} in memory only — not written to disk; lost when the app restarts.", keys=keys)
+
+
 def _render_missevan_verify(verify: Optional[dict], cookies: dict, key: str):
     if verify and verify["is_login"]:
         st.success(t("Logged in as **{uname}** (UID {mid}).", uname=verify["username"], mid=verify["user_id"]))
-        if st.button(t("💾 Save to .env and apply"), key=key):
-            me.save_login(cookies)
+        if st.button(t("✅ Use these cookies"), key=key):
+            me.save_login(cookies, persist=_cookie_persist())
             st.session_state["_me_saved_uid"] = verify["user_id"]
+            st.session_state["_me_saved_msg"] = _cookie_applied_msg("MISSEVAN_COOKIE")
         if st.session_state.get("_me_saved_uid") == verify["user_id"]:
-            st.success(t("Saved MISSEVAN_COOKIE to .env — you can now send chat to MissEvan."))
+            st.success(st.session_state.get("_me_saved_msg", "") + " " + t("You can now send chat to MissEvan."))
     elif verify and verify.get("error"):
         st.error(verify["error"])
     else:
         st.warning(t("MissEvan reports these cookies are not logged in — log in at fm.missevan.com first."))
-
-
-def _status_badge(is_live: bool, detail: str = ""):
-    dot, label = ("dot-live", t("LIVE")) if is_live else ("dot-offline", t("Offline"))
-    suffix = f" · {detail}" if detail else ""
-    st.markdown(
-        f'<span class="status-dot {dot}"></span>**{label}**{suffix}',
-        unsafe_allow_html=True,
-    )
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -719,265 +875,6 @@ with st.sidebar:
         st.rerun()
 
     st.title(t("🎙️ Streaming Dashboard"))
-    st.divider()
-
-    # ── YouTube auth ──────────────────────────────────────────────────────────
-    st.subheader("🔴 YouTube")
-    # Handle Google's OAuth redirect: http://localhost:8501/?state=...&code=...
-    if "code" in st.query_params:
-        ok, err = yt.complete_oauth_flow(
-            st.query_params.get("code", ""), st.query_params.get("state", "")
-        )
-        st.query_params.clear()
-        st.query_params["lang"] = st.session_state["ui_lang"]
-        st.session_state["yt_auth_url"] = ""
-        st.session_state["yt_oauth_result"] = (ok, err)
-    elif "error" in st.query_params and "state" in st.query_params:
-        err = st.query_params.get("error", "")
-        st.query_params.clear()
-        st.query_params["lang"] = st.session_state["ui_lang"]
-        st.session_state["yt_oauth_result"] = (False, t("Google returned: {err}", err=err))
-    oauth_result = st.session_state.pop("yt_oauth_result", None)
-    if oauth_result:
-        if oauth_result[0]:
-            st.success(t("YouTube sign-in complete!"))
-        else:
-            st.error(oauth_result[1])
-
-    if yt.is_authenticated():
-        st.success(t("Authenticated ✓"))
-    else:
-        if ytw.has_login():
-            st.success(t("Signed in with browser cookies ✓ (sending chat)"))
-            st.caption(t("OAuth is optional — needed only for ban / delete and your own broadcast stats."))
-        else:
-            st.warning(t("Not authenticated"))
-        if st.button(t("Start YouTube OAuth")):
-            url = yt.start_oauth_flow()
-            if url:
-                st.session_state["yt_auth_url"] = url
-            else:
-                st.error(t("Set YOUTUBE_CLIENT_ID / CLIENT_SECRET in .env first."))
-        if st.session_state["yt_auth_url"]:
-            st.link_button(t("Open Google sign-in"), st.session_state["yt_auth_url"])
-            st.caption(t(
-                "After you approve, Google redirects back here and sign-in completes automatically. "
-                "If it doesn't, paste the full redirect URL below."
-            ))
-            pasted = st.text_input(t("Redirect URL or code"), key="yt_code_input")
-            if st.button(t("Submit")) and pasted:
-                ok, err = yt.complete_oauth_flow(*yt.parse_redirect(pasted))
-                if ok:
-                    st.session_state["yt_auth_url"] = ""
-                    st.success(t("Authenticated!"))
-                    st.rerun()
-                else:
-                    st.error(err)
-
-    yt_chat_input = st.text_input(
-        t("Live stream URL, video ID, or live chat ID"),
-        value=st.session_state["yt_chat_input"],
-        key="yt_room_input",
-        placeholder="https://www.youtube.com/watch?v=…",
-        help=t("Or a channel link like https://www.youtube.com/@name — the chat is picked up automatically when the channel goes live."),
-    ).strip()
-    if yt_chat_input != st.session_state["yt_chat_input"]:
-        st.session_state["yt_chat_input"] = yt_chat_input
-        # Changing the stream stops the current listener, like the Bilibili room field.
-        _stop_yt_listener()
-        st.session_state["yt_chat_error"] = ""
-        st.session_state["yt_watch_channel"] = ""
-        st.session_state["yt_watch_info"] = {}
-
-    _yt_vid = yt.extract_video_id(yt_chat_input) if yt_chat_input else ""
-    _yt_channel = "" if _yt_vid else ytw.channel_url(yt_chat_input)
-    _yt_vid = _yt_vid or st.session_state["yt_live_video"]
-    if _yt_vid:
-        _yt_info = _cached_video_status(_yt_vid)
-        if _yt_info:
-            _yt_live = _yt_info["broadcast"] == "live"
-            _status_badge(
-                _yt_live,
-                t("{n} watching", n=f"{_yt_info['viewers']:,}") if _yt_live
-                else (t("Upcoming") if _yt_info["broadcast"] == "upcoming" else ""),
-            )
-
-    _check_watched_channel()  # before drawing, so the status below is current
-    watching = st.session_state["yt_watch_channel"]
-    if st.session_state["selected_chat_id"]:
-        st.success(t("YouTube chat listener active ✓"))
-        winfo = st.session_state["yt_watch_info"]
-        if watching and winfo.get("title"):
-            st.caption(t("Live now: {title}", title=winfo["title"]))
-        if yt.is_web_chat(st.session_state["selected_chat_id"]):
-            st.caption(t("Reading chat without sign-in. Sign in to send messages or moderate."))
-        elif not watching and st.session_state["selected_chat_id"] != yt_chat_input:
-            st.caption(t("Chat ID: `{chat_id}`", chat_id=st.session_state["selected_chat_id"]))
-        if st.button(t("Stop watching channel") if watching else t("Stop YouTube listener")):
-            _stop_yt_listener()
-            st.session_state["yt_watch_channel"] = ""
-            st.rerun()
-    elif watching:
-        winfo = st.session_state["yt_watch_info"]
-        name = winfo.get("channel") or watching.rsplit("/", 1)[-1]
-        if winfo.get("error"):
-            st.warning(t(winfo["error"]))
-        elif winfo.get("upcoming"):
-            st.info(t("👀 Watching {name} — stream scheduled: {title}", name=name, title=winfo.get("title", "")))
-        else:
-            st.info(t("👀 Watching {name} — not live yet", name=name))
-        st.caption(t(
-            "Checks every {s}s · last checked {time}", s=YT_WATCH_INTERVAL,
-            time=datetime.fromtimestamp(st.session_state["yt_watch_last"]).strftime("%H:%M:%S"),
-        ))
-        if st.session_state["yt_chat_error"]:
-            st.error(t(st.session_state["yt_chat_error"]))
-        if st.button(t("Stop watching channel")):
-            st.session_state["yt_watch_channel"] = ""
-            st.session_state["yt_watch_info"] = {}
-            st.rerun()
-    elif _yt_channel:
-        if st.button(t("👀 Watch channel")):
-            st.session_state["yt_watch_channel"] = _yt_channel
-            _check_watched_channel(force=True)
-            st.rerun()
-        st.caption(t("Waits for the channel to go live, then reads its chat automatically."))
-    else:
-        if st.button(t("Start YouTube listener")) and yt_chat_input:
-            chat_id, err = yt.resolve_live_chat_id(yt_chat_input)
-            st.session_state["selected_chat_id"] = chat_id
-            st.session_state["yt_chat_error"] = err
-            st.session_state["yt_page_token"] = ""
-            if chat_id:
-                st.rerun()
-        if st.session_state["yt_chat_error"]:
-            st.error(st.session_state["yt_chat_error"])
-
-    st.divider()
-
-    # ── Bilibili ──────────────────────────────────────────────────────────────
-    st.subheader("💙 Bilibili")
-    bili_room = st.text_input(
-        t("Room ID"), value=st.session_state["bili_room_id"], key="bili_room_input"
-    ).strip()
-    if bili_room != st.session_state["bili_room_id"]:
-        st.session_state["bili_room_id"] = bili_room
-        # Reset listener
-        if st.session_state["bili_listener"]:
-            st.session_state["bili_listener"].stop()
-            st.session_state["bili_listener"] = None
-
-    if bili_room:
-        _bili_info = _cached_room_info(bili_room)
-        if _bili_info:
-            _bili_live = _bili_info.get("live_status") == 1
-            _status_badge(
-                _bili_live,
-                t("popularity {n}", n=f"{_bili_info.get('online', 0):,}") if _bili_live
-                else (t("Playback") if _bili_info.get("live_status") == 2 else ""),
-            )
-
-    listener: Optional[bili.DanmakuListener] = st.session_state["bili_listener"]
-    if listener and listener._running:
-        if listener.connected_uid is None:
-            st.info(t("Danmaku listener connecting…"))
-        elif listener.is_anonymous:
-            st.warning(t(
-                "Danmaku listener active, but **anonymous** — Bilibili masks usernames (e.g. 波***). "
-                "Import login cookies in the 🍪 Cookies tab."
-            ))
-        else:
-            st.success(t("Danmaku listener active ✓ (logged in, UID {uid})", uid=listener.connected_uid))
-        if st.button(t("Stop Bilibili listener")):
-            listener.stop()
-            st.session_state["bili_listener"] = None
-            st.rerun()
-    else:
-        if not bili.has_login_credentials():
-            st.caption(t("No Bilibili login cookies set — chat usernames will be masked."))
-        if st.button(t("Start Bilibili listener")) and bili_room:
-            l = bili.DanmakuListener(bili_room)
-            if l.start():
-                st.session_state["bili_listener"] = l
-                st.success(t("Listener started!"))
-            else:
-                st.error(t("bilibili-api-python not installed or connection failed."))
-
-    st.divider()
-
-    # ── MissEvan 猫耳FM ────────────────────────────────────────────────────────
-    st.subheader("🐱 MissEvan 猫耳FM")
-    me_input = st.text_input(
-        t("Room ID or URL"), value=st.session_state["me_room_id"], key="me_room_input",
-        placeholder="https://fm.missevan.com/live/869215180",
-    )
-    me_room = me.parse_room_id(me_input)
-    if me_room != st.session_state["me_room_id"]:
-        st.session_state["me_room_id"] = me_room
-        if st.session_state["me_listener"]:
-            st.session_state["me_listener"].stop()
-            st.session_state["me_listener"] = None
-    if me_input.strip() and not me_room:
-        st.error(t("Could not find a room ID in that text."))
-
-    if me_room:
-        _me_info = _cached_me_room_info(me_room)
-        if _me_info:
-            _me_listener_now = st.session_state["me_listener"]
-            _me_online = (_me_listener_now.online if _me_listener_now and _me_listener_now.online is not None
-                          else _me_info.get("online", 0))
-            _status_badge(_me_info.get("live", False),
-                          t("{n} online", n=f"{_me_online:,}") if _me_info.get("live") and _me_online else "")
-            st.caption(f"{_me_info.get('uname', '')} · {_me_info.get('title', '')}")
-        else:
-            st.warning(t("MissEvan room not found."))
-
-    me_listener: Optional[me.MissEvanListener] = st.session_state["me_listener"]
-    if me_listener and me_listener.running:
-        if me_listener.connected:
-            st.success(t("MissEvan chat listener active ✓"))
-        elif me_listener.error:
-            st.warning(me_listener.error)
-        else:
-            st.info(t("MissEvan chat listener connecting…"))
-        if st.button(t("Stop MissEvan listener")):
-            me_listener.stop()
-            st.session_state["me_listener"] = None
-            st.rerun()
-    else:
-        st.caption(t("Shows chat, gifts, paid questions and joins without login. To send chat, log in via the 🍪 Cookies tab."))
-        if st.button(t("Start MissEvan listener")) and me_room:
-            l = me.MissEvanListener(me_room)
-            if l.start():
-                st.session_state["me_listener"] = l
-                st.rerun()
-            else:
-                st.error(l.error)
-
-    st.divider()
-
-    # ── OBS ───────────────────────────────────────────────────────────────────
-    st.subheader("🎬 OBS")
-    st.toggle(
-        t("Connect to OBS"), key="obs_enabled", on_change=obs.retry_now,
-        help=t("Off: the dashboard never contacts OBS. On: OBS controls appear here and in the 🎬 OBS Control tab once OBS is connected."),
-    )
-    obs_status = obs.get_status() if st.session_state["obs_enabled"] else {"connected": False}
-    if not st.session_state["obs_enabled"]:
-        st.caption(t("OBS functions are off."))
-    elif obs_status.get("connected"):
-        st.success(t("OBS connected ✓"))
-        scenes = obs.get_scenes()
-        if scenes:
-            cur_scene = obs_status.get("current_scene", "")
-            idx = scenes.index(cur_scene) if cur_scene in scenes else 0
-            new_scene = st.selectbox(t("Scene"), scenes, index=idx, key="obs_scene_sel")
-            if new_scene != cur_scene:
-                obs.switch_scene(new_scene)
-                st.rerun()
-    else:
-        st.warning(t("OBS not connected — check OBS_HOST/PORT/PASSWORD in .env"))
-
     st.divider()
 
     # ── Translation ───────────────────────────────────────────────────────────
@@ -1052,7 +949,6 @@ with st.sidebar:
         _samples = {"zh": "你好，欢迎来到直播间", "ja": "こんにちは、配信へようこそ", "ko": "안녕하세요, 방송에 오신 것을 환영합니다", "en": "Hello, welcome to the stream"}
         _sample = _samples.get(st.session_state["tts_lang"], _samples["en"])
         _play_tts(format_message("Streamer", _sample, st.session_state["tts_lang"]), st.session_state["tts_lang"])
-    _tts_stop_buttons(st.container(horizontal=True), "sb")
     if st.session_state.get("_tts_audio"):
         st.audio(st.session_state["_tts_audio"], format="audio/mp3", autoplay=True)
     st.session_state["tts_rate"] = st.slider(
@@ -1080,9 +976,276 @@ with st.sidebar:
 # Main area tabs
 # ──────────────────────────────────────────────────────────────────────────────
 
-tab_chat, tab_status, tab_obs, tab_analytics, tab_filters, tab_overlay, tab_cookies = st.tabs(
-    [t(x) for x in ("💬 Chat", "📡 Stream Status", "🎬 OBS Control", "📊 Analytics", "🛡️ Filters", "🖥️ Overlay", "🍪 Cookies")]
+tab_chat, tab_status, tab_obs, tab_analytics, tab_filters, tab_cookies = st.tabs(
+    [t(x) for x in ("💬 Chat", "📡 Stream Monitoring", "🎬 OBS", "📊 Analytics", "🛡️ Filters", "🍪 Cookies")]
 )
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TAB: STREAM STATUS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+with tab_status:
+    yt_col, bili_col, me_col = st.columns(3)
+    yt_viewers_now = 0
+    bili_viewers_now = 0
+
+    # ── YouTube ───────────────────────────────────────────────────────────────
+    with yt_col:
+        _site_heading("youtube")
+        _yt_login = (_cached_yt_cookie_login(os.getenv("YOUTUBE_COOKIE", ""), ytw.selected_page_id())
+                     if ytw.has_login() else None)
+        _render_login(_yt_login, (_yt_login or {}).get("name", ""), site="YouTube",
+                      env_keys=["YOUTUBE_COOKIE", "YOUTUBE_PAGE_ID"])
+        if _yt_login and _yt_login.get("is_login"):
+            _render_yt_channel_picker()
+
+        yt_chat_input = st.text_input(
+            t("Room ID or URL"),
+            value=st.session_state["yt_chat_input"],
+            key="yt_room_input",
+            placeholder="https://www.youtube.com/watch?v=…",
+            help=t("A live stream URL or video ID, or a channel link like https://www.youtube.com/@name — "
+                   "a channel's chat is picked up automatically when it goes live."),
+        ).strip()
+        if yt_chat_input != st.session_state["yt_chat_input"]:
+            st.session_state["yt_chat_input"] = yt_chat_input
+            # Changing the stream stops the current listener, like the other sites' room fields.
+            _stop_yt_listener()
+            st.session_state["yt_chat_error"] = ""
+            st.session_state["yt_watch_channel"] = ""
+            st.session_state["yt_watch_info"] = {}
+
+        _yt_vid = yt.extract_video_id(yt_chat_input) if yt_chat_input else ""
+        _yt_channel = "" if _yt_vid else ytw.channel_url(yt_chat_input)
+
+        _check_watched_channel()  # before drawing, so the status below is current
+        watching = st.session_state["yt_watch_channel"]
+        winfo = st.session_state["yt_watch_info"]
+        if st.session_state["selected_chat_id"]:
+            action = _render_listener(
+                "yt", True, "ok", t("🎧 Listening ✓"),
+                t("Live now: {title}", title=winfo["title"]) if watching and winfo.get("title") else "",
+            )
+        elif watching:
+            name = winfo.get("channel") or watching.rsplit("/", 1)[-1]
+            if winfo.get("error"):
+                level, msg = "warn", t(winfo["error"])
+            elif winfo.get("upcoming"):
+                level, msg = "info", t("👀 Watching {name} — stream scheduled: {title}", name=name, title=winfo.get("title", ""))
+            else:
+                level, msg = "info", t("👀 Watching {name} — not live yet", name=name)
+            action = _render_listener("yt", True, level, msg, t(
+                "Checks every {s}s · last checked {time}", s=YT_WATCH_INTERVAL,
+                time=datetime.fromtimestamp(st.session_state["yt_watch_last"]).strftime("%H:%M:%S"),
+            ))
+        else:
+            action = _render_listener(
+                "yt", False, "", "",
+                t("Waits for the channel to go live, then reads its chat automatically.") if _yt_channel else "",
+                can_start=bool(yt_chat_input),
+            )
+        if action == "stop":
+            _stop_yt_listener()
+            st.session_state["yt_watch_channel"] = ""
+            st.session_state["yt_watch_info"] = {}
+            st.rerun()
+        elif action == "start" and _yt_channel:
+            st.session_state["yt_watch_channel"] = _yt_channel
+            _check_watched_channel(force=True)
+            st.rerun()
+        elif action == "start":
+            chat_id, err = yt.resolve_live_chat_id(yt_chat_input)
+            st.session_state["selected_chat_id"] = chat_id
+            st.session_state["yt_chat_error"] = err
+            st.session_state["yt_page_token"] = ""
+            if chat_id:
+                st.rerun()
+        if st.session_state["yt_chat_error"] and not st.session_state["selected_chat_id"]:
+            st.error(t(st.session_state["yt_chat_error"]))
+        st.divider()
+        yt_input = st.session_state["yt_chat_input"]
+        video_id = _yt_video_id()
+        if not yt_input:
+            st.warning(t("Enter a stream URL above to see its status."))
+        elif st.session_state["yt_watch_channel"] and not video_id:
+            st.info(t("Watching the channel — it isn't live yet."))
+        elif not video_id:
+            st.info(t("Status needs a stream URL or video ID (a raw chat ID has no video info)."))
+        else:
+            info = _cached_video_status(video_id)
+            if not info:
+                st.error(t("Could not fetch stream info."))
+            elif not info["is_stream"]:
+                st.warning(t("That video is not a live stream."))
+            else:
+                if info["broadcast"] == "live":
+                    dot, label = "dot-live", t("🟢 Live")
+                elif info["broadcast"] == "upcoming":
+                    dot, label = "dot-offline", t("🕒 Upcoming")
+                else:
+                    dot, label = "dot-offline", t("⚫ Ended") if info["ended"] else t("⚫ Offline")
+                st.markdown(
+                    f'<span class="status-dot {dot}"></span>**{label}**',
+                    unsafe_allow_html=True,
+                )
+                st.subheader(info["title"])
+                if info["channel"]:
+                    st.caption(t("Channel: {channel}", channel=info["channel"]))
+                if info["thumbnail"]:
+                    st.image(info["thumbnail"], width=200)
+                if info["broadcast"] == "live":
+                    st.metric(t("Viewers"), f"{info['viewers']:,}")
+                    if info["actual_start"]:
+                        st.caption(t("Live since: {t}", t=info["actual_start"]))
+                    yt_viewers_now = info["viewers"]
+                elif info["broadcast"] == "upcoming" and info["scheduled_start"]:
+                    st.caption(t("Scheduled: {t}", t=info["scheduled_start"]))
+
+    # ── Bilibili status ───────────────────────────────────────────────────────
+    with bili_col:
+        _site_heading("bilibili")
+        _bili_login = _cached_bili_login(os.getenv("BILIBILI_SESSDATA", "")) if bili.has_login_credentials() else None
+        _render_login(_bili_login, (_bili_login or {}).get("uname", ""),
+                      t("UID {mid}", mid=_bili_login["mid"]) if _bili_login and _bili_login.get("mid") else "",
+                      site="Bilibili", env_keys=list(bc.BILIBILI_ENV_KEYS.values()))
+
+        bili_input = st.text_input(
+            t("Room ID or URL"), value=st.session_state["bili_room_id"], key="bili_room_input",
+            placeholder="https://live.bilibili.com/21452505",
+        ).strip()
+        bili_room = bili.parse_room_id(bili_input)
+        if bili_room != st.session_state["bili_room_id"]:
+            st.session_state["bili_room_id"] = bili_room
+            if st.session_state["bili_listener"]:
+                st.session_state["bili_listener"].stop()
+                st.session_state["bili_listener"] = None
+        if bili_input and not bili_room:
+            st.error(t("Could not find a room ID in that text."))
+
+        listener: Optional[bili.DanmakuListener] = st.session_state["bili_listener"]
+        bili_running = bool(listener and listener._running)
+        level, msg = "", ""
+        if bili_running and listener.connected_uid is None:
+            level, msg = "info", t("🎧 Connecting…")
+        elif bili_running and listener.is_anonymous:
+            level, msg = "warn", t(
+                "🎧 Listening anonymously — Bilibili masks usernames (e.g. 波***). "
+                "Import login cookies in the 🍪 Cookies tab."
+            )
+        elif bili_running:
+            level, msg = "ok", t("🎧 Listening ✓")
+        action = _render_listener("bili", bili_running, level, msg, can_start=bool(bili_room))
+        if action == "stop":
+            listener.stop()
+            st.session_state["bili_listener"] = None
+            st.rerun()
+        elif action == "start":
+            l = bili.DanmakuListener(bili_room)
+            if l.start():
+                st.session_state["bili_listener"] = l
+                st.rerun()
+            else:
+                st.error(t("bilibili-api-python not installed or connection failed."))
+        st.divider()
+        room_id = st.session_state["bili_room_id"]
+        if not room_id:
+            st.warning(t("Enter a room ID above to see its status."))
+        else:
+            info = _cached_room_info(room_id)
+            if not info:
+                st.error(t("Could not fetch room info."))
+            else:
+                live_status = info.get("live_status", 0)
+                status_map = {1: ("dot-live", t("🟢 Live")), 0: ("dot-offline", t("⚫ Offline")), 2: ("dot-offline", t("📼 Playback"))}
+                dot, label = status_map.get(live_status, ("dot-offline", t("Unknown")))
+                st.markdown(
+                    f'<span class="status-dot {dot}"></span>**{label}**',
+                    unsafe_allow_html=True,
+                )
+                st.subheader(info.get("title", ""))
+                if info.get("uname"):
+                    st.caption(t("Streamer: {name}", name=info["uname"]))
+                area = info.get("parent_area_name", "")
+                if area:
+                    st.caption(t("Category: {area} › {sub}", area=area, sub=info.get("area_name", "")))
+                if info.get("cover"):
+                    st.image(info["cover"], width=200)
+                viewers = info.get("online", 0)
+                bili_viewers_now = viewers
+                st.metric(t("Viewers"), f"{viewers:,}")
+                if info.get("start_time") and live_status == 1:
+                    st.caption(t("Live since: {t}", t=info["start_time"]))
+
+    # ── MissEvan status ───────────────────────────────────────────────────────
+    me_viewers_now = 0
+    with me_col:
+        _site_heading("missevan")
+        _me_login = _me_login_state()
+        _render_login(_me_login, (_me_login or {}).get("username", ""),
+                      t("UID {mid}", mid=_me_login["user_id"]) if _me_login and _me_login.get("user_id") else "",
+                      site=t("MissEvan"), env_keys=["MISSEVAN_COOKIE"])
+
+        me_input = st.text_input(
+            t("Room ID or URL"), value=st.session_state["me_room_id"], key="me_room_input",
+            placeholder="https://fm.missevan.com/live/869215180",
+        ).strip()
+        me_room = me.parse_room_id(me_input)
+        if me_room != st.session_state["me_room_id"]:
+            st.session_state["me_room_id"] = me_room
+            if st.session_state["me_listener"]:
+                st.session_state["me_listener"].stop()
+                st.session_state["me_listener"] = None
+        if me_input and not me_room:
+            st.error(t("Could not find a room ID in that text."))
+
+        me_listener: Optional[me.MissEvanListener] = st.session_state["me_listener"]
+        me_running = bool(me_listener and me_listener.running)
+        level, msg = "", ""
+        if me_running and me_listener.connected:
+            level, msg = "ok", t("🎧 Listening ✓")
+        elif me_running and me_listener.error:
+            level, msg = "warn", me_listener.error
+        elif me_running:
+            level, msg = "info", t("🎧 Connecting…")
+        action = _render_listener("me", me_running, level, msg, can_start=bool(me_room))
+        if action == "stop":
+            me_listener.stop()
+            st.session_state["me_listener"] = None
+            st.rerun()
+        elif action == "start":
+            l = me.MissEvanListener(me_room)
+            if l.start():
+                st.session_state["me_listener"] = l
+                st.rerun()
+            else:
+                st.error(l.error)
+        st.divider()
+        me_room_id = st.session_state["me_room_id"]
+        if not me_room_id:
+            st.warning(t("Enter a room ID above to see its status."))
+        else:
+            info = _cached_me_room_info(me_room_id)
+            if not info:
+                st.error(t("Could not fetch room info."))
+            else:
+                dot, label = ("dot-live", t("🟢 Live")) if info["live"] else ("dot-offline", t("⚫ Offline"))
+                st.markdown(f'<span class="status-dot {dot}"></span>**{label}**', unsafe_allow_html=True)
+                st.subheader(info.get("title", ""))
+                if info.get("uname"):
+                    st.caption(t("Streamer: {name}", name=info["uname"]))
+                if info.get("cover"):
+                    st.image(info["cover"], width=200)
+                _l = st.session_state["me_listener"]
+                viewers = _l.online if _l and _l.online is not None else info.get("online", 0)
+                if info["live"] and viewers:
+                    me_viewers_now = viewers
+                    st.metric(t("Viewers"), f"{viewers:,}")
+                st.caption(t("Followers: {n}", n=f"{info.get('followers', 0):,}"))
+                if info.get("start_time"):
+                    st.caption(t("Live since: {t}", t=info["start_time"]))
+
+    if yt_viewers_now or bili_viewers_now or me_viewers_now:
+        _record_viewer_snapshot(yt_viewers_now, bili_viewers_now, me_viewers_now)
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # TAB: CHAT
@@ -1090,6 +1253,7 @@ tab_chat, tab_status, tab_obs, tab_analytics, tab_filters, tab_overlay, tab_cook
 
 with tab_chat:
     _poll_chat()  # fetch new messages every rerun
+    _sync_obs_chat()
 
     # ── Send message ──────────────────────────────────────────────────────────
     yt_chat = st.session_state.get("selected_chat_id", "")
@@ -1105,16 +1269,15 @@ with tab_chat:
         help=None if bili_room_send else t("Enter a Bilibili room ID first."),
     )
     me_room_send = st.session_state["me_room_id"]
-    me_logged_in = me.has_login()
+    _me_send_login = _me_login_state()
+    # A failed check (network error) shouldn't block sending; only a confirmed logout does.
+    me_logged_in = bool(_me_send_login and (_me_send_login["is_login"] or _me_send_login.get("error")))
     send_me = tgt_row.checkbox(
         t("MissEvan"), key="send_me", value=True, disabled=not (me_room_send and me_logged_in),
         help=None if me_room_send and me_logged_in
         else t("Log in to MissEvan in the 🍪 Cookies tab first.") if not me_logged_in
         else t("Enter a MissEvan room first."),
     )
-    if st.session_state["tts_enabled"]:
-        tgt_row.space("stretch")
-        _tts_stop_buttons(tgt_row, "chat")
     with st.form("send_form", clear_on_submit=True), st.container(key="send_box"):
         send_cols = st.columns([8, 1])
         outgoing = send_cols[0].text_input(t("Message"), label_visibility="collapsed", placeholder=t("Type a message…"))
@@ -1137,7 +1300,7 @@ with tab_chat:
                 elif err:
                     st.error(t("Failed to send to {site}: {err}", site=name, err=err))
                 else:
-                    st.error(t("Failed to send to {site} (check sign-in / login cookies).", site=name))
+                    st.error(t("Failed to send to {site} (check the login cookies).", site=name))
 
     st.divider()
 
@@ -1177,7 +1340,10 @@ with tab_chat:
     with chat_col:
         chat_head = st.container(horizontal=True, vertical_alignment="center")
         chat_head.markdown(f"**💬 {t('Chat')}**", width="content")
-        _text_size_buttons(chat_head, "chat")
+        chat_head.space("stretch")
+        if st.session_state["tts_enabled"]:
+            _tts_stop_buttons(chat_head, "chat")
+        _text_size_buttons(chat_head, "chat", stretch=False)
         with st.container(key="chat_feed"):
             for msg in reversed(visible):
                 _render_message(msg, key_prefix="chat")
@@ -1219,134 +1385,28 @@ with tab_chat:
 
     # Auto-refresh placeholder
     st.markdown(
-        f"<p style='color:#555;font-size:0.75rem'>"
+        f"<p style='color:color-mix(in srgb, currentColor 50%, transparent);font-size:0.75rem'>"
         f"{t('Auto-refreshes every {s}s · {n} messages shown', s=CHAT_POLL_INTERVAL, n=len(msgs))}</p>",
         unsafe_allow_html=True,
     )
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# TAB: STREAM STATUS
-# ═══════════════════════════════════════════════════════════════════════════════
-
-with tab_status:
-    yt_col, bili_col, me_col = st.columns(3)
-    yt_viewers_now = 0
-    bili_viewers_now = 0
-
-    # ── YouTube status ────────────────────────────────────────────────────────
-    with yt_col:
-        st.subheader("🔴 YouTube")
-        yt_input = st.session_state["yt_chat_input"]
-        video_id = _yt_video_id()
-        if not yt_input:
-            st.warning(t("Enter a stream URL in the sidebar."))
-        elif st.session_state["yt_watch_channel"] and not video_id:
-            st.info(t("Watching the channel — it isn't live yet."))
-        elif not video_id:
-            st.info(t("Status needs a stream URL or video ID (a raw chat ID has no video info)."))
-        else:
-            info = _cached_video_status(video_id)
-            if not info:
-                st.error(t("Could not fetch stream info (sign in or set YOUTUBE_API_KEY)."))
-            elif not info["is_stream"]:
-                st.warning(t("That video is not a live stream."))
-            else:
-                if info["broadcast"] == "live":
-                    dot, label = "dot-live", t("🟢 Live")
-                elif info["broadcast"] == "upcoming":
-                    dot, label = "dot-offline", t("🕒 Upcoming")
-                else:
-                    dot, label = "dot-offline", t("⚫ Ended") if info["ended"] else t("⚫ Offline")
-                st.markdown(
-                    f'<span class="status-dot {dot}"></span>**{label}**',
-                    unsafe_allow_html=True,
-                )
-                st.subheader(info["title"])
-                if info["channel"]:
-                    st.caption(t("Channel: {channel}", channel=info["channel"]))
-                if info["thumbnail"]:
-                    st.image(info["thumbnail"], width=200)
-                if info["broadcast"] == "live":
-                    st.metric(t("Viewers"), f"{info['viewers']:,}")
-                    if info["actual_start"]:
-                        st.caption(t("Live since: {t}", t=info["actual_start"]))
-                    yt_viewers_now = info["viewers"]
-                elif info["broadcast"] == "upcoming" and info["scheduled_start"]:
-                    st.caption(t("Scheduled: {t}", t=info["scheduled_start"]))
-
-    # ── Bilibili status ───────────────────────────────────────────────────────
-    with bili_col:
-        st.subheader("💙 Bilibili")
-        room_id = st.session_state["bili_room_id"]
-        if not room_id:
-            st.warning(t("Enter a room ID in the sidebar."))
-        else:
-            info = _cached_room_info(room_id)
-            if not info:
-                st.error(t("Could not fetch room info."))
-            else:
-                live_status = info.get("live_status", 0)
-                status_map = {1: ("dot-live", t("🟢 Live")), 0: ("dot-offline", t("⚫ Offline")), 2: ("dot-offline", t("📼 Playback"))}
-                dot, label = status_map.get(live_status, ("dot-offline", t("Unknown")))
-                st.markdown(
-                    f'<span class="status-dot {dot}"></span>**{label}**',
-                    unsafe_allow_html=True,
-                )
-                st.subheader(info.get("title", ""))
-                if info.get("uname"):
-                    st.caption(t("Streamer: {name}", name=info["uname"]))
-                area = info.get("parent_area_name", "")
-                if area:
-                    st.caption(t("Category: {area} › {sub}", area=area, sub=info.get("area_name", "")))
-                if info.get("cover"):
-                    st.image(info["cover"], width=200)
-                viewers = info.get("online", 0)
-                bili_viewers_now = viewers
-                st.metric(t("Viewers"), f"{viewers:,}")
-                if info.get("start_time") and live_status == 1:
-                    st.caption(t("Live since: {t}", t=info["start_time"]))
-
-    # ── MissEvan status ───────────────────────────────────────────────────────
-    me_viewers_now = 0
-    with me_col:
-        st.subheader("🐱 MissEvan")
-        me_room_id = st.session_state["me_room_id"]
-        if not me_room_id:
-            st.warning(t("Enter a room ID in the sidebar."))
-        else:
-            info = _cached_me_room_info(me_room_id)
-            if not info:
-                st.error(t("Could not fetch room info."))
-            else:
-                dot, label = ("dot-live", t("🟢 Live")) if info["live"] else ("dot-offline", t("⚫ Offline"))
-                st.markdown(f'<span class="status-dot {dot}"></span>**{label}**', unsafe_allow_html=True)
-                st.subheader(info.get("title", ""))
-                if info.get("uname"):
-                    st.caption(t("Streamer: {name}", name=info["uname"]))
-                if info.get("cover"):
-                    st.image(info["cover"], width=200)
-                _l = st.session_state["me_listener"]
-                viewers = _l.online if _l and _l.online is not None else info.get("online", 0)
-                if info["live"] and viewers:
-                    me_viewers_now = viewers
-                    st.metric(t("Viewers"), f"{viewers:,}")
-                st.caption(t("Followers: {n}", n=f"{info.get('followers', 0):,}"))
-                if info.get("start_time"):
-                    st.caption(t("Live since: {t}", t=info["start_time"]))
-
-    if yt_viewers_now or bili_viewers_now or me_viewers_now:
-        _record_viewer_snapshot(yt_viewers_now, bili_viewers_now, me_viewers_now)
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# TAB: OBS CONTROL
+# TAB: OBS
 # ═══════════════════════════════════════════════════════════════════════════════
 
 with tab_obs:
-    if not st.session_state["obs_enabled"]:
-        st.info(t("OBS functions are off. Turn on **Connect to OBS** in the sidebar to use them."))
+    # Everything OBS-related lives here: it's for the streamer only.
+    st.toggle(
+        t("Connect to OBS"), key="obs_enabled", on_change=obs.retry_now,
+        help=t("Off: the dashboard never contacts OBS. On: stream, recording, scene and Text source controls appear here once OBS is connected."),
+    )
+    obs_status = obs.get_status() if st.session_state["obs_enabled"] else {"connected": False}
     if not obs_status.get("connected"):
+        st.session_state["obs_chat_last"] = None
         if st.session_state["obs_enabled"]:
             st.warning(t("⚠️ OBS is not connected. Configure OBS WebSocket settings in your .env file."))
+        else:
+            st.caption(t("OBS functions are off."))
         with st.expander(t("Setup instructions")):
             st.markdown(
                 t("obs_setup_md") if st.session_state["ui_lang"] != "en" else """
@@ -1362,6 +1422,7 @@ with tab_obs:
 """
             )
     else:
+        st.success(t("OBS connected ✓"))
         # ── Status metrics ────────────────────────────────────────────────────
         m1, m2, m3, m4 = st.columns(4)
         m1.metric("CPU", f"{obs_status['cpu_usage']}%")
@@ -1423,6 +1484,130 @@ with tab_obs:
                     vis = st.checkbox(src["name"], value=src["visible"], key=f"src_{src['id']}")
                     if vis != src["visible"]:
                         obs.set_source_visibility(new_scene, src["name"], vis)
+
+        st.divider()
+
+        # ── Chat → OBS Text source ──────────────────────────────────────────
+        st.subheader(t("📝 OBS Text source"))
+        st.toggle(t("Send chat to OBS Text source"), key="obs_chat_enabled")
+        if st.session_state["obs_chat_enabled"]:
+            try:
+                text_sources = obs.get_text_sources()
+            except Exception as exc:
+                st.warning(t("Couldn't list OBS Text sources: {err}", err=str(exc)))
+            else:
+                if text_sources:
+                    if st.session_state["obs_chat_source"] not in text_sources:
+                        st.session_state["obs_chat_source"] = text_sources[0]
+                    st.selectbox(t("OBS Text source"), text_sources, key="obs_chat_source")
+                else:
+                    st.session_state["obs_chat_source"] = ""
+                    st.warning(t("Add a Text source in OBS to display chat."))
+
+    st.divider()
+
+    # ── Browser Source overlay (works without the WebSocket connection) ──────
+    st.subheader(t("🖥️ Chat Overlay"))
+    st.markdown(
+        t("Use the overlay URL in OBS as a **Browser Source** to show a transparent chat on stream.")
+    )
+
+    st.info(t(
+        "**How to use**: Add a Browser Source in OBS pointing to `http://localhost:8502/overlay`. "
+        "Keep the dashboard open for live updates."
+    ))
+
+    # Live overlay text
+    overlay_text = st.text_area(
+        t("Custom overlay message (shown permanently on stream)"),
+        value=st.session_state["overlay_text"],
+        height=80,
+    )
+    st.session_state["overlay_text"] = overlay_text
+
+    st.session_state["overlay_visible"] = st.toggle(
+        t("Show custom overlay message"), value=st.session_state["overlay_visible"]
+    )
+    st.toggle(t("Show usernames in OBS overlay"), key="overlay_show_username")
+    st.number_input(
+        t("Messages shown in OBS overlay"), min_value=1, max_value=overlay_server.MAX_MESSAGES,
+        step=1, key="overlay_count",
+    )
+    overlay_count = int(st.session_state["overlay_count"])
+    st.number_input(
+        t("Super Chats & gifts shown in OBS overlay"), min_value=0, max_value=overlay_server.MAX_MESSAGES,
+        step=1, key="overlay_sc_count",
+        help=t("Super Chats, gifts and memberships are pinned to the top of the overlay, apart from regular chat, so busy chat never pushes them away. Set to 0 to hide them."),
+    )
+    overlay_sc_count = int(st.session_state["overlay_sc_count"])
+    overlay_paid = [
+        m for m in st.session_state["paid_messages"] if m.get("text")
+    ][-overlay_sc_count:] if overlay_sc_count else []
+
+    st.divider()
+
+    # Recent chat overlay preview
+    st.markdown("#### " + t("Recent Chat Preview (last {n} messages)", n=overlay_count))
+    recent = [
+        m for m in st.session_state["chat_messages"]
+        if m.get("type") in ("textMessageEvent", "danmaku") and m.get("text")
+    ][-overlay_count:]
+    if st.session_state["translate_enabled"]:
+        tr.prefetch([m["text"] for m in overlay_paid + recent if m.get("type") != "gift"],
+                    st.session_state["translate_target"])
+
+    def _preview_row(m: dict, style: str) -> str:
+        plat_color = {"youtube": "#ff4444", "missevan": "#ff7a45"}.get(m.get("platform", ""), "#23ade5")
+        translated = (
+            tr.get_translation(m["text"], st.session_state["translate_target"])
+            if st.session_state["translate_enabled"] and m.get("type") != "gift" else ""
+        )
+        translation_html = f'<div style="color:#9fd3ff">{html_lib.escape(translated)}</div>' if translated else ""
+        author_html = (
+            f'<div style="color:{plat_color};font-weight:700;">{html_lib.escape(m.get("author", ""))}</div>'
+            if st.session_state["overlay_show_username"] else ""
+        )
+        return (
+            f'<div style="color:#fff;margin-bottom:4px;font-size:13px;{style}">'
+            f'{author_html}'
+            f'<div>{emotes.text_to_html(m["text"], m.get("emotes"), m.get("sticker_url", ""))}</div>'
+            f'{translation_html}'
+            f"</div>"
+        )
+
+    preview_html = '<div style="background:rgba(0,0,0,0.7);padding:8px;border-radius:8px;width:360px;font-family:sans-serif;">'
+    if overlay_paid:
+        preview_html += '<div style="border-bottom:2px solid rgba(255,215,0,0.6);margin-bottom:8px;padding-bottom:4px;">'
+        sc_style = "background:rgba(120,0,0,0.75);border-left:4px solid #ffd700;border-radius:6px;padding:4px 8px;"
+        gift_style = "background:rgba(80,20,110,0.75);border-left:4px solid #ff8adf;border-radius:6px;padding:4px 8px;"
+        for m in overlay_paid:
+            preview_html += _preview_row(m, gift_style if m.get("type") == "gift" else sc_style)
+        preview_html += "</div>"
+    for m in recent:
+        preview_html += _preview_row(m, "")
+    if st.session_state["overlay_visible"] and overlay_text:
+        preview_html += (
+            f'<div style="color:#ffd700;font-weight:700;margin-top:8px;border-top:1px solid #555;padding-top:6px;">'
+            f'{html_lib.escape(overlay_text)}'
+            f"</div>"
+        )
+    preview_html += "</div>"
+    st.markdown(preview_html, unsafe_allow_html=True)
+
+    try:
+        overlay_server.ensure_started().publish(overlay_server.snapshot(
+            st.session_state["chat_messages"],
+            st.session_state["translate_enabled"],
+            st.session_state["translate_target"],
+            tr.get_translation,
+            overlay_text if st.session_state["overlay_visible"] else "",
+            st.session_state["overlay_show_username"],
+            overlay_count,
+            overlay_sc_count,
+            st.session_state["paid_messages"],
+        ))
+    except OSError as exc:
+        st.error(t("Couldn't start the chat overlay on port 8502: {err}", err=str(exc)))
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # TAB: ANALYTICS
@@ -1585,81 +1770,6 @@ with tab_filters:
                 st.rerun()
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# TAB: OVERLAY
-# ═══════════════════════════════════════════════════════════════════════════════
-
-with tab_overlay:
-    st.subheader(t("🖥️ Chat Overlay"))
-    st.markdown(
-        t("Use the overlay URL in OBS as a **Browser Source** to show a transparent chat on stream.")
-    )
-
-    st.info(t(
-        "**How to use**: Add a Browser Source in OBS pointing to `http://localhost:8501/overlay` "
-        "— or copy the overlay HTML below into a local file and load it as a file URL."
-    ))
-
-    # Live overlay text
-    overlay_text = st.text_area(
-        t("Custom overlay message (shown permanently on stream)"),
-        value=st.session_state["overlay_text"],
-        height=80,
-    )
-    st.session_state["overlay_text"] = overlay_text
-
-    st.session_state["overlay_visible"] = st.toggle(
-        t("Show custom overlay message"), value=st.session_state["overlay_visible"]
-    )
-
-    st.divider()
-
-    # Recent chat overlay preview
-    st.markdown("#### " + t("Recent Chat Preview (last 5 messages)"))
-    recent = st.session_state["chat_messages"][-5:]
-    preview_html = '<div style="background:rgba(0,0,0,0.7);padding:8px;border-radius:8px;width:360px;font-family:sans-serif;">'
-    for m in reversed(recent):
-        plat_color = {"youtube": "#ff4444", "missevan": "#ff7a45"}.get(m.get("platform", ""), "#23ade5")
-        preview_html += (
-            f'<div style="color:#fff;margin-bottom:4px;font-size:13px;">'
-            f'<span style="color:{plat_color};font-weight:700;">{m.get("author","")}</span>: '
-            f'{m.get("text","")}'
-            f"</div>"
-        )
-    if st.session_state["overlay_visible"] and overlay_text:
-        preview_html += (
-            f'<div style="color:#ffd700;font-weight:700;margin-top:8px;border-top:1px solid #555;padding-top:6px;">'
-            f'{overlay_text}'
-            f"</div>"
-        )
-    preview_html += "</div>"
-    st.markdown(preview_html, unsafe_allow_html=True)
-
-    st.divider()
-    st.markdown("#### " + t("Standalone Overlay HTML"))
-    st.caption(t("Save as `overlay.html` and open in OBS Browser Source."))
-    overlay_html = f"""<!DOCTYPE html>
-<html>
-<head>
-<meta charset="utf-8">
-<style>
-  body {{ margin:0; background:transparent; font-family: 'Segoe UI', sans-serif; }}
-  #chat {{ position:fixed; bottom:20px; left:20px; width:350px; max-height:400px;
-           overflow:hidden; display:flex; flex-direction:column-reverse; }}
-  .msg {{ color:#fff; text-shadow:1px 1px 2px #000; margin-bottom:4px; font-size:14px; animation: fadein 0.3s; }}
-  .yt  {{ color:#ff6b6b; font-weight:700; }}
-  .bi  {{ color:#5bc8f5; font-weight:700; }}
-  @keyframes fadein {{ from {{opacity:0;transform:translateY(10px)}} to {{opacity:1;transform:none}} }}
-</style>
-</head>
-<body>
-<div id="chat">
-  <div class="msg"><span class="yt">Streamer</span>: Welcome to the stream! 🎉</div>
-</div>
-</body>
-</html>"""
-    st.code(overlay_html, language="html")
-
-# ═══════════════════════════════════════════════════════════════════════════════
 # TAB: COOKIES
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -1706,6 +1816,11 @@ with tab_cookies:
         if result:
             cookies = result["cookies"]
             st.markdown(t("**{n} cookies** found for {site} in {browser}.", n=len(cookies), site=result["site"], browser=result["browser"]))
+            st.checkbox(
+                t("💾 Also save to .env (keep login after restart)"), key="cookie_persist",
+                help=t("Off: cookies are kept only in this app's memory and never written to disk; "
+                       "re-import them after restarting. On: also written to .env in plain text."),
+            )
 
             if result["site"] == "Bilibili":
                 rows = [
@@ -1723,9 +1838,9 @@ with tab_cookies:
                     st.warning(t("No SESSDATA cookie found — log in to bilibili.com in this browser first."))
 
                 if "SESSDATA" in cookies and "bili_jct" in cookies:
-                    if st.button(t("💾 Save to .env and apply")):
-                        saved = bc.save_bilibili_credentials(cookies)
-                        msg = t("Saved {keys} to .env.", keys=", ".join(saved))
+                    if st.button(t("✅ Use these cookies"), key="bili_save_browser"):
+                        saved = bc.save_bilibili_credentials(cookies, persist=_cookie_persist())
+                        msg = _cookie_applied_msg(", ".join(saved))
                         old = st.session_state.get("bili_listener")
                         if old:
                             # Credentials are bound at connect time, so reconnect to use the new login.
@@ -1742,14 +1857,16 @@ with tab_cookies:
                 verify = result["verify"]
                 if verify and verify["is_login"]:
                     st.success(t("Logged in to YouTube as **{name}**.", name=verify["name"]))
-                    if st.button(t("💾 Save to .env and apply"), key="yt_save_browser"):
-                        ytw.save_login(cookies)
+                    if st.button(t("✅ Use these cookies"), key="yt_save_browser"):
+                        ytw.save_login(cookies, persist=_cookie_persist())
                         st.session_state["_yt_saved_name"] = verify["name"]
+                        st.session_state["_yt_saved_msg"] = _cookie_applied_msg("YOUTUBE_COOKIE")
                     if st.session_state.get("_yt_saved_name") == verify["name"]:
-                        st.success(t("Saved YOUTUBE_COOKIE to .env — you can now send YouTube chat without OAuth."))
+                        st.success(st.session_state.get("_yt_saved_msg", "") + " "
+                                   + t("You can now send YouTube chat."))
                     st.caption(t(
                         "Cookie login is unofficial (it works like youtube.com itself) and may break if YouTube "
-                        "changes it. OAuth sign-in, if set up, is used first."
+                        "changes it."
                     ))
                 elif verify and verify.get("error"):
                     st.error(verify["error"])

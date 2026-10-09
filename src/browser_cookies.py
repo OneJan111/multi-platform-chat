@@ -5,7 +5,7 @@ import os
 from pathlib import Path
 
 import requests
-from dotenv import set_key
+from dotenv import dotenv_values, set_key, unset_key
 
 try:
     import browser_cookie3
@@ -38,10 +38,16 @@ def read_cookies(browser: str, domain: str) -> dict[str, str]:
     loader = getattr(browser_cookie3, browser, None)
     if loader is None:
         raise CookieReadError(f"Unsupported browser: {browser}")
+    # When the browser has the cookie DB locked, browser_cookie3 falls back to a Windows
+    # shadow copy via WMI, which needs COM initialised on this (Streamlit worker) thread.
+    com = _co_initialize()
     try:
         jar = loader(domain_name=domain)
     except Exception as exc:
         raise CookieReadError(_friendly_error(browser, exc)) from exc
+    finally:
+        if com:
+            com.CoUninitialize()
 
     cookies: dict[str, str] = {}
     # Prefer cookies set on the root domain (e.g. ".bilibili.com") over subdomains.
@@ -51,8 +57,23 @@ def read_cookies(browser: str, domain: str) -> dict[str, str]:
     return cookies
 
 
+def _co_initialize():
+    """Initialise COM for the current thread; return pythoncom to uninitialise later, or None."""
+    try:
+        import pythoncom
+        pythoncom.CoInitialize()
+        return pythoncom
+    except Exception:
+        return None
+
+
 def _friendly_error(browser: str, exc: Exception) -> str:
     name = type(exc).__name__
+    if name == "ShadowCopyFailure" or "x_wmi" in name:
+        return (
+            f"{browser.title()} has its cookie database locked and the shadow-copy fallback failed "
+            f"({exc}). Close the browser completely and retry."
+        )
     if name == "RequiresAdminError":
         return (
             f"{browser.title()} uses app-bound cookie encryption; reading it requires running "
@@ -93,14 +114,29 @@ def verify_bilibili_login(cookies: dict[str, str]) -> dict:
         return {"is_login": False, "uname": "", "mid": 0, "error": str(exc)}
 
 
-def save_bilibili_credentials(cookies: dict[str, str]) -> list[str]:
-    """Write Bilibili cookies to .env and the current process environment."""
-    ENV_FILE.touch(exist_ok=True)
+def save_bilibili_credentials(cookies: dict[str, str], persist: bool = False) -> list[str]:
+    """Apply Bilibili cookies to the running process; also write them to .env when `persist`."""
+    if persist:
+        ENV_FILE.touch(exist_ok=True)
     saved = []
     for cookie_name, env_key in BILIBILI_ENV_KEYS.items():
         value = cookies.get(cookie_name)
         if value:
-            set_key(str(ENV_FILE), env_key, value)
+            if persist:
+                set_key(str(ENV_FILE), env_key, value)
             os.environ[env_key] = value
             saved.append(env_key)
     return saved
+
+
+def clear_login(env_keys: list[str]) -> list[str]:
+    """Remove login cookies from the running process and from .env. Returns the keys removed from .env."""
+    for key in env_keys:
+        os.environ.pop(key, None)
+    if not ENV_FILE.exists():
+        return []
+    present = dotenv_values(ENV_FILE)
+    removed = [key for key in env_keys if key in present]
+    for key in removed:
+        unset_key(str(ENV_FILE), key)
+    return removed

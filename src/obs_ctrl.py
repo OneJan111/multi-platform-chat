@@ -4,7 +4,7 @@ from __future__ import annotations
 import logging
 import socket
 import time
-from typing import Optional
+from typing import Callable, Optional
 
 try:
     import obsws_python as obs
@@ -20,6 +20,49 @@ from src.config import OBS_HOST, OBS_PASSWORD, OBS_PORT
 # dashboard asks on every rerun. Probe the port quickly and remember a failure for a while.
 _RETRY_AFTER = 15.0
 _down_until = 0.0
+_TEXT_KINDS = {"text_gdiplus_v2", "text_gdiplus", "text_ft2_source_v2", "text_ft2_source"}
+
+
+def recent_chat(messages: list[dict]) -> list[dict]:
+    """Last ten non-empty regular chat messages."""
+    return [m for m in messages if m.get("type") in ("textMessageEvent", "danmaku") and m.get("text")][-10:]
+
+
+def format_chat_text(messages: list[dict], translate_enabled: bool, target: str,
+                     get_translation: Callable[[str, str], Optional[str]]) -> str:
+    """Format the latest ten regular chat messages, oldest first, for an OBS text input."""
+    lines = []
+    for msg in recent_chat(messages):
+        text = msg["text"]
+        lines.append(text)
+        if translate_enabled:
+            translated = get_translation(text, target)
+            if translated:
+                lines.append(translated)
+    return "\n".join(lines)
+
+
+def get_text_sources() -> list[str]:
+    """Names of existing OBS text inputs; raises if OBS cannot return the input list."""
+    cl = _client()
+    if not cl:
+        raise ConnectionError("OBS is not connected.")
+    try:
+        return [item["inputName"] for item in cl.get_input_list().inputs
+                if item["inputKind"] in _TEXT_KINDS]
+    finally:
+        cl.disconnect()
+
+
+def set_text_source(name: str, text: str) -> None:
+    """Update an existing OBS text input without resetting its style settings."""
+    cl = _client()
+    if not cl:
+        raise ConnectionError("OBS is not connected.")
+    try:
+        cl.set_input_settings(name, {"text": text}, True)
+    finally:
+        cl.disconnect()
 
 
 def _reachable() -> bool:

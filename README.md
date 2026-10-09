@@ -16,10 +16,9 @@ The UI is available in **English / 简体中文 / 日本語** and fits PC and ta
 | 🌐 **Translation** | Inline translation of chat to Chinese (Simplified/Traditional), English, Japanese or Korean. No API key needed. |
 | 🔤 **Reading aids** | Pinyin / hiragana ruby over Super Chat text so the streamer can read it aloud. |
 | 🔊 **Text-to-speech** | Reads chat aloud (offline `pyttsx3` or online gTTS). Includes: language filter, emoji skipping, reading the translated text (when the TTS language matches *Translate to*), skipping usernames for regular chat, **announcing gifts & Super Chats first**, a 🔊 replay button on every message, and **⏭ Skip / ⏹ Stop TTS** buttons to cut off a sensitive comment instantly. |
-| 📡 **Stream Status** | Live / offline state, title and viewer count for each platform. |
-| 🎬 **OBS Control** | Start/stop stream & recording and switch scenes via OBS WebSocket v5. Off until you turn on *Connect to OBS* in the sidebar. |
-| 📊 **Analytics** | Viewer count (sampled from Stream Status) and messages-per-minute charts, top chatters. |
-| 🖥️ **Overlay** | Chat overlay preview for use in OBS. |
+| 📡 **Stream Monitoring** | Per-site controls (stream URL / room ID, start/stop listener, login status) plus live / offline state, title and viewer count for each platform. |
+| 🎬 **OBS** | One streamer-only tab for everything OBS: connect, start/stop stream & recording, switch scenes and sources (OBS WebSocket v5), send chat to an OBS Text source, and the chat-only Browser Source overlay. Off until you turn on *Connect to OBS* in that tab. |
+| 📊 **Analytics** | Viewer count (sampled from Stream Monitoring) and messages-per-minute charts, top chatters. |
 | 🍪 **Cookies** | Import login cookies from your browser (Chrome / Edge / Firefox …) for Bilibili, MissEvan and YouTube. |
 
 ## Requirements
@@ -38,17 +37,16 @@ pip install -r requirements.txt
 
 ## Configuration
 
-Settings are read from a `.env` file in the project root (loaded with `python-dotenv`). Start by copying the template: `Copy-Item env.template .env` (macOS/Linux: `cp env.template .env`). All values are optional — fill in only the platforms you use. Cookie values are normally written **by the app** from the 🍪 Cookies tab, so you rarely need to edit them by hand.
+Settings are read from a `.env` file in the project root (loaded with `python-dotenv`). Start by copying the template: `Copy-Item env.template .env` (macOS/Linux: `cp env.template .env`). All values are optional — fill in only the platforms you use. Cookie values can be imported **by the app** from the 🍪 Cookies tab, so you rarely need to edit them by hand. By default imported cookies are kept in memory only (never written to disk, re-import after a restart); tick **Also save to .env** to keep them across restarts.
 
 The template only contains placeholder values (`your-…`, `xxx`). **Replace them or delete those lines** — a placeholder is treated as a real setting (e.g. a placeholder `OBS_PASSWORD` makes the app try to log in to OBS with it).
 
 | Variable | Purpose | Default |
 |---|---|---|
 | `YOUTUBE_API_KEY` | YouTube Data API key — optional; reading chat and stream status fall back to the public web page without it (or when the quota runs out) | — |
-| `YOUTUBE_CLIENT_ID` | OAuth client ID for Google sign-in (see [YouTube Google sign-in](#youtube-google-sign-in-optional)) | — |
-| `YOUTUBE_CLIENT_SECRET` | OAuth client secret | — |
-| `YOUTUBE_REDIRECT_URI` | OAuth redirect URI | `http://localhost:8501/` |
-| `YOUTUBE_COOKIE` | Browser cookies for sending chat without OAuth (unofficial) | — |
+| `YOUTUBE_CHANNEL` | Default YouTube channel link (or stream URL) in the Stream Monitoring tab; click *Start listening* to watch it | `https://www.youtube.com/@Ya-chan` |
+| `YOUTUBE_COOKIE` | YouTube login cookies (for sending chat) | — |
+| `YOUTUBE_PAGE_ID` | Channel to send YouTube chat as, for Google logins with several channels (set by **Send as**) | main channel |
 | `BILIBILI_ROOM_ID` | Default Bilibili live room | — |
 | `BILIBILI_SESSDATA` | Bilibili login cookie | — |
 | `BILIBILI_BILI_JCT` | Bilibili CSRF cookie | — |
@@ -62,7 +60,7 @@ The template only contains placeholder values (`your-…`, `xxx`). **Replace the
 | `TTS_USE_GTTS` | `true` = online gTTS, `false` = offline pyttsx3 | `false` |
 | `CHAT_POLL_INTERVAL` | Chat refresh interval in seconds | `5` |
 
-> ⚠️ `.env` and `youtube_token.json` contain login secrets and are listed in `.gitignore`. Never commit or share them.
+> ⚠️ `.env` contains login secrets and is listed in `.gitignore`. Never commit or share them.
 
 ## Running
 
@@ -76,28 +74,30 @@ Then open <http://localhost:8501>. To use it from a tablet on the same network, 
 
 ### Reading chat (no login needed)
 
-- **YouTube** — paste a live stream URL, video ID or live chat ID in the sidebar and click *Start YouTube listener*.
-  - Or paste a **channel link** (e.g. `https://www.youtube.com/@Ya-chan`) and click *👀 Watch channel*. The app checks the channel every 60 s, starts reading chat as soon as it goes live, and goes back to watching when the stream ends.
-- **Bilibili** — enter the room ID and click *Start Bilibili listener*.
-- **MissEvan** — enter the room ID or URL (e.g. `https://fm.missevan.com/live/869215180`) and click *Start MissEvan listener*.
+Each site has a column on the **📡 Stream Monitoring** tab, and every column has the same layout:
+
+1. **🔑 Login** — who you're logged in as (re-checked every 5 minutes), *Login expired*, or *Not logged in — chat is read-only*.
+2. **Room ID or URL** — the stream to read.
+3. **🎧 Listener** — *Listening ✓* / *Connecting…* / *Not listening*, with **▶ Start listening** and **⏹ Stop listening**. Changing the room stops the current listener.
+4. The stream's live / offline state, title and viewers.
+
+What goes in **Room ID or URL**:
+
+- **YouTube** — a live stream URL or video ID. Or a **channel link** (e.g. `https://www.youtube.com/@Ya-chan`): the app checks the channel every 60 s, starts reading chat as soon as it goes live, and goes back to watching when the stream ends.
+- **Bilibili** — the room ID or URL (e.g. `https://live.bilibili.com/21452505`). Without login cookies Bilibili masks usernames (e.g. 波***).
+- **MissEvan** — the room ID or URL (e.g. `https://fm.missevan.com/live/869215180`).
 
 ### Logging in to send chat
 
 1. Log in to the site in your normal browser.
-2. In the **🍪 Cookies** tab pick the browser and site, then import and save the cookies.
+2. In the **🍪 Cookies** tab pick the browser and site, then import the cookies and click **Use these cookies** (memory only unless **Also save to .env** is ticked).
 3. Tick the sites under **Send to** above the message box and send.
 
-Sending to YouTube with browser cookies is unofficial and only works on streams with chat enabled. Google sign-in (below) is the official alternative; when both are set up, the official route is tried first.
+The 🔑 line in each **📡 Stream Monitoring** column shows the login state. Sending to MissEvan is disabled when its cookies have expired. Click **🚪 Clear login** under it to forget that site's cookies — they are removed from memory and from `.env`, and chat keeps working read-only.
 
-### YouTube Google sign-in (optional)
+If your Google login owns several YouTube channels (brand accounts), a **Send as** picker appears under the YouTube login line. Pick the channel your chat messages should come from. The choice is kept in memory, or saved to `.env` as `YOUTUBE_PAGE_ID` when cookie saving to `.env` is enabled. To use a different Google account, import that account's cookies in the 🍪 Cookies tab.
 
-Only needed if you want to send YouTube chat through the official API instead of browser cookies.
-
-1. In [Google Cloud Console](https://console.cloud.google.com/) create a project, enable **YouTube Data API v3**, and create an **OAuth client ID** of type *Web application* with the redirect URI `http://localhost:8501/`.
-2. Put the client ID / secret in `.env` (`YOUTUBE_CLIENT_ID`, `YOUTUBE_CLIENT_SECRET`; `YOUTUBE_REDIRECT_URI` must match the URI from step 1) and restart the app.
-3. In the sidebar's YouTube section click **Start YouTube OAuth → Open Google sign-in** and approve. Google redirects back to the dashboard and sign-in completes automatically; if it doesn't, paste the full redirect URL into *Redirect URL or code* and click *Submit*.
-
-The login is saved to `youtube_token.json` (git-ignored) and refreshed automatically, so you only sign in once. Delete that file to sign out.
+Sending to YouTube with browser cookies is unofficial (it works like youtube.com itself) and only works on streams with chat enabled.
 
 ### Chat display
 
@@ -122,13 +122,17 @@ The login is saved to `youtube_token.json` (git-ignored) and refreshed automatic
 
 Configure in the sidebar under **🔊 Text-to-Speech**: *Enable TTS*, *Language*, *Ignore emoji*, *Always announce gifts & Super Chats* (read before other chat), *Don't read usernames for regular chat*, *Read translated chat*, *Speed* and *Volume*. Use *▶ Test voice* to check.
 
-To cut off a sensitive comment, use the buttons at the right of the **Send to** row in the Chat tab (shown while TTS is on) or under *▶ Test voice* in the sidebar: **⏭ Skip** stops the current message and goes on to the next; **⏹ Stop TTS** stops it and drops everything still queued. New chat arriving afterwards is still read — turn off *Enable TTS* to silence it completely.
+To cut off a sensitive comment, use the buttons at the **top right of the 💬 Chat feed** (shown while TTS is on): **⏭ Skip** stops the current message and goes on to the next; **⏹ Stop TTS** stops it and drops everything still queued. New chat arriving afterwards is still read — turn off *Enable TTS* to silence it completely.
 
 The engine (offline pyttsx3 or online gTTS) is chosen with `TTS_USE_GTTS` in `.env`.
 
 ### OBS
 
-In OBS: **Tools → WebSocket Server Settings**, enable the server and set the same port/password as in `.env`. Then turn on **Connect to OBS** in the sidebar (it's off by default, and while off the dashboard never contacts OBS). The scene picker and the 🎬 OBS Control tab appear once OBS is connected; if OBS isn't running it shows as disconnected and is re-checked every 15 seconds.
+In OBS: **Tools → WebSocket Server Settings**, enable the server and set the same port/password as in `.env`. Then open the **🎬 OBS** tab and turn on **Connect to OBS** (it's off by default, and while off the dashboard never contacts OBS). All OBS functions live in that one tab: stream/recording controls, scenes and sources appear once OBS is connected; if OBS isn't running it shows as disconnected and is re-checked every 15 seconds.
+
+To show chat in OBS, add a **Text (GDI+)** source (or a FreeType text source), then enable **Send chat to OBS Text source** in the 🎬 OBS tab and select it. The source shows the last 10 regular chat messages, oldest first, without usernames or badges. When **Translate chat** is enabled, each available translation appears beneath its original; turning it off removes translations on the next update. OBS chat output is opt-in and uses the configured WebSocket server; the separate Browser Source overlay preview does not update this Text source.
+
+Alternatively, add an OBS **Browser Source** pointed at `http://localhost:8502/overlay` (not `:8501/overlay`). This local-only page pins Super Chats, gifts and memberships (Bilibili SC and gifts, MissEvan paid questions and gifts, YouTube Super Chats/Stickers and memberships) to the top of the overlay and regular chat to the bottom, so busy chat never pushes paid events away (3 by default; set **Super Chats & gifts shown in OBS overlay** to 0 to hide), then the most recent regular chat messages (5 by default; change **Messages shown in OBS overlay** in the 🎬 OBS tab, 1–50), available translations only when **Translate chat** is enabled, and the optional custom overlay message. In the 🎬 OBS tab, turn off **Show usernames in OBS overlay** to display chat text without usernames (on by default); the preview follows the same setting. Bilibili custom emotes (e.g. `[doge]`) and sticker danmaku appear as images in the dashboard, preview and Browser Source; the OBS Text source can only show the text code. Keep the dashboard open for updates. Port 8502 must be free; an error in the 🎬 OBS tab reports if the local server cannot start. The Browser Source works even when *Connect to OBS* is off. OBS on another computer cannot reach this loopback address.
 
 ## Project structure
 
@@ -137,14 +141,14 @@ app.py                 Streamlit UI (all tabs, sidebar, CSS)
 requirements.txt       Python dependencies
 env.template           Template for .env (placeholder values only)
 .env                   Your settings and login cookies        (created by you / the app, git-ignored)
-youtube_token.json     Saved Google sign-in                   (created by the app, git-ignored)
 chat_filters.json      Saved blocks and filters               (created by the app, git-ignored)
 src/
   config.py            .env settings
   i18n.py              UI translations (en / zh / ja)
-  youtube.py           YouTube Data API + Google sign-in (official); falls back to youtube_web.py
+  youtube.py           YouTube stream lookup + chat (Data API with YOUTUBE_API_KEY, else youtube_web.py)
   youtube_web.py       YouTube live chat without API key, cookie login & send
   bilibili.py          Bilibili danmaku listener, gifts, send, moderation
+  emotes.py            Bilibili emote/sticker image parsing and safe rendering
   missevan.py          MissEvan (猫耳FM) chat listener, login & send
   browser_cookies.py   Import cookies from installed browsers
   filters.py           Keyword / regex / user chat filters (saved to chat_filters.json)
@@ -159,8 +163,6 @@ src/
 | Problem | Fix |
 |---|---|
 | OBS shows "not connected" | OBS isn't running or its WebSocket server is off — start OBS / enable the server and check `OBS_PORT` / `OBS_PASSWORD`. If you don't use OBS, turn off *Connect to OBS*. |
-| Google sign-in: "request is unknown or expired" | The app restarted or 10 minutes passed. Click *Start YouTube OAuth* and sign in again. |
-| Google sign-in: `redirect_uri_mismatch` | `YOUTUBE_REDIRECT_URI` must exactly match the redirect URI in Google Cloud Console (including the trailing `/`). |
 | `bilibili-api-python not installed or connection failed` | Run `pip install -r requirements.txt` inside the venv; check the room ID and network. |
 | YouTube send: "Chat is disabled" | The stream has chat turned off or is not live. |
 | Some languages aren't read aloud offline | Offline TTS uses the voices installed in Windows. Check *Settings → Time & language → Speech* for a Chinese / Japanese voice, or set `TTS_USE_GTTS=true`. |

@@ -15,96 +15,38 @@ UI_LANGUAGES: dict[str, str] = {
 _STRINGS: dict[str, tuple[str, str]] = {
     # ── Sidebar ──────────────────────────────────────────────────────────────
     "🎙️ Streaming Dashboard": ("🎙️ 直播仪表板", "🎙️ 配信ダッシュボード"),
-    "Google returned: {err}": ("Google 返回：{err}", "Google からの応答：{err}"),
-    "YouTube sign-in complete!": ("YouTube 登录完成！", "YouTube のサインインが完了しました！"),
-    "Authenticated ✓": ("已认证 ✓", "認証済み ✓"),
-    "Not authenticated": ("未认证", "未認証"),
-    "Start YouTube OAuth": ("开始 YouTube OAuth 登录", "YouTube OAuth を開始"),
-    "Set YOUTUBE_CLIENT_ID / CLIENT_SECRET in .env first.": (
-        "请先在 .env 中设置 YOUTUBE_CLIENT_ID / CLIENT_SECRET。",
-        "先に .env で YOUTUBE_CLIENT_ID / CLIENT_SECRET を設定してください。",
-    ),
-    "Open Google sign-in": ("打开 Google 登录", "Google サインインを開く"),
-    "After you approve, Google redirects back here and sign-in completes automatically. "
-    "If it doesn't, paste the full redirect URL below.": (
-        "授权后 Google 会跳转回此页面并自动完成登录。如果没有，请在下方粘贴完整的跳转 URL。",
-        "承認すると Google がこのページに戻り、自動的にサインインが完了します。"
-        "完了しない場合は、リダイレクト URL 全体を下に貼り付けてください。",
-    ),
-    "Redirect URL or code": ("跳转 URL 或授权码", "リダイレクト URL またはコード"),
-    "Submit": ("提交", "送信"),
-    "Authenticated!": ("认证成功！", "認証しました！"),
-    "Live stream URL, video ID, or live chat ID": (
-        "直播 URL、视频 ID 或聊天 ID",
-        "配信 URL、動画 ID、またはライブチャット ID",
-    ),
-    "{n} watching": ("{n} 人观看", "{n} 人が視聴中"),
-    "Upcoming": ("即将开始", "配信予定"),
     "YouTube chat listener active ✓": ("YouTube 聊天监听中 ✓", "YouTube チャット受信中 ✓"),
-    "Chat ID: `{chat_id}`": ("聊天 ID：`{chat_id}`", "チャット ID：`{chat_id}`"),
-    "Reading chat without sign-in. Sign in to send messages or moderate.": (
-        "无需登录即可读取聊天。登录后才能发送消息或管理。",
-        "サインインなしでチャットを読み込み中。メッセージ送信やモデレーションにはサインインが必要です。",
-    ),
-    "Stop YouTube listener": ("停止 YouTube 监听", "YouTube 受信を停止"),
-    "Start YouTube listener": ("开始 YouTube 监听", "YouTube 受信を開始"),
     "Room ID": ("房间号", "ルーム ID"),
-    "popularity {n}": ("人气 {n}", "人気 {n}"),
-    "Playback": ("轮播中", "再放送中"),
-    "LIVE": ("直播中", "配信中"),
-    "Offline": ("未开播", "オフライン"),
-    "Danmaku listener connecting…": ("弹幕监听连接中…", "弾幕受信に接続中…"),
-    "Danmaku listener active, but **anonymous** — Bilibili masks usernames (e.g. 波***). "
-    "Import login cookies in the 🍪 Cookies tab.": (
-        "弹幕监听中，但为**匿名**连接 — B站会隐藏用户名（如 波***）。请在 🍪 Cookies 标签页导入登录 Cookie。",
-        "弾幕受信中ですが**匿名**接続です — Bilibili はユーザー名を伏せ字にします（例：波***）。"
-        "🍪 Cookies タブでログイン Cookie をインポートしてください。",
-    ),
-    "Danmaku listener active ✓ (logged in, UID {uid})": (
-        "弹幕监听中 ✓（已登录，UID {uid}）",
-        "弾幕受信中 ✓（ログイン済み、UID {uid}）",
-    ),
-    "Stop Bilibili listener": ("停止 B站监听", "Bilibili 受信を停止"),
-    "No Bilibili login cookies set — chat usernames will be masked.": (
-        "未设置 B站登录 Cookie — 弹幕用户名将被隐藏。",
-        "Bilibili のログイン Cookie が未設定です — ユーザー名は伏せ字になります。",
-    ),
-    "Start Bilibili listener": ("开始 B站监听", "Bilibili 受信を開始"),
     "Room ID or URL": ("房间号或链接", "ルームIDまたはURL"),
     "Could not find a room ID in that text.": ("无法从输入中找到房间号。", "入力からルームIDが見つかりません。"),
-    "{n} online": ("{n} 人在线", "{n} 人視聴中"),
-    "MissEvan room not found.": ("找不到该猫耳FM直播间。", "MissEvan のルームが見つかりません。"),
-    "MissEvan chat listener active ✓": ("猫耳FM 弹幕监听中 ✓", "MissEvan チャット受信中 ✓"),
-    "MissEvan chat listener connecting…": ("猫耳FM 弹幕连接中…", "MissEvan チャットに接続中…"),
-    "Stop MissEvan listener": ("停止猫耳FM 监听", "MissEvan 受信を停止"),
-    "Start MissEvan listener": ("开始猫耳FM 监听", "MissEvan 受信を開始"),
-    "Shows chat, gifts, paid questions and joins without login. To send chat, log in via the 🍪 Cookies tab.": (
-        "无需登录即可显示弹幕、礼物、付费提问和进场。如需发送弹幕，请在 🍪 Cookie 标签页登录。",
-        "ログインなしでチャット、ギフト、有料質問、入室を表示します。チャット送信には 🍪 Cookie タブでログインしてください。",
-    ),
     "MissEvan": ("猫耳FM", "MissEvan"),
     "Followers: {n}": ("关注：{n}", "フォロワー：{n}"),
     "MissEvan messages": ("猫耳FM 消息", "MissEvan メッセージ"),
-    "Listener started!": ("监听已启动！", "受信を開始しました！"),
     "bilibili-api-python not installed or connection failed.": (
         "未安装 bilibili-api-python 或连接失败。",
         "bilibili-api-python が未インストールか、接続に失敗しました。",
     ),
     "OBS connected ✓": ("OBS 已连接 ✓", "OBS 接続済み ✓"),
     "Connect to OBS": ("连接 OBS", "OBS に接続"),
-    "Off: the dashboard never contacts OBS. On: OBS controls appear here and in the 🎬 OBS Control tab once OBS is connected.": (
-        "关闭：仪表板不会连接 OBS。开启：连接成功后，这里和「🎬 OBS 控制」标签页会显示 OBS 控制项。",
-        "オフ：ダッシュボードは OBS に接続しません。オン：接続されると、ここと「🎬 OBS 操作」タブに OBS の操作が表示されます。",
+    "Off: the dashboard never contacts OBS. On: stream, recording, scene and Text source controls appear here once OBS is connected.": (
+        "关闭：仪表板不会连接 OBS。开启：连接成功后，这里会显示直播、录制、场景和文本源控制项。",
+        "オフ：ダッシュボードは OBS に接続しません。オン：接続されると、ここに配信・録画・シーン・テキストソースの操作が表示されます。",
     ),
     "OBS functions are off.": ("OBS 功能已关闭。", "OBS 機能はオフです。"),
-    "OBS functions are off. Turn on **Connect to OBS** in the sidebar to use them.": (
-        "OBS 功能已关闭。请在侧边栏开启 **连接 OBS** 以使用。",
-        "OBS 機能はオフです。サイドバーで **OBS に接続** をオンにすると使えます。",
+    "📝 OBS Text source": ("📝 OBS 文本源", "📝 OBS テキストソース"),
+    "Send chat to OBS Text source": ("将聊天发送到 OBS 文本源", "チャットを OBS テキストソースに送信"),
+    "OBS Text source": ("OBS 文本源", "OBS テキストソース"),
+    "Add a Text source in OBS to display chat.": (
+        "请在 OBS 中添加文本源以显示聊天。",
+        "チャットを表示するには OBS にテキストソースを追加してください。",
     ),
-    "Scene": ("场景", "シーン"),
-    "OBS not connected — check OBS_HOST/PORT/PASSWORD in .env": (
-        "OBS 未连接 — 请检查 .env 中的 OBS_HOST/PORT/PASSWORD",
-        "OBS 未接続 — .env の OBS_HOST/PORT/PASSWORD を確認してください",
+    "Couldn't list OBS Text sources: {err}": (
+        "无法列出 OBS 文本源：{err}",
+        "OBS テキストソースを取得できません：{err}",
+    ),
+    "Couldn't update OBS chat text: {err}": (
+        "无法更新 OBS 聊天文本：{err}",
+        "OBS のチャットテキストを更新できません：{err}",
     ),
     "🌐 Translation": ("🌐 翻译", "🌐 翻訳"),
     "Translate chat": ("翻译聊天", "チャットを翻訳"),
@@ -197,11 +139,10 @@ _STRINGS: dict[str, tuple[str, str]] = {
     "translating…": ("翻译中…", "翻訳中…"),
     # ── Tabs ─────────────────────────────────────────────────────────────────
     "💬 Chat": ("💬 聊天", "💬 チャット"),
-    "📡 Stream Status": ("📡 直播状态", "📡 配信状況"),
-    "🎬 OBS Control": ("🎬 OBS 控制", "🎬 OBS 操作"),
+    "📡 Stream Monitoring": ("📡 直播监控", "📡 配信モニタリング"),
+    "🎬 OBS": ("🎬 OBS", "🎬 OBS"),
     "📊 Analytics": ("📊 数据分析", "📊 分析"),
     "🛡️ Filters": ("🛡️ 过滤", "🛡️ フィルター"),
-    "🖥️ Overlay": ("🖥️ 叠加层", "🖥️ オーバーレイ"),
     "🍪 Cookies": ("🍪 Cookies", "🍪 Cookie"),
     # ── Chat tab ─────────────────────────────────────────────────────────────
     "Blocked {author} — see the 🛡️ Filters tab to unblock": (
@@ -211,17 +152,12 @@ _STRINGS: dict[str, tuple[str, str]] = {
     "Any platform": ("任意平台", "全プラットフォーム"),
     "by name": ("按名称", "名前で"),
     "Unblock": ("取消屏蔽", "ブロック解除"),
-    "Or a channel link like https://www.youtube.com/@name — the chat is picked up automatically when the channel goes live.": (
-        "也可以填频道链接，如 https://www.youtube.com/@name——频道开播后会自动读取聊天。",
-        "チャンネルのリンク（例: https://www.youtube.com/@name）も可。配信が始まると自動でチャットを読み込みます。"),
-    "👀 Watch channel": ("👀 监视频道", "👀 チャンネルを監視"),
     "Waits for the channel to go live, then reads its chat automatically.": (
         "等待频道开播，然后自动读取聊天。", "チャンネルの配信開始を待ち、自動でチャットを読み込みます。"),
     "👀 Watching {name} — not live yet": ("👀 正在监视 {name}——尚未开播", "👀 {name} を監視中 — まだ配信していません"),
     "👀 Watching {name} — stream scheduled: {title}": (
         "👀 正在监视 {name}——已预定直播：{title}", "👀 {name} を監視中 — 配信予定: {title}"),
     "Checks every {s}s · last checked {time}": ("每 {s} 秒检查一次 · 上次检查 {time}", "{s} 秒ごとに確認 · 最終確認 {time}"),
-    "Stop watching channel": ("停止监视频道", "チャンネルの監視を停止"),
     "Live now: {title}": ("正在直播：{title}", "配信中: {title}"),
     "{channel} is live — reading chat": ("{channel} 开播了——正在读取聊天", "{channel} が配信開始 — チャットを読み込み中"),
     "The YouTube stream ended — watching the channel for the next one.": (
@@ -234,10 +170,6 @@ _STRINGS: dict[str, tuple[str, str]] = {
     "Enter a Bilibili room ID first.": ("请先输入 B站房间号。", "先に Bilibili のルームIDを入力してください。"),
     "Tick at least one site to send to.": ("请至少勾选一个发送平台。", "送信先を1つ以上選択してください。"),
     "Sent to {site} ✓": ("已发送到 {site} ✓", "{site} に送信しました ✓"),
-    "Failed to send to {site} (check sign-in / login cookies).": (
-        "发送到 {site} 失败（请检查登录 / Cookie）。",
-        "{site} への送信に失敗しました（サインイン / Cookie を確認）。",
-    ),
     "Message": ("消息", "メッセージ"),
     "Type a message…": ("输入消息…", "メッセージを入力…"),
     "Send": ("发送", "送信"),
@@ -260,14 +192,10 @@ _STRINGS: dict[str, tuple[str, str]] = {
         "{s} 秒ごとに自動更新 · {n} 件表示",
     ),
     # ── Stream status tab ────────────────────────────────────────────────────
-    "Enter a stream URL in the sidebar.": ("请在侧边栏输入直播 URL。", "サイドバーに配信 URL を入力してください。"),
+    "Enter a stream URL above to see its status.": ("在上方输入直播 URL 以查看状态。", "上に配信 URL を入力するとステータスが表示されます。"),
     "Status needs a stream URL or video ID (a raw chat ID has no video info).": (
         "需要直播 URL 或视频 ID 才能显示状态（聊天 ID 不包含视频信息）。",
         "状況の表示には配信 URL または動画 ID が必要です（チャット ID には動画情報がありません）。",
-    ),
-    "Could not fetch stream info (sign in or set YOUTUBE_API_KEY).": (
-        "无法获取直播信息（请登录或设置 YOUTUBE_API_KEY）。",
-        "配信情報を取得できません（サインインするか YOUTUBE_API_KEY を設定してください）。",
     ),
     "That video is not a live stream.": ("该视频不是直播。", "この動画はライブ配信ではありません。"),
     "🟢 Live": ("🟢 直播中", "🟢 配信中"),
@@ -280,7 +208,7 @@ _STRINGS: dict[str, tuple[str, str]] = {
     "Viewers": ("观众", "視聴者"),
     "Live since: {t}": ("开播时间：{t}", "配信開始：{t}"),
     "Scheduled: {t}": ("预定时间：{t}", "予定：{t}"),
-    "Enter a room ID in the sidebar.": ("请在侧边栏输入房间号。", "サイドバーにルーム ID を入力してください。"),
+    "Enter a room ID above to see its status.": ("在上方输入房间号以查看状态。", "上にルーム ID を入力するとステータスが表示されます。"),
     "Could not fetch room info.": ("无法获取房间信息。", "ルーム情報を取得できません。"),
     "Streamer: {name}": ("主播：{name}", "配信者：{name}"),
     "Category: {area} › {sub}": ("分区：{area} › {sub}", "カテゴリ：{area} › {sub}"),
@@ -369,24 +297,30 @@ _STRINGS: dict[str, tuple[str, str]] = {
         "在 OBS 中将叠加层 URL 添加为**浏览器来源**，即可在直播画面显示透明聊天框。",
         "OBS でオーバーレイ URL を**ブラウザソース**として追加すると、配信画面に透過チャットを表示できます。",
     ),
-    "**How to use**: Add a Browser Source in OBS pointing to `http://localhost:8501/overlay` "
-    "— or copy the overlay HTML below into a local file and load it as a file URL.": (
-        "**使用方法**：在 OBS 中添加指向 `http://localhost:8501/overlay` 的浏览器来源，"
-        "或将下方的叠加层 HTML 保存为本地文件并以文件 URL 加载。",
-        "**使い方**：OBS で `http://localhost:8501/overlay` を指すブラウザソースを追加するか、"
-        "下のオーバーレイ HTML をローカルファイルに保存してファイル URL として読み込みます。",
+    "**How to use**: Add a Browser Source in OBS pointing to `http://localhost:8502/overlay`. "
+    "Keep the dashboard open for live updates.": (
+        "**使用方法**：在 OBS 中添加指向 `http://localhost:8502/overlay` 的浏览器来源。"
+        "保持仪表板打开以接收实时更新。",
+        "**使い方**：OBS のブラウザソースに `http://localhost:8502/overlay` を設定してください。"
+        "ライブ更新にはダッシュボードを開いたままにしてください。",
+    ),
+    "Couldn't start the chat overlay on port 8502: {err}": (
+        "无法在端口 8502 启动聊天叠加层：{err}",
+        "ポート 8502 でチャットオーバーレイを起動できません：{err}",
     ),
     "Custom overlay message (shown permanently on stream)": (
         "自定义叠加消息（常驻显示在直播画面）",
         "カスタムオーバーレイメッセージ（配信画面に常時表示）",
     ),
     "Show custom overlay message": ("显示自定义叠加消息", "カスタムメッセージを表示"),
-    "Recent Chat Preview (last 5 messages)": ("最近聊天预览（最后 5 条）", "最近のチャットプレビュー（最新 5 件）"),
-    "Standalone Overlay HTML": ("独立叠加层 HTML", "スタンドアロン オーバーレイ HTML"),
-    "Save as `overlay.html` and open in OBS Browser Source.": (
-        "保存为 `overlay.html` 并在 OBS 浏览器来源中打开。",
-        "`overlay.html` として保存し、OBS のブラウザソースで開きます。",
+    "Show usernames in OBS overlay": ("在 OBS 叠加层显示用户名", "OBS オーバーレイにユーザー名を表示"),
+    "Messages shown in OBS overlay": ("OBS 叠加层显示的消息数", "OBS オーバーレイに表示するメッセージ数"),
+    "Super Chats & gifts shown in OBS overlay": ("OBS 叠加层显示的醒目留言和礼物数", "OBS オーバーレイに表示するスーパーチャット・ギフト数"),
+    "Super Chats, gifts and memberships are pinned to the top of the overlay, apart from regular chat, so busy chat never pushes them away. Set to 0 to hide them.": (
+        "醒目留言、礼物和会员固定在叠加层顶部，与普通聊天分开，聊天再多也不会把它们挤走。设为 0 则隐藏。",
+        "スーパーチャット・ギフト・メンバーシップはオーバーレイ上部に固定され、通常チャットとは別なので、チャットが多くても押し出されません。0 で非表示。",
     ),
+    "Recent Chat Preview (last {n} messages)": ("最近聊天预览（最后 {n} 条）", "最近のチャットプレビュー（最新 {n} 件）"),
     # ── Cookies tab ──────────────────────────────────────────────────────────
     "🍪 Import login cookies from browser": ("🍪 从浏览器导入登录 Cookie", "🍪 ブラウザからログイン Cookie をインポート"),
     "Reads cookies from a browser installed on this computer. Values never leave this "
@@ -395,10 +329,7 @@ _STRINGS: dict[str, tuple[str, str]] = {
         "このコンピューターのブラウザから Cookie を読み取ります。各サイトでのログイン確認以外で"
         "値がこのマシンの外に送られることはありません。",
     ),
-    "Saved MISSEVAN_COOKIE to .env — you can now send chat to MissEvan.": (
-        "已将 MISSEVAN_COOKIE 保存到 .env——现在可以向猫耳FM 发送弹幕了。",
-        "MISSEVAN_COOKIE を .env に保存しました — MissEvan にチャットを送信できます。",
-    ),
+    "You can now send chat to MissEvan.": ("现在可以向猫耳FM 发送弹幕了。", "MissEvan にチャットを送信できます。"),
     "MissEvan reports these cookies are not logged in — log in at fm.missevan.com first.": (
         "猫耳FM 报告这些 Cookie 未登录——请先在 fm.missevan.com 登录。",
         "MissEvan によるとこの Cookie は未ログインです — 先に fm.missevan.com にログインしてください。",
@@ -441,8 +372,20 @@ _STRINGS: dict[str, tuple[str, str]] = {
         "未找到 SESSDATA Cookie — 请先在此浏览器登录 bilibili.com。",
         "SESSDATA Cookie が見つかりません — 先にこのブラウザで bilibili.com にログインしてください。",
     ),
-    "💾 Save to .env and apply": ("💾 保存到 .env 并应用", "💾 .env に保存して適用"),
-    "Saved {keys} to .env.": ("已将 {keys} 保存到 .env。", "{keys} を .env に保存しました。"),
+    "✅ Use these cookies": ("✅ 使用这些 Cookie", "✅ この Cookie を使用"),
+    "💾 Also save to .env (keep login after restart)": (
+        "💾 同时保存到 .env（重启后保持登录）",
+        "💾 .env にも保存（再起動後もログインを維持）",
+    ),
+    "Off: cookies are kept only in this app's memory and never written to disk; re-import them after restarting. On: also written to .env in plain text.": (
+        "关闭：Cookie 只保存在本应用内存中，不会写入磁盘；重启后需重新导入。开启：同时以明文写入 .env。",
+        "オフ：Cookie はこのアプリのメモリにのみ保持され、ディスクには書き込まれません。再起動後は再インポートしてください。オン：.env にも平文で書き込みます。",
+    ),
+    "Saved {keys} to .env and applied.": ("已将 {keys} 保存到 .env 并应用。", "{keys} を .env に保存して適用しました。"),
+    "Applied {keys} in memory only — not written to disk; lost when the app restarts.": (
+        "已在内存中应用 {keys}——未写入磁盘，应用重启后失效。",
+        "{keys} をメモリ上でのみ適用しました — ディスクには書き込まれず、アプリ再起動で消えます。",
+    ),
     " Bilibili listener reconnected with the new login.": (
         " B站监听已使用新登录重新连接。",
         " 新しいログインで Bilibili 受信に再接続しました。",
@@ -456,22 +399,87 @@ _STRINGS: dict[str, tuple[str, str]] = {
         "YouTube 报告这些 Cookie 未登录（已过期或已退出）。",
         "YouTube によるとこの Cookie はログインしていません（期限切れまたはログアウト済み）。",
     ),
-    "Saved YOUTUBE_COOKIE to .env — you can now send YouTube chat without OAuth.": (
-        "已将 YOUTUBE_COOKIE 保存到 .env——现在无需 OAuth 即可发送 YouTube 聊天。",
-        "YOUTUBE_COOKIE を .env に保存しました — OAuth なしで YouTube チャットを送信できます。",
-    ),
-    "Cookie login is unofficial (it works like youtube.com itself) and may break if YouTube "
-    "changes it. OAuth sign-in, if set up, is used first.": (
-        "Cookie 登录为非官方方式（与 youtube.com 网页相同），YouTube 更改后可能失效。若已设置 OAuth 登录，将优先使用 OAuth。",
-        "Cookie ログインは非公式（youtube.com と同じ仕組み）で、YouTube の変更により使えなくなる可能性があります。"
-        "OAuth サインインが設定されている場合はそちらが優先されます。",
-    ),
-    "Signed in with browser cookies ✓ (sending chat)": ("已通过浏览器 Cookie 登录 ✓（发送聊天）", "ブラウザ Cookie でログイン済み ✓（チャット送信）"),
-    "OAuth is optional — needed only for ban / delete and your own broadcast stats.": (
-        "OAuth 为可选——仅在封禁 / 删除消息和查看自己的直播统计时需要。",
-        "OAuth は任意です — BAN / 削除と自分の配信統計にのみ必要です。",
+    "Not logged in — chat is read-only. Import cookies in the 🍪 Cookies tab to send.": (
+        "未登录——只能查看聊天。要发送消息，请在 🍪 Cookie 标签页导入 Cookie。",
+        "未ログイン — チャットは閲覧のみです。送信するには 🍪 Cookie タブで Cookie をインポートしてください。",
     ),
     "All cookie names (values masked)": ("所有 Cookie 名称（值已隐藏）", "すべての Cookie 名（値は伏せ字）"),
+    "A live stream URL or video ID, or a channel link like https://www.youtube.com/@name — a channel's chat is picked up automatically when it goes live.": (
+        '直播链接或视频 ID，或频道链接（如 https://www.youtube.com/@name）— 频道开播时会自动读取其聊天。',
+        'ライブ配信の URL または動画 ID、またはチャンネルリンク（例: https://www.youtube.com/@name）— チャンネルが配信を始めると自動でチャットを読み取ります。',
+    ),
+    'Cookie login is unofficial (it works like youtube.com itself) and may break if YouTube changes it.': (
+        'Cookie 登录是非官方方式（与 youtube.com 本身相同），YouTube 改版时可能失效。',
+        'Cookie ログインは非公式（youtube.com と同じ方式）で、YouTube の変更で使えなくなる場合があります。',
+    ),
+    'Could not fetch stream info.': (
+        '无法获取直播信息。',
+        '配信情報を取得できませんでした。',
+    ),
+    'Failed to send to {site} (check the login cookies).': (
+        '发送到 {site} 失败（请检查登录 Cookie）。',
+        '{site} への送信に失敗しました（ログイン Cookie を確認してください）。',
+    ),
+    'UID {mid}': (
+        'UID {mid}',
+        'UID {mid}',
+    ),
+    'You can now send YouTube chat.': (
+        '现在可以发送 YouTube 聊天了。',
+        'YouTube チャットを送信できるようになりました。',
+    ),
+    '⏹ Stop listening': (
+        '⏹ 停止监听',
+        '⏹ 受信を停止',
+    ),
+    '▶ Start listening': (
+        '▶ 开始监听',
+        '▶ 受信を開始',
+    ),
+    '🎧 Connecting…': (
+        '🎧 连接中…',
+        '🎧 接続中…',
+    ),
+    '🎧 Listening anonymously — Bilibili masks usernames (e.g. 波***). Import login cookies in the 🍪 Cookies tab.': (
+        '🎧 正在匿名监听 — B站会隐藏用户名（如 波***）。请在 🍪 Cookies 标签页导入登录 Cookie。',
+        '🎧 匿名で受信中 — Bilibili はユーザー名を伏せます（例: 波***）。🍪 Cookies タブでログイン Cookie を取り込んでください。',
+    ),
+    '🎧 Listening ✓': (
+        '🎧 监听中 ✓',
+        '🎧 受信中 ✓',
+    ),
+    '🎧 Not listening.': (
+        '🎧 未监听。',
+        '🎧 受信していません。',
+    ),
+    "🔑 Couldn't check the login: {err}": (
+        '🔑 无法检查登录状态：{err}',
+        '🔑 ログイン状態を確認できませんでした: {err}',
+    ),
+    "Send as": ("发送身份", "送信するチャンネル"),
+    "This Google login owns several YouTube channels — pick which one your chat messages come from.": (
+        "此 Google 账号拥有多个 YouTube 频道——选择以哪个频道发送聊天消息。",
+        "この Google アカウントには複数の YouTube チャンネルがあります。チャットを送信するチャンネルを選んでください。",
+    ),
+    "🚪 Clear login": ("🚪 清除登录", "🚪 ログインを解除"),
+    "Forget this site's login cookies (also removed from .env). Chat keeps working read-only.": (
+        "清除此网站的登录 Cookie（也会从 .env 删除）。聊天仍可只读查看。",
+        "このサイトのログイン Cookie を削除します（.env からも削除）。チャットは閲覧のみで引き続き使えます。",
+    ),
+    "Cleared the {site} login (memory and .env).": ("已清除 {site} 登录（内存和 .env）。", "{site} のログインを解除しました（メモリと .env）。"),
+    "Cleared the {site} login.": ("已清除 {site} 登录。", "{site} のログインを解除しました。"),
+    '🔑 Logged in as **{name}**': (
+        '🔑 已登录：**{name}**',
+        '🔑 **{name}** としてログイン中',
+    ),
+    '🔑 Login expired — re-import cookies in the 🍪 Cookies tab.': (
+        '🔑 登录已过期 — 请在 🍪 Cookies 标签页重新导入 Cookie。',
+        '🔑 ログインの期限切れ — 🍪 Cookies タブで Cookie を取り込み直してください。',
+    ),
+    '🔑 Not logged in — chat is read-only. Import cookies in the 🍪 Cookies tab to send.': (
+        '🔑 未登录 — 聊天为只读。在 🍪 Cookies 标签页导入 Cookie 后即可发送。',
+        '🔑 未ログイン — チャットは閲覧のみ。送信するには 🍪 Cookies タブで Cookie を取り込んでください。',
+    ),
 }
 
 _INDEX = {"zh": 0, "ja": 1}

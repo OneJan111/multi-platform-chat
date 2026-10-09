@@ -332,6 +332,7 @@ def find_live_video(channel: str) -> dict:
 _ORIGIN = "https://www.youtube.com"
 _SEND = "https://www.youtube.com/youtubei/v1/live_chat/send_message"
 _ACCOUNT_MENU = "https://www.youtube.com/youtubei/v1/account/account_menu"
+_ACCOUNTS_LIST = "https://www.youtube.com/youtubei/v1/account/accounts_list"
 _ENV_FILE = Path(__file__).resolve().parent.parent / ".env"
 _FALLBACK_CLIENT_VERSION = "2.20241001.00.00"
 
@@ -354,12 +355,14 @@ def has_login() -> bool:
     return bool(c.get("SAPISID") or c.get("__Secure-3PAPISID"))
 
 
-def save_login(cookies: dict[str, str]) -> None:
-    from dotenv import set_key
-
+def save_login(cookies: dict[str, str], persist: bool = False) -> None:
+    """Apply the cookies to the running process; also write them to .env when `persist`."""
     value = "; ".join(f"{k}={v}" for k, v in cookies.items())
-    _ENV_FILE.touch(exist_ok=True)
-    set_key(str(_ENV_FILE), "YOUTUBE_COOKIE", value)
+    if persist:
+        from dotenv import set_key
+
+        _ENV_FILE.touch(exist_ok=True)
+        set_key(str(_ENV_FILE), "YOUTUBE_COOKIE", value)
     os.environ["YOUTUBE_COOKIE"] = value
 
 
@@ -391,7 +394,76 @@ def _auth_headers(cookies: dict[str, str]) -> dict[str, str]:
         "X-Origin": _ORIGIN,
         "X-Goog-AuthUser": "0",
         "Content-Type": "application/json",
+        # Act as a secondary channel (brand account) of the same Google login; empty = the main channel.
+        **({"X-Goog-PageId": page_id} if (page_id := selected_page_id()) else {}),
     }
+
+
+def selected_page_id() -> str:
+    return os.getenv("YOUTUBE_PAGE_ID", "").strip()
+
+
+def select_channel(page_id: str, persist: bool = False) -> None:
+    """Choose which channel of the logged-in Google account sends chat ("" = the main channel)."""
+    page_id = (page_id or "").strip()
+    if persist:
+        from dotenv import set_key, unset_key
+
+        _ENV_FILE.touch(exist_ok=True)
+        if page_id:
+            set_key(str(_ENV_FILE), "YOUTUBE_PAGE_ID", page_id)
+        else:
+            unset_key(str(_ENV_FILE), "YOUTUBE_PAGE_ID")
+    if page_id:
+        os.environ["YOUTUBE_PAGE_ID"] = page_id
+    else:
+        os.environ.pop("YOUTUBE_PAGE_ID", None)
+
+
+def _find_account_items(node) -> list[dict]:
+    if isinstance(node, dict):
+        if "accountItem" in node:
+            return [node["accountItem"]]
+        return [i for v in node.values() for i in _find_account_items(v)]
+    if isinstance(node, list):
+        return [i for v in node for i in _find_account_items(v)]
+    return []
+
+
+def list_channels(cookies: dict[str, str] | None = None) -> dict:
+    """Channels the cookie login can post as: {"channels": [{"name", "handle", "page_id", "selected"}]} (+ "error")."""
+    cookies = login_cookies() if cookies is None else cookies
+    if not (cookies.get("SAPISID") or cookies.get("__Secure-3PAPISID")):
+        return {"channels": []}
+    try:
+        s = _auth_session(cookies)
+        headers = _auth_headers(cookies)
+        headers.pop("X-Goog-PageId", None)  # list from the main account so every channel shows up
+        body = {
+            "context": {"client": {"clientName": "WEB", "clientVersion": _FALLBACK_CLIENT_VERSION, "hl": "en"}},
+            "accountReadMask": {"returnOwner": True, "returnBrandAccounts": True, "returnPersonaAccounts": False},
+        }
+        resp = s.post(_ACCOUNTS_LIST, params={"prettyPrint": "false"}, json=body, headers=headers, timeout=_TIMEOUT)
+        if resp.status_code != 200:
+            return {"channels": [], "error": f"HTTP {resp.status_code}"}
+        channels, seen = [], set()
+        for item in _find_account_items(resp.json()):
+            tokens = item.get("serviceEndpoint", {}).get("selectActiveIdentityEndpoint", {}).get("supportedTokens", [])
+            page_id = next((t["pageIdToken"].get("pageId", "") for t in tokens if "pageIdToken" in t), "")
+            has_channel = next((t["accountStateToken"].get("hasChannel", True) for t in tokens if "accountStateToken" in t), True)
+            if page_id in seen or not has_channel:
+                continue
+            seen.add(page_id)
+            channels.append({
+                "name": item.get("accountName", {}).get("simpleText", ""),
+                "handle": item.get("channelHandle", {}).get("simpleText", "")
+                          or item.get("accountByline", {}).get("simpleText", ""),
+                "page_id": page_id,
+                "selected": bool(item.get("isSelected")),
+            })
+        return {"channels": channels}
+    except (requests.RequestException, ValueError) as exc:
+        return {"channels": [], "error": str(exc)}
 
 
 def verify_login(cookies: dict[str, str] | None = None) -> dict:

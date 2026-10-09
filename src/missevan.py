@@ -69,13 +69,14 @@ def verify_login(cookies: Optional[dict[str, str]] = None) -> dict:
         return {"is_login": False, "username": "", "user_id": 0, "error": str(exc)}
 
 
-def save_login(cookies: dict[str, str]) -> None:
-    """Store the cookies in .env (as one Cookie-header string) and the current process."""
-    from dotenv import set_key
-
+def save_login(cookies: dict[str, str], persist: bool = False) -> None:
+    """Apply the cookies (as one Cookie-header string) to the running process; also write .env when `persist`."""
     value = "; ".join(f"{k}={v}" for k, v in cookies.items())
-    _ENV_FILE.touch(exist_ok=True)
-    set_key(str(_ENV_FILE), "MISSEVAN_COOKIE", value)
+    if persist:
+        from dotenv import set_key
+
+        _ENV_FILE.touch(exist_ok=True)
+        set_key(str(_ENV_FILE), "MISSEVAN_COOKIE", value)
     os.environ["MISSEVAN_COOKIE"] = value
 
 
