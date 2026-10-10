@@ -168,6 +168,8 @@ h3 .site-icon { margin-right: 0.15em; position: relative; top: -0.08em; }
 .dot-live   { background: #00e676; box-shadow: 0 0 6px #00e676; }
 .dot-offline{ background: #9e9e9e; }
 .dot-error  { background: #ff5252; }
+/* Invisible helper that reads the encrypted login cookie in the browser (see _restore_user_logins) */
+.st-key-login_cookie_reader { display: none !important; }
 /* ── Responsive layout (PC + tablet) ── */
 [data-testid="stMainBlockContainer"] {
     padding: 2.5rem 1.5rem 1rem;
@@ -354,11 +356,49 @@ def _init_state():
 _init_state()
 
 
+_LOGIN_RESTORED = "_user_logins_restored"
+_LOGIN_COOKIE_JS = """
+export default function(component) {
+    const jar = {};
+    for (const part of document.cookie.split(";")) {
+        const i = part.indexOf("=");
+        if (i > 0) jar[part.slice(0, i).trim()] = part.slice(i + 1).trim();
+    }
+    const n = parseInt(jar["%(name)s_n"] || "0", 10);
+    let token = "";
+    if (n > 0 && n <= %(max)d) {
+        const parts = [];
+        for (let i = 0; i < n; i++) parts.push(jar["%(name)s_" + i] || "");
+        if (parts.every(Boolean)) token = parts.join("");
+    }
+    component.setStateValue("token", token);
+}
+""" % {"name": user_login.COOKIE_NAME, "max": user_login.MAX_CHUNKS}
+
+
+@st.cache_resource
+def _login_cookie_reader():
+    return st.components.v2.component("login_cookie_reader", js=_LOGIN_COOKIE_JS)
+
+
 def _restore_user_logins() -> None:
-    """New browser session: load this user's own logins from their encrypted browser cookie."""
-    if user_login.SESSION_KEY not in st.session_state:
-        st.session_state[user_login.SESSION_KEY] = user_login.decode(
-            user_login.join_cookies(st.context.cookies))
+    """New browser session: load this user's own logins from their encrypted browser cookie.
+
+    The server normally sees the cookie in the request, but Streamlit Community Cloud's proxy strips
+    app cookies, so when it is missing the browser reads it and sends it over on the next rerun."""
+    if st.session_state.get(_LOGIN_RESTORED):
+        return
+    token = user_login.join_cookies(st.context.cookies)
+    if not token:
+        token = _login_cookie_reader()(
+            key="login_cookie_reader", default={"token": None}, on_token_change=lambda: None,
+        ).token
+        if token is None:  # the browser hasn't answered yet
+            return
+    st.session_state[_LOGIN_RESTORED] = True
+    logins = user_login.current()
+    for k, v in user_login.decode(token).items():
+        logins.setdefault(k, v)  # a login made before the cookie arrived wins
 
 
 def _sync_login_cookie() -> None:
