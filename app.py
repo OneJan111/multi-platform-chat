@@ -175,7 +175,8 @@ h3 .site-icon { margin-right: 0.15em; position: relative; top: -0.08em; }
 [data-testid="stElementContainer"]:has([data-testid="stMarkdownContainer"] > style:only-child) { display: none !important; }
 /* ── Responsive layout (PC + tablet) ── */
 [data-testid="stMainBlockContainer"] {
-    padding: 2.5rem 1.5rem 1rem;
+    /* Top padding must clear Streamlit's opaque fixed header (60px) or it covers the tab bar */
+    padding: 4.25rem 1.5rem 1rem;
     max-width: 100%;
 }
 [data-testid="stMainBlockContainer"] hr { margin: 0.25rem 0; }
@@ -238,7 +239,7 @@ h3 .site-icon { margin-right: 0.15em; position: relative; top: -0.08em; }
     min-height: 2.2rem;
 }
 @media (max-width: 1100px) {
-    [data-testid="stMainBlockContainer"] { padding: 2.5rem 0.75rem 1rem; }
+    [data-testid="stMainBlockContainer"] { padding: 4.25rem 0.75rem 1rem; }
     .chat-bubble { font-size: calc(0.85rem * var(--chat-scale, 1)); padding: 5px 8px; }
 }
 /* Touch screens: bigger tap targets */
@@ -247,7 +248,7 @@ h3 .site-icon { margin-right: 0.15em; position: relative; top: -0.08em; }
 }
 /* ── Phones ── */
 @media (max-width: 640px) {
-    [data-testid="stMainBlockContainer"] { padding: 3.25rem 0.5rem 1rem; }
+    [data-testid="stMainBlockContainer"] { padding: 4.25rem 0.5rem 1rem; }
     [data-testid="stMainBlockContainer"] hr { margin: 0.1rem 0; }
     /* Control rows wrap here: keep the wrapped lines close together (their gap is meant for one line) */
     [data-testid="stMainBlockContainer"] [data-testid="stHorizontalBlock"] { row-gap: 0.4rem !important; }
