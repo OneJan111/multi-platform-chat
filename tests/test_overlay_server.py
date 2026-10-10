@@ -319,3 +319,36 @@ class OverlayHtmlTests(unittest.TestCase):
         self.assertIn('<div class="only-paid">', overlay_server.render_html({"layout": "only-paid"}))
         self.assertEqual(overlay_server.snapshot([{"type": "danmaku", "text": "x"}], False, "", lambda *_: "",
                                                  count=0)["messages"], [])
+
+
+class OverlayReadingTests(unittest.TestCase):
+    def test_parse_reading(self):
+        for value, mode in (("auto", "auto"), ("Pinyin", "pinyin"), ("furigana", "hiragana"),
+                            ("1", "auto"), ("both", "off"), ("", "off"), ("<x>", "off")):
+            self.assertEqual(overlay_server.parse_reading(value), mode, value)
+
+    def test_snapshot_ruby_is_off_by_default_and_skips_emote_codes(self):
+        msgs = [{"type": "danmaku", "platform": "bilibili", "text": "\u4f60\u597d[\u5999\u554a]",
+                 "emotes": {"[\u5999\u554a]": "https://i0.hdslb.com/e.png"}}]
+        off = overlay_server.snapshot(msgs, False, "", lambda *_: "")
+        self.assertNotIn("ruby", off["messages"][0])
+        item = overlay_server.snapshot(msgs, False, "", lambda *_: "", reading_mode="pinyin")["messages"][0]
+        self.assertEqual(list(item["ruby"]), ["\u4f60\u597d"])
+        self.assertEqual("".join(rt for _, rt in item["ruby"]["\u4f60\u597d"]).replace(" ", ""), "n\u01d0h\u01ceo")
+
+    def test_snapshot_translation_ruby_follows_target_language(self):
+        msgs = [{"type": "textMessageEvent", "platform": "youtube", "text": "hello"}]
+        item = overlay_server.snapshot(msgs, True, "ja", lambda *_: "\u65e5\u672c", reading_mode="pinyin")["messages"][0]
+        self.assertNotIn("ruby", item)
+        self.assertTrue(item["translation_ruby"])
+        # Furigana is in hiragana, not pinyin.
+        self.assertTrue(all("\u3040" <= ch <= "\u309f" for _, rt in item["translation_ruby"] for ch in rt if rt))
+
+    def test_render_html_ruby_is_escaped(self):
+        out = overlay_server.render_html({"messages": [{
+            "text": "<i>\u4f60", "platform": "bilibili",
+            "ruby": {"<i>\u4f60": [["<i>", ""], ["\u4f60", "<b>"]]},
+        }]})
+        self.assertIn("<ruby>\u4f60<rt>&lt;b&gt;</rt></ruby>", out)
+        self.assertIn("&lt;i&gt;", out)
+        self.assertNotIn("<b>", out)

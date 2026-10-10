@@ -12,7 +12,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Callable
 from urllib.parse import parse_qs, urlparse
 
-from src import emotes, overlay_feeds
+from src import emotes, overlay_feeds, reading
 from src.config import OVERLAY_HOST, OVERLAY_PORT
 
 PORT = OVERLAY_PORT
@@ -45,14 +45,39 @@ def is_superchat(msg: dict) -> bool:
     return "super" in str(msg.get("type", "")).lower() and bool(msg.get("text"))
 
 
+def _text_parts(text: str, codes) -> list[str]:
+    """`text` split around emote codes (longest first), the same way the overlay page splits it."""
+    codes = sorted((c for c in codes if isinstance(c, str) and c and c in text), key=len, reverse=True)
+    if not codes:
+        return [text] if text else []
+    return [p for p in re.split("(" + "|".join(map(re.escape, codes)) + ")", text) if p]
+
+
+def _reading_mode_for(lang: str, mode: str) -> str:
+    """A translation's language is known: furigana for Japanese, pinyin for Chinese."""
+    if mode == "off":
+        return "off"
+    return "hiragana" if lang.startswith("ja") else "pinyin" if lang.startswith("zh") else mode
+
+
+def parse_reading(value: str) -> str:
+    """URL ruby= value -> a reading.OVERLAY_MODES entry ("furigana" is accepted for "hiragana")."""
+    value = (value or "").strip().lower()
+    value = {"furigana": "hiragana", "1": "auto", "on": "auto", "true": "auto", "yes": "auto"}.get(value, value)
+    return value if value in reading.OVERLAY_MODES else "off"
+
+
 def snapshot(messages: list[dict], translate_enabled: bool, target: str,
              get_translation: Callable[[str, str], str | None],
              custom_text: str = "", show_username: bool = True, count: int = 5,
-             paid_count: int = 3, paid_messages: list[dict] | None = None) -> dict:
+             paid_count: int = 3, paid_messages: list[dict] | None = None,
+             reading_mode: str = "off") -> dict:
     """Only publish displayable fields, never raw platform events or credentials.
 
     `paid_messages` (gifts, Super Chats, memberships) is a separate list the dashboard never
     trims for chat volume, so busy regular chat can't push paid events off the overlay.
+    `reading_mode` (a reading.OVERLAY_MODES entry) adds pinyin / furigana for the message text
+    and translations as `ruby` / `translation_ruby` ([characters, reading] pairs).
     """
     count = max(0, min(int(count), MAX_MESSAGES))
     paid_count = max(0, min(int(paid_count), MAX_MESSAGES))
@@ -88,6 +113,17 @@ def snapshot(messages: list[dict], translate_enabled: bool, target: str,
         }
         if inline:
             item["emotes"] = inline
+        if reading_mode != "off":
+            # Keyed by the text pieces between emote codes, so codes like [妙啊] stay whole.
+            parts = [text] if sticker else _text_parts(text, inline)
+            ruby = {p: [list(s) for s in segs] for p in parts
+                    if p not in inline and (segs := reading.segments(p, reading_mode))}
+            if ruby:
+                item["ruby"] = ruby
+            if translated:
+                segs = reading.segments(translated, _reading_mode_for(target, reading_mode))
+                if segs:
+                    item["translation_ruby"] = [list(s) for s in segs]
         return item
 
     return {
@@ -158,7 +194,7 @@ def _int_param(query: dict, name: str, default: int) -> int:
 def feed_snapshot(key: "overlay_feeds.FeedKey", query: dict) -> dict:
     """Snapshot of a standalone feed (?youtube=…&bilibili=…&missevan=…), shaped by URL options:
     n (chat lines, default 5), sc (paid events, default 3), names=0 (hide usernames),
-    tr=<lang> (add translations), text=<custom message>."""
+    tr=<lang> (add translations), text=<custom message>, ruby=auto|pinyin|furigana (reading aid)."""
     feed = overlay_feeds.get(key)
     if feed is None:
         return dict(_EMPTY, custom_text="Overlay server is busy — too many different overlays open.")
@@ -179,6 +215,7 @@ def feed_snapshot(key: "overlay_feeds.FeedKey", query: dict) -> dict:
         count=_int_param(query, "n", 5),
         paid_count=_int_param(query, "sc", 3),
         paid_messages=paid,
+        reading_mode=parse_reading((query.get("ruby") or [""])[0]),
     )
 
 
@@ -198,6 +235,7 @@ _PAGE_CSS = """
   #custom { color: #ffd700; font-weight: bold; white-space: pre-wrap; overflow-wrap: anywhere; }
   .paid-item { background: rgba(120, 0, 0, 0.75); border-left: 4px solid #ffd700; border-radius: 6px; padding: 4px 8px; }
   .paid-item.gift { background: rgba(80, 20, 110, 0.75); border-left-color: #ff8adf; }
+  .message rt { font-size: 0.6em; color: #ffe08a; }
   .only-paid #paid, .only-chat #chat { max-height: calc(100vh - 40px); }
   .only-chat #paid { display: none; }
 """
@@ -209,20 +247,28 @@ def _html_image(url: str, alt: str, cls: str) -> str:
             f'referrerpolicy="no-referrer">')
 
 
+def _html_ruby(segs) -> str:
+    return "".join(
+        f"<ruby>{html.escape(str(base))}<rt>{html.escape(str(rd))}</rt></ruby>" if rd else html.escape(str(base))
+        for base, rd in segs
+    )
+
+
+def _html_plain(part: str, msg: dict) -> str:
+    segs = (msg.get("ruby") or {}).get(part)
+    return _html_ruby(segs) if segs else html.escape(part)
+
+
 def _html_text(msg: dict) -> str:
     text = str(msg.get("text", ""))
     sticker = emotes.safe_chat_image_url(msg.get("sticker"))
     if sticker:
-        caption = f"{html.escape(text)}<br>" if msg.get("caption") else ""
+        caption = f"{_html_plain(text, msg)}<br>" if msg.get("caption") else ""
         return caption + _html_image(sticker, text, "sticker")
-    codes = sorted((c for c in (msg.get("emotes") or {}) if isinstance(c, str) and c and c in text),
-                   key=len, reverse=True)
-    if not codes:
-        return html.escape(text)
     out = []
-    for part in re.split("(" + "|".join(map(re.escape, codes)) + ")", text):
-        url = emotes.safe_chat_image_url(msg["emotes"][part]) if part in codes else ""
-        out.append(_html_image(url, part, "emote") if url else html.escape(part))
+    for part in _text_parts(text, msg.get("emotes") or {}):
+        url = emotes.safe_chat_image_url(msg["emotes"].get(part)) if part in (msg.get("emotes") or {}) else ""
+        out.append(_html_image(url, part, "emote") if url else _html_plain(part, msg))
     return "".join(out)
 
 
@@ -236,7 +282,9 @@ def _html_list(messages: list[dict], cls: str) -> str:
             parts.append(f'<div class="author {site}">{html.escape(str(msg["author"]))}</div>')
         parts.append(f'<div class="text">{_html_text(msg)}</div>')
         if msg.get("translation"):
-            parts.append(f'<div class="translation">{html.escape(str(msg["translation"]))}</div>')
+            body = (_html_ruby(msg["translation_ruby"]) if msg.get("translation_ruby")
+                    else html.escape(str(msg["translation"])))
+            parts.append(f'<div class="translation">{body}</div>')
         rows.append(f'<div class="{row_cls}">{"".join(parts)}</div>')
     return "".join(rows)
 
@@ -274,6 +322,7 @@ _PAGE = """<!doctype html>
   #custom { color: #ffd700; font-weight: bold; white-space: pre-wrap; overflow-wrap: anywhere; }
   .paid-item { background: rgba(120, 0, 0, 0.75); border-left: 4px solid #ffd700; border-radius: 6px; padding: 4px 8px; }
   .paid-item.gift { background: rgba(80, 20, 110, 0.75); border-left-color: #ff8adf; }
+  .message rt { font-size: 0.6em; color: #ffe08a; }
   /* n=0 / sc=0: one section only (e.g. separate OBS scenes for Super Chats and chat) gets the full height. */
   .only-paid #paid, .only-chat #chat { max-height: calc(100vh - 40px); }
   .only-chat #paid { display: none; }
@@ -291,18 +340,32 @@ function image(url, alt, cls) {
   img.referrerPolicy = "no-referrer";
   return img;
 }
+function rubyText(row, segs) {
+  for (const [base, reading] of segs) {
+    if (!reading) { row.append(document.createTextNode(base)); continue; }
+    const ruby = document.createElement("ruby");
+    const rt = document.createElement("rt");
+    rt.textContent = reading;
+    ruby.append(document.createTextNode(base), rt);
+    row.append(ruby);
+  }
+}
+function plainText(row, part, msg) {
+  const segs = msg.ruby && Object.prototype.hasOwnProperty.call(msg.ruby, part) ? msg.ruby[part] : null;
+  if (segs) rubyText(row, segs); else row.append(document.createTextNode(part));
+}
 function appendText(row, msg) {
   if (msg.sticker) {
-    if (msg.caption) row.append(document.createTextNode(msg.text), document.createElement("br"));
+    if (msg.caption) { plainText(row, msg.text, msg); row.append(document.createElement("br")); }
     row.append(image(msg.sticker, msg.text, "sticker"));
     return;
   }
   const codes = Object.keys(msg.emotes || {}).sort((a, b) => b.length - a.length);
-  if (!codes.length) { row.append(document.createTextNode(msg.text)); return; }
+  if (!codes.length) { plainText(row, msg.text, msg); return; }
   const pattern = new RegExp("(" + codes.map(c => c.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\\\$&")).join("|") + ")");
   for (const part of msg.text.split(pattern)) {
     if (!part) continue;
-    row.append(codes.includes(part) ? image(msg.emotes[part], part, "emote") : document.createTextNode(part));
+    if (codes.includes(part)) row.append(image(msg.emotes[part], part, "emote")); else plainText(row, part, msg);
   }
 }
 function renderList(id, messages, cls) {
@@ -324,7 +387,7 @@ function renderList(id, messages, cls) {
     if (msg.translation) {
       const translated = document.createElement("div");
       translated.className = "translation";
-      translated.textContent = msg.translation;
+      if (msg.translation_ruby) rubyText(translated, msg.translation_ruby); else translated.textContent = msg.translation;
       row.append(translated);
     }
     list.append(row);

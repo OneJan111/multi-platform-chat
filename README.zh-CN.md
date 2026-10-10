@@ -142,6 +142,7 @@ pip install -r requirements.txt
 
 要让叠加层只显示部分网站，请在 🎬 OBS 标签页的 **此叠加层显示的网站** 中选择，或自己在网址中加上 `site=`：`/overlay?site=youtube`、`/overlay?site=bilibili,missevan`、`/overlay?ch=alice&site=bili`（也可以用简称 `yt`、`bili`、`me`）。每个网址各自使用完整的消息条数，所以可以每个网站添加一个浏览器源（例如一边放 YouTube 弹幕，另一边放 B站弹幕）。不加 `site=` 时显示所有网站。
 
+要在叠加层（醒目留言、礼物、弹幕及其译文）的汉字上方显示**拼音 / 振假名**，请在 🎬 OBS 标签页的 **OBS 叠加层注音（拼音 / 振假名）** 中选择 *自动*、*拼音* 或 *振假名*。独立链接可加上 `ruby=auto`、`ruby=pinyin` 或 `ruby=furigana`。观众也会看到，而且每行会变高，所以默认关闭。
 要把醒目留言和弹幕放在**不同的画面或场景**，请使用 🎬 OBS 标签页顶部的 *仅醒目留言和礼物*（`n=0`）和 *仅弹幕*（`sc=0`）链接，各添加一个浏览器源。某一部分设为 0 时，另一部分会占满整个浏览器源的高度。
 
 **Streamlit Community Cloud / 托管的仪表板：** 这类环境只公开仪表板端口，因此无法访问 `:8502/overlay`。这时 🎬 OBS 标签页会改为显示仪表板链接，例如 `https://your-app.streamlit.app/?view=overlay&youtube=@channel&n=10&sc=5`。该页面只显示叠加层，每 2 秒刷新一次。如果在 OBS 中背景不透明，请在浏览器源的 *自定义 CSS* 中加入 `body, .stApp { background: transparent !important; }`。

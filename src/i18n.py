@@ -543,6 +543,15 @@ _STRINGS: dict[str, tuple[str, str]] = {
     ),
     "Show custom overlay message": ("显示自定义叠加消息", "カスタムメッセージを表示"),
     "Show usernames in OBS overlay": ("在 OBS 叠加层显示用户名", "OBS オーバーレイにユーザー名を表示"),
+    "Pinyin / furigana in OBS overlay": ("OBS 叠加层注音（拼音 / 振假名）", "OBS オーバーレイの読み仮名（ピンイン／振り仮名）"),
+    "Shows pinyin / furigana above Chinese characters in the overlay's Super Chats, gifts and chat, and in their "
+    "translations. Viewers see it too, and each line gets taller, so fewer messages fit. Adds ruby= to the "
+    "standalone overlay links.": (
+        "在叠加层的醒目留言、礼物和弹幕（及其译文）的汉字上方显示拼音 / 振假名。观众也会看到，而且每行会变高，"
+        "能显示的消息会变少。独立叠加层链接会加上 ruby=。",
+        "オーバーレイのスーパーチャット・ギフト・チャット（とその翻訳）の漢字の上にピンイン／振り仮名を表示します。"
+        "視聴者にも見え、各行が高くなるので表示できるメッセージは減ります。単独オーバーレイのリンクに ruby= が付きます。",
+    ),
     "Messages shown in OBS overlay": ("OBS 叠加层显示的消息数", "OBS オーバーレイに表示するメッセージ数"),
     "Super Chats & gifts shown in OBS overlay": ("OBS 叠加层显示的醒目留言和礼物数", "OBS オーバーレイに表示するスーパーチャット・ギフト数"),
     "Super Chats, gifts and memberships are pinned to the top of the overlay, apart from regular chat, so busy chat never pushes them away. Set to 0 to hide them.": (

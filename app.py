@@ -373,6 +373,7 @@ def _init_state():
         "overlay_text": "",
         "overlay_visible": False,
         "overlay_show_username": True,
+        "overlay_reading": "off",     # pinyin / furigana on the OBS overlay (viewers see it)
         "overlay_count": 5,
         "overlay_sc_count": 3,
         # ?overlay=name keeps this dashboard's overlay channel across refreshes.
@@ -1505,6 +1506,7 @@ _PREFS = {
     "text_scale": _pref_scales,
     "overlay_count": _pref_num(1, overlay_server.MAX_MESSAGES),
     "overlay_sc_count": _pref_num(0, overlay_server.MAX_MESSAGES),
+    "overlay_reading": _pref_pick(reading.OVERLAY_MODES),
     "overlay_sites": _pref_sites,
     "overlay_text": _pref_text(2000),
     "obs_chat_source": _pref_text(200),
@@ -2633,6 +2635,13 @@ with tab_obs:
                 help=t("Super Chats, gifts and memberships are pinned to the top of the overlay, apart from regular chat, so busy chat never pushes them away. Set to 0 to hide them."),
             )
             st.toggle(t("Show usernames in OBS overlay"), key="overlay_show_username")
+            st.selectbox(
+                t("Pinyin / furigana in OBS overlay"), list(reading.OVERLAY_MODES), key="overlay_reading",
+                format_func=lambda k: t(reading.MODES[k]),
+                help=t("Shows pinyin / furigana above Chinese characters in the overlay's Super Chats, gifts and "
+                       "chat, and in their translations. Viewers see it too, and each line gets taller, so fewer "
+                       "messages fit. Adds ruby= to the standalone overlay links."),
+            )
         with _set_r:
             overlay_text = st.text_area(
                 t("Custom overlay message (shown permanently on stream)"),
@@ -2725,6 +2734,8 @@ with tab_obs:
             _params["names"] = 0
         if st.session_state["translate_enabled"]:
             _params["tr"] = st.session_state["translate_target"]
+        if st.session_state["overlay_reading"] != "off":
+            _params["ruby"] = st.session_state["overlay_reading"]
         _text = {"text": overlay_text} if st.session_state["overlay_visible"] and overlay_text else {}
         # n= / sc= are always listed so they're easy to find and edit by hand in OBS. 0 turns a section off,
         # so Super Chats and chat can go on separate OBS screens, each using the whole Browser Source.
@@ -2758,7 +2769,8 @@ with tab_obs:
                     "you can close the dashboard. Edit the youtube= (@handle, channel or video link), bilibili= and "
                     "missevan= (room ID or link) values to show any channel. Options: n= chat lines, sc= Super Chats & gifts "
                     "(0 hides that part; the other then uses the whole height), "
-                    "names=0 hides usernames, tr=en adds translations, text= custom message. "
+                    "names=0 hides usernames, tr=en adds translations, text= custom message, "
+                    "ruby=auto (or pinyin / furigana) adds a reading aid. "
                     "Bilibili hides viewer names from logged-out readers, so they appear masked."
                 ))
                 st.caption(t(
@@ -2790,7 +2802,21 @@ with tab_obs:
             tr.get_translation(m["text"], st.session_state["translate_target"])
             if st.session_state["translate_enabled"] and m.get("type") != "gift" else ""
         )
-        translation_html = f'<div style="color:#9fd3ff">{html_lib.escape(translated)}</div>' if translated else ""
+        _ov_rd = st.session_state["overlay_reading"]
+        text_html = emotes.text_to_html(m["text"], m.get("emotes"), m.get("sticker_url", ""), m.get("sticker_caption", False))
+        if _ov_rd != "off" and not m.get("emotes") and not m.get("sticker_url"):
+            annotated = reading.annotate_html(m["text"], _ov_rd)
+            if annotated:
+                text_html = f'<span class="chat-reading">{annotated}</span>'
+        if translated:
+            _tr_target = st.session_state["translate_target"]
+            _tr_rd = ("off" if _ov_rd == "off" else "hiragana" if _tr_target.startswith("ja")
+                      else "pinyin" if _tr_target.startswith("zh") else _ov_rd)
+            annotated = reading.annotate_html(translated, _tr_rd) if _tr_rd != "off" else ""
+            body = f'<span class="chat-reading">{annotated}</span>' if annotated else html_lib.escape(translated)
+            translation_html = f'<div style="color:#9fd3ff">{body}</div>'
+        else:
+            translation_html = ""
         author_html = (
             f'<div style="color:{plat_color};font-weight:700;">{html_lib.escape(m.get("author", ""))}</div>'
             if st.session_state["overlay_show_username"] else ""
@@ -2798,7 +2824,7 @@ with tab_obs:
         return (
             f'<div style="color:#fff;margin-bottom:4px;font-size:13px;{style}">'
             f'{author_html}'
-            f'<div>{emotes.text_to_html(m["text"], m.get("emotes"), m.get("sticker_url", ""), m.get("sticker_caption", False))}</div>'
+            f'<div>{text_html}</div>'
             f'{translation_html}'
             f"</div>"
         )
@@ -2833,6 +2859,7 @@ with tab_obs:
             overlay_count,
             overlay_sc_count,
             st.session_state["paid_messages"],
+            reading_mode=st.session_state["overlay_reading"],
         ), _overlay_ch, source=overlay_server.overlay_feeds.parse_key(
             {site: [value] for site, value in _standalone.items()}
         ))
