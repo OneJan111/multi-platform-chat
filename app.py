@@ -2148,9 +2148,11 @@ with tab_obs:
             return _dash_base + "?view=overlay" + (f"&{query}" if query else "")
         return f"{_overlay_base}/overlay" + (f"?{query}" if query else "")
     _overlay_site_labels = {"youtube": "YouTube", "bilibili": "Bilibili", "missevan": t("MissEvan")}
+    # A stale/unknown entry would make format_func return None, which newer Streamlit can't serialize.
+    st.session_state["overlay_sites"] = [s for s in st.session_state["overlay_sites"] if s in _overlay_site_labels]
     st.multiselect(
         t("Sites on this overlay"), list(_overlay_site_labels), key="overlay_sites",
-        format_func=_overlay_site_labels.get,
+        format_func=lambda s: _overlay_site_labels.get(s, str(s)),
         help=t("Show only some sites' chat — e.g. one Browser Source per site. Adds ?site=… to the overlay URL; "
                "leave all selected (or empty) for every site."),
     )
