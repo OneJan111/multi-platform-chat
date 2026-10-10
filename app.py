@@ -641,8 +641,9 @@ def _render_message(msg: dict, key_prefix: str = "", thank: bool = False):
     author = _author_html(msg.get("author", ""))
     text = msg.get("text", "")
     text_html = emotes.text_to_html(text, msg.get("emotes"), msg.get("sticker_url", ""), msg.get("sticker_caption", False))
-    is_sc = "super" in msg.get("type", "").lower()
-    if is_sc:
+    # Super Chats and gifts get pinyin / furigana so their text (and gift names) can be read aloud.
+    reading_aid = "super" in msg.get("type", "").lower() or msg.get("type") == "gift"
+    if reading_aid:
         annotated = reading.annotate_html(text, st.session_state["sc_reading"])
         if annotated:
             text_html = f'<span class="chat-reading">{annotated}</span>'
@@ -654,12 +655,12 @@ def _render_message(msg: dict, key_prefix: str = "", thank: bool = False):
             translation_html = f'<div class="chat-translation pending">🌐 {t("translating…")}</div>'
         elif translated:
             # The translation's language is known: furigana for Japanese (all messages), pinyin for
-            # Chinese (Super Chats, like their original text); none when 注音 is off.
+            # Chinese (Super Chats and gifts, like their original text); none when 注音 is off.
             rd_mode = ""
             if st.session_state["sc_reading"] != "off":
                 if target.startswith("ja"):
                     rd_mode = "hiragana"
-                elif target.startswith("zh") and is_sc:
+                elif target.startswith("zh") and reading_aid:
                     rd_mode = "pinyin"
             annotated = reading.annotate_html(translated, rd_mode) if rd_mode else ""
             body = f'<span class="chat-reading">{annotated}</span>' if annotated else html_lib.escape(translated)
@@ -2101,10 +2102,14 @@ def _emote_packs(packs: list[dict], key: str, locked_help: str) -> dict | None:
     tools.button(t("Collapse all"), key=f"emo_{key}_collapse", type="tertiary", icon=":material/unfold_less:",
                  on_click=_set_emote_packs_open, args=(keys, False))
     for n, (pack, pack_key) in enumerate(zip(packs, keys)):
-        label = ("⭐ " if pack.get("owner") else "") + (pack["name"] or "?") + f" ({len(pack['emotes'])})"
         # Streamlit forgets a widget's state while it isn't shown (picker closed), so the prefs are the source.
         if pack_key not in st.session_state:
             st.session_state[pack_key] = prefs.get(pack_key, bool(pack.get("owner")) or (not any_owner and n == 0))
+    # Open packs first (in their usual order), then the closed ones; n stays the pack's original index for keys.
+    order = sorted(range(len(packs)), key=lambda n: not st.session_state[keys[n]])
+    for n in order:
+        pack, pack_key = packs[n], keys[n]
+        label = ("⭐ " if pack.get("owner") else "") + (pack["name"] or "?") + f" ({len(pack['emotes'])})"
         exp = st.expander(label, key=pack_key, type="compact",
                           on_change=_remember_emote_packs, args=([pack_key],))
         if not exp.open:
@@ -2394,9 +2399,9 @@ with tab_chat:
                 index=_rd_keys.index(st.session_state["sc_reading"]),
                 key="sc_reading_pick",
                 format_func=lambda k: t(reading.MODES[k]),
-                help=t("Shows pinyin / furigana above Chinese characters in Super Chats and all usernames "
+                help=t("Shows pinyin / furigana above Chinese characters in Super Chats, gifts and all usernames "
                        "so you can read them aloud. Translations get furigana when Japanese, and Super Chat "
-                       "translations get pinyin when Chinese."),
+                       "and gift translations get pinyin when Chinese."),
                 on_change=lambda: st.session_state.update(sc_reading=st.session_state["sc_reading_pick"]),
             )
         _feed_tts_button(paid_head, "tts_announce_paid")
