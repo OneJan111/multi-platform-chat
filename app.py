@@ -179,6 +179,21 @@ h3 .site-icon { margin-right: 0.15em; position: relative; top: -0.08em; }
     padding: 4.25rem 1.5rem 1rem;
     max-width: 100%;
 }
+/* Send-to, site-emote and chat-filter rows always stay on one line (scroll sideways if the screen is too narrow) */
+.st-key-send_targets, .st-key-emote_row, .st-key-show_row {
+    flex-wrap: nowrap !important;
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: none;
+}
+.st-key-send_targets > *, .st-key-emote_row > *, .st-key-show_row > * { flex-shrink: 0 !important; }
+.st-key-send_targets label, .st-key-emote_row p, .st-key-show_row label { white-space: nowrap; }
+/* The emote hint shrinks first, cut off with "…" */
+.st-key-emote_row > [data-testid="stElementContainer"]:has([data-testid="stCaptionContainer"]) {
+    flex: 1 1 0 !important;
+    min-width: 0 !important;
+}
+.st-key-emote_row [data-testid="stCaptionContainer"] p { overflow: hidden; text-overflow: ellipsis; }
 [data-testid="stMainBlockContainer"] hr { margin: 0.25rem 0; }
 [data-testid="stMainBlockContainer"] [data-testid="stForm"] { padding: 0.5rem; }
 /* Chat / gift feeds scroll inside a box that fits the screen height */
@@ -214,6 +229,8 @@ h3 .site-icon { margin-right: 0.15em; position: relative; top: -0.08em; }
     }
     .st-key-chat_feed { height: 50dvh !important; max-height: 50dvh !important; }
     .st-key-paid_feed { height: 35dvh !important; max-height: 35dvh !important; }
+    /* Feeds always stack here, so the 2-column / 1-column switch and its spacer do nothing */
+    .st-key-feed_layout, .st-key-show_row > [data-testid="stElementContainer"]:has([data-testid="stSpace"]) { display: none !important; }
 }
 /* Message rows and the send box: keep text + buttons on one line at any width */
 .st-key-chat_feed [data-testid="stHorizontalBlock"],
@@ -240,6 +257,7 @@ h3 .site-icon { margin-right: 0.15em; position: relative; top: -0.08em; }
 }
 @media (max-width: 1100px) {
     [data-testid="stMainBlockContainer"] { padding: 4.25rem 0.75rem 1rem; }
+    .st-key-show_row { column-gap: 1rem !important; }
     .chat-bubble { font-size: calc(0.85rem * var(--chat-scale, 1)); padding: 5px 8px; }
 }
 /* Touch screens: bigger tap targets */
@@ -252,9 +270,11 @@ h3 .site-icon { margin-right: 0.15em; position: relative; top: -0.08em; }
     [data-testid="stMainBlockContainer"] hr { margin: 0.1rem 0; }
     /* Control rows wrap here: keep the wrapped lines close together (their gap is meant for one line) */
     [data-testid="stMainBlockContainer"] [data-testid="stHorizontalBlock"] { row-gap: 0.4rem !important; }
-    .st-key-send_targets, .st-key-show_row { column-gap: 0.9rem !important; }
-    /* Feeds always stack on phones, so the 2-column / 1-column switch, its spacer and ◀ ▶ do nothing */
-    .st-key-feed_layout, .st-key-show_row > [data-testid="stElementContainer"]:has([data-testid="stSpace"]),
+    .st-key-send_targets, .st-key-show_row { column-gap: 0.5rem !important; }
+    .st-key-send_targets p { font-size: 0.9rem; }
+    .st-key-emote_row { column-gap: 0.4rem !important; }
+    .st-key-emote_row [data-testid="stPopover"] button { padding: 0.25rem 0.5rem; }
+    /* Feeds always stack on phones, so ◀ ▶ do nothing */
     [class*="st-key-move_"][class*="_side"] { display: none !important; }
     .st-key-emote_row [data-testid="stElementContainer"]:has([data-testid="stCaptionContainer"]) { display: none !important; }
     /* Feed headers: compact buttons so they take fewer lines */
@@ -271,6 +291,10 @@ h3 .site-icon { margin-right: 0.15em; position: relative; top: -0.08em; }
     .st-key-chat_feed { height: auto !important; min-height: 0; max-height: 60dvh !important; padding-bottom: 1rem; }
     .st-key-paid_feed { height: auto !important; min-height: 0; max-height: 40dvh !important; padding-bottom: 1rem; }
     .join-feed { height: auto; max-height: 110px; margin-bottom: 1rem; }
+}
+/* Small phones: drop the hover-only "?" hints so the send-to row fits */
+@media (max-width: 360px) {
+    .st-key-send_targets [data-testid="stTooltipIcon"] { display: none !important; }
 }
 /* Overlay preview */
 .overlay-box {
