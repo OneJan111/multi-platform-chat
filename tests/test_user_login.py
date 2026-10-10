@@ -82,6 +82,18 @@ class UserLoginTests(unittest.TestCase):
                 self.assertEqual(expected.decrypt(token), b"test")
                 self.assertFalse(secret_file.exists())
 
+    def test_detect_site_from_pasted_cookies(self):
+        self.assertEqual(bc.detect_site("SESSDATA=a; bili_jct=b"), "Bilibili")
+        self.assertEqual(bc.detect_site("Cookie: SID=a; SAPISID=b"), "YouTube")
+        self.assertIsNone(bc.detect_site("token=a; FM_SESS=b"))
+        self.assertIsNone(bc.detect_site(""))
+        self.assertIsNone(bc.detect_site("[not json"))
+        self.assertEqual(bc.detect_site('[{"name": "token", "value": "x", "domain": ".missevan.com"}]'), "MissEvan")
+        netscape = ".youtube.com\tTRUE\t/\tTRUE\t0\tSAPISID\tx\n.bilibili.com\tTRUE\t/\tTRUE\t0\tbuvid3\ty"
+        self.assertEqual(bc.detect_site(netscape), "YouTube")
+        both = netscape + "\n.bilibili.com\tTRUE\t/\tTRUE\t0\tSESSDATA\tz"
+        self.assertIsNone(bc.detect_site(both))
+
 
 if __name__ == "__main__":
     unittest.main()

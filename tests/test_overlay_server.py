@@ -45,7 +45,8 @@ class OverlayTests(unittest.TestCase):
         fetch = lambda count: [m["text"] for m in overlay_server.snapshot(
             messages, False, "en", lambda *_: "", count=count)["messages"]]
         self.assertEqual(fetch(3), ["m57", "m58", "m59"])
-        self.assertEqual(len(fetch(0)), 1)
+        self.assertEqual(fetch(0), [])  # 0 = chat off (Super Chats-only overlay)
+        self.assertEqual(len(fetch(-5)), 0)
         self.assertEqual(len(fetch(999)), overlay_server.MAX_MESSAGES)
 
     def test_paid_events_are_separate_from_regular_chat(self):
@@ -298,3 +299,23 @@ class OverlayHtmlTests(unittest.TestCase):
             self.assertEqual(overlay_server.overlay_data({"ch": ["me"]}, None)["messages"], [])
         finally:
             server.server_close()
+
+    def test_url_counts_split_super_chats_and_chat(self):
+        server = overlay_server.OverlayServer(0, "127.0.0.1")
+        try:
+            server.publish({"messages": [{"text": "a"}, {"text": "b"}], "paid": [{"text": "sc"}],
+                            "custom_text": "", "count": 5, "paid_count": 3}, channel="me")
+            paid_only = overlay_server.overlay_data({"ch": ["me"], "n": ["0"], "sc": ["3"]}, server)
+            self.assertEqual((paid_only["messages"], paid_only["paid"], paid_only["layout"]),
+                             ([], [{"text": "sc"}], "only-paid"))
+            chat_only = overlay_server.overlay_data({"ch": ["me"], "n": ["1"], "sc": ["0"]}, server)
+            self.assertEqual((chat_only["messages"], chat_only["paid"], chat_only["layout"]),
+                             ([{"text": "b"}], [], "only-chat"))
+            # URL counts can lower the dashboard's, not raise them; bad values are ignored.
+            both = overlay_server.overlay_data({"ch": ["me"], "n": ["50"], "sc": ["x"]}, server)
+            self.assertEqual((len(both["messages"]), len(both["paid"]), both["layout"]), (2, 1, ""))
+        finally:
+            server.server_close()
+        self.assertIn('<div class="only-paid">', overlay_server.render_html({"layout": "only-paid"}))
+        self.assertEqual(overlay_server.snapshot([{"type": "danmaku", "text": "x"}], False, "", lambda *_: "",
+                                                 count=0)["messages"], [])

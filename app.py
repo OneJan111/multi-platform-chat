@@ -12,6 +12,7 @@ import json
 import os
 import re
 import time
+import zlib
 from datetime import datetime, timezone
 from typing import Optional
 from urllib.parse import urlencode, urlsplit
@@ -77,7 +78,7 @@ from src.config import (
 )
 from src.filters import ChatFilter, make_default_filter
 from src.tts import (
-    LANGUAGES as TTS_LANGUAGES, format_announcement, format_message, is_emoji_only, is_gift, is_paid,
+    LANGUAGES as TTS_LANGUAGES, format_announcement, format_join, format_message, is_emoji_only, is_gift, is_paid,
     matches_language, resolve_language, speak, speak_async, stop_speaking, strip_emoji,
 )
 
@@ -144,18 +145,12 @@ h3 .site-icon { margin-right: 0.15em; position: relative; top: -0.08em; }
 .yt-stamp-preview { max-width: 34rem; line-height: 2; word-break: break-word; }
 .yt-stamp-preview img { height: 28px !important; vertical-align: middle; }
 [class*="st-key-emote_grid_"] { gap: 4px !important; align-items: center; }
-.emote-pack-label { display: inline-block; font-size: 0.72rem; line-height: 1.2; max-width: 4.5em; padding: 2px 6px;
-    border-left: 3px solid #fb7299; opacity: 0.8; }
 [class*="st-key-emote_grid_"] [data-testid="stMarkdownContainer"] p { margin: 0; }
-/* Divider between emote packs: takes a full row so each pack starts on its own line */
-[class*="st-key-emote_grid_"] [data-testid="stElementContainer"]:has(.emote-pack-sep) {
-    flex: 0 0 100% !important; width: 100% !important; }
-.emote-pack-sep { margin: 2px 0 !important; border: 0; border-top: 1px solid rgba(250, 250, 250, 0.2); }
 [class*="st-key-emote_grid_"] [data-testid="stElementContainer"] { width: auto !important; }
 [class*="st-key-emote_grid_"] button { padding: 1px 2px; min-height: 0; }
 [class*="st-key-emote_grid_"] button img { height: 32px !important; max-height: 32px !important; width: auto; }
 /* Emote pickers: wide enough to show a whole pack without scrolling */
-[data-testid="stPopoverBody"]:has([class*="st-key-emote_grid_"]) {
+[data-testid="stPopoverBody"]:has([class*="st-key-emote_grid_"], [class*="st-key-emo_bili_expand"]) {
     max-width: min(64rem, 92vw) !important; width: min(64rem, 92vw) !important; max-height: 88vh !important;
 }
 .status-dot {
@@ -187,17 +182,6 @@ h3 .site-icon { margin-right: 0.15em; position: relative; top: -0.08em; }
     overflow-x: hidden;
     padding-right: 4px;
 }
-/* Gifts header + "Mark all" button may wrap to two lines */
-.st-key-paid_feed {
-    height: calc(100dvh - 420px) !important;
-    max-height: calc(100dvh - 420px) !important;
-}
-/* Join feed sits under the gifts, so the gifts box gives up its height */
-[data-testid="stColumn"]:has(.join-feed) .st-key-paid_feed {
-    height: calc(100dvh - 610px) !important;
-    max-height: calc(100dvh - 610px) !important;
-    min-height: 180px;
-}
 .join-feed {
     height: 130px;
     overflow-y: auto;
@@ -220,8 +204,7 @@ h3 .site-icon { margin-right: 0.15em; position: relative; top: -0.08em; }
         min-width: 100% !important;
     }
     .st-key-chat_feed { height: 50dvh !important; max-height: 50dvh !important; }
-    .st-key-paid_feed,
-    [data-testid="stColumn"]:has(.join-feed) .st-key-paid_feed { height: 35dvh !important; max-height: 35dvh !important; }
+    .st-key-paid_feed { height: 35dvh !important; max-height: 35dvh !important; }
 }
 /* Message rows and the send box: keep text + buttons on one line at any width */
 .st-key-chat_feed [data-testid="stHorizontalBlock"],
@@ -280,6 +263,10 @@ def _shared_filter() -> ChatFilter:
 _TIMEZONES = sorted(tz for tz in available_timezones() if "/" in tz and not tz.startswith(("Etc/", "SystemV/")))
 
 
+_FEEDS = ("paid", "chat", "join")  # chat-tab feeds in their default top-to-bottom / left-to-right order
+_DEFAULT_FEED_SIDES = {"paid": "left", "chat": "right", "join": "left"}
+
+
 def _init_state():
     defaults = {
         "chat_messages": [],          # unified list of all chat messages
@@ -293,9 +280,12 @@ def _init_state():
         "tts_rate": 150,
         "tts_volume": 1.0,
         "tts_lang": "auto",
-        "tts_translate": False,
+        "tts_translate": False,       # read translated chat
+        "tts_translate_paid": False,  # read translated Super Chats
         "tts_skip_name": False,
-        "tts_announce_paid": True,
+        "tts_announce_paid": True,    # 🔊 on the Gifts & Super Chats feed
+        "tts_read_chat": True,        # 🔊 on the Chat feed
+        "tts_read_joins": False,      # 🔊 on the Joins feed
         "tts_skip_emoji": True,
         "translate_enabled": False,
         "translate_target": "en",
@@ -308,6 +298,9 @@ def _init_state():
         "obs_chat_last_at": 0.0,
         "text_scale": {"chat": 100, "paid": 100, "join": 100},  # text size in % per feed
         "max_chat_display": 200,
+        "feed_layout": "columns",     # "columns" = two side by side, "stack" = one column
+        "feed_order": list(_FEEDS),
+        "feed_sides": dict(_DEFAULT_FEED_SIDES),
         "selected_chat_id": "",
         "yt_chat_input": YOUTUBE_CHANNEL.strip(),
         "yt_watch_channel": "",       # channel URL being watched for its next live stream
@@ -340,6 +333,9 @@ def _init_state():
         "ui_lang": st.query_params.get("lang", "en") if st.query_params.get("lang") in i18n.UI_LANGUAGES else "en",
         # Chat timestamps: "" = server time; ?tz=Asia/Tokyo in the URL keeps a choice across refreshes.
         "chat_tz": st.query_params.get("tz", "") if st.query_params.get("tz", "") in _TIMEZONES else "",
+        "show_yt": True,
+        "show_bili": True,
+        "show_me": True,
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -563,6 +559,14 @@ def _set_thanked(msg_ids: list[str], thanked: bool):
         ids.difference_update(msg_ids)
 
 
+def _author_html(name: str) -> str:
+    """The escaped username with pinyin / furigana over its Chinese characters (the 注音 setting)."""
+    annotated = reading.annotate_html(name or "", st.session_state["sc_reading"])
+    if not annotated:
+        return html_lib.escape(name or "")
+    return f'<span class="chat-reading">{annotated.replace("<br>", " · ")}</span>'
+
+
 def _render_message(msg: dict, key_prefix: str = "", thank: bool = False):
     # Widget keys must be unique per run even if a platform sends the same message id twice.
     base_key = f"{key_prefix}_{msg['id']}"
@@ -575,7 +579,7 @@ def _render_message(msg: dict, key_prefix: str = "", thank: bool = False):
     if thanked:
         badges += f'<span class="badge badge-owner">✅ {t("Thanked")}</span>'
     ts = _fmt_time(msg.get("timestamp", ""))
-    author = html_lib.escape(msg.get("author", ""))
+    author = _author_html(msg.get("author", ""))
     text = msg.get("text", "")
     text_html = emotes.text_to_html(text, msg.get("emotes"), msg.get("sticker_url", ""), msg.get("sticker_caption", False))
     if "super" in msg.get("type", "").lower():
@@ -588,7 +592,12 @@ def _render_message(msg: dict, key_prefix: str = "", thank: bool = False):
         if translated is None:
             translation_html = f'<div class="chat-translation pending">🌐 {t("translating…")}</div>'
         elif translated:
-            translation_html = f'<div class="chat-translation">🌐 {html_lib.escape(translated)}</div>'
+            # Translations into Japanese get furigana (pinyin would be no help) unless 注音 is off.
+            ja_reading = (st.session_state["translate_target"].startswith("ja")
+                          and st.session_state["sc_reading"] != "off")
+            annotated = reading.annotate_html(translated, "hiragana") if ja_reading else ""
+            body = f'<span class="chat-reading">{annotated}</span>' if annotated else html_lib.escape(translated)
+            translation_html = f'<div class="chat-translation">🌐 {body}</div>'
     html = (
         f'<div class="chat-bubble {bubble}">'
         f'{badges}'
@@ -709,11 +718,9 @@ def _change_text_size(feed: str, step: int):
     scales[feed] = _TEXT_SIZES[max(0, min(len(_TEXT_SIZES) - 1, i + step))]
 
 
-def _text_size_buttons(container, feed: str, stretch: bool = True):
-    """A− / A+ at the right end of a feed's header row."""
+def _text_size_buttons(container, feed: str):
+    """A− / A+ for a feed's header tools."""
     size = st.session_state["text_scale"][feed]
-    if stretch:
-        container.space("stretch")
     container.button(
         "A−", key=f"size_{feed}_dec", type="tertiary", disabled=size <= _TEXT_SIZES[0],
         on_click=_change_text_size, args=(feed, -1), help=t("Smaller text ({p}%)", p=size),
@@ -722,6 +729,88 @@ def _text_size_buttons(container, feed: str, stretch: bool = True):
         "A+", key=f"size_{feed}_inc", type="tertiary", disabled=size >= _TEXT_SIZES[-1],
         on_click=_change_text_size, args=(feed, 1), help=t("Bigger text ({p}%)", p=size),
     )
+
+
+_FEEDS = ("paid", "chat", "join")
+
+
+def _feed_layout_state() -> tuple[list[str], dict[str, str], bool]:
+    """(feed order, left/right column per feed, one-column mode), repaired if session state is stale."""
+    order = st.session_state.get("feed_order")
+    if not isinstance(order, list) or sorted(order) != sorted(_FEEDS):
+        order = st.session_state["feed_order"] = list(_FEEDS)
+    sides = st.session_state.get("feed_sides")
+    if not isinstance(sides, dict) or any(sides.get(f) not in ("left", "right") for f in _FEEDS):
+        sides = st.session_state["feed_sides"] = dict(_DEFAULT_FEED_SIDES)
+    return order, sides, st.session_state.get("feed_layout") == "stack"
+
+
+def _feed_column(feed: str) -> list[str]:
+    """Feeds shown in the same column as `feed`, top to bottom."""
+    order, sides, stacked = _feed_layout_state()
+    return order if stacked else [f for f in order if sides[f] == sides[feed]]
+
+
+def _move_feed(feed: str, step: int):
+    """Swap a feed with its neighbour above (-1) or below (+1) in the same column."""
+    column = _feed_column(feed)
+    i = column.index(feed) + step
+    if 0 <= i < len(column):
+        order = st.session_state["feed_order"]
+        a, b = order.index(feed), order.index(column[i])
+        order[a], order[b] = order[b], order[a]
+
+
+def _switch_feed_side(feed: str):
+    sides = st.session_state["feed_sides"]
+    sides[feed] = "right" if sides[feed] == "left" else "left"
+
+
+def _feed_move_buttons(container, feed: str):
+    """▲ ▼ to reorder within a column, ◀ / ▶ to move to the other column (two-column layout only)."""
+    _, sides, stacked = _feed_layout_state()
+    column = _feed_column(feed)
+    i = column.index(feed)
+    container.button("▲", key=f"move_{feed}_up", type="tertiary", disabled=i == 0,
+                     on_click=_move_feed, args=(feed, -1), help=t("Move up"))
+    container.button("▼", key=f"move_{feed}_down", type="tertiary", disabled=i == len(column) - 1,
+                     on_click=_move_feed, args=(feed, 1), help=t("Move down"))
+    if not stacked:
+        left = sides[feed] == "left"
+        container.button("▶" if left else "◀", key=f"move_{feed}_side", type="tertiary",
+                         on_click=_switch_feed_side, args=(feed,),
+                         help=t("Move to the right column") if left else t("Move to the left column"))
+
+
+def _feed_tools(head, feed: str, text_size: bool = True):
+    """Right end of a feed's header: A− / A+ and the position buttons, kept together if the header wraps."""
+    head.space("stretch")
+    tools = head.container(horizontal=True, vertical_alignment="center", width="content", gap="small")
+    if text_size:
+        _text_size_buttons(tools, feed)
+    _feed_move_buttons(tools, feed)
+
+
+def _feed_height_css(columns: list[list[str]], stacked: bool, joins_shown: bool) -> str:
+    """Fit the scrolling chat / gift boxes to the screen height, sharing it with the other feeds in their column."""
+    if stacked:
+        return (".st-key-chat_feed { height: 50dvh !important; max-height: 50dvh !important; }"
+                ".st-key-paid_feed { height: 35dvh !important; max-height: 35dvh !important; }")
+    rules = []
+    for column in columns:
+        big = [f for f in column if f != "join"]
+        if not big:
+            continue
+        reserved = 370 + 60 * (len(big) - 1)
+        if "paid" in column:
+            reserved += 50  # gifts header + "Mark all" button may wrap to two lines
+        if "join" in column:
+            reserved += 190 if joins_shown else 50
+        height = f"calc((100dvh - {reserved}px) / {len(big)})"
+        rules += [f".st-key-{f}_feed {{ height: {height} !important; max-height: {height} !important; "
+                  f"min-height: 180px; }}" for f in big]
+    # Narrow screens stack the columns; the fixed heights in the main stylesheet apply there.
+    return "@media (min-width: 901px) {" + "".join(rules) + "}"
 
 
 def _sync_obs_chat():
@@ -764,21 +853,59 @@ def _tts_stop_buttons(container, prefix: str):
     )
 
 
-def _tts_translating() -> bool:
-    """Read translations only when the TTS language is the same as the "Translate to" language."""
-    return (
-        st.session_state["tts_translate"]
-        and st.session_state["tts_lang"] == st.session_state["translate_target"].split("-")[0]
+_TTS_MAX_JOINS = 3  # joins read per poll
+
+
+def _feed_tts_button(container, state_key: str) -> None:
+    """🔊/🔇 on a feed header: whether text-to-speech reads that feed (shown while TTS is on)."""
+    if not st.session_state["tts_enabled"]:
+        return
+    on = st.session_state[state_key]
+    container.button(
+        t("🔊 Read aloud") if on else t("🔇 Muted"), key=f"{state_key}_btn",
+        type="secondary" if on else "tertiary",
+        help=t("Text-to-speech reads this list. Click to mute it.") if on
+        else t("Text-to-speech doesn't read this list. Click to read it aloud."),
+        on_click=lambda: st.session_state.update({state_key: not st.session_state[state_key]}),
     )
 
 
-def _speech_for(text: str, src_lang: str) -> tuple[str, str]:
-    """(text to speak, voice language). With "Read translated chat" active, speak the translation."""
-    if not _tts_translating():
+def _tts_option(container, state_key: str, label: str, help_text: str) -> None:
+    """Checkbox-style on/off button for a TTS option, kept in session_state[state_key]."""
+    on = st.session_state[state_key]
+    container.button(
+        label, key=f"{state_key}_btn",
+        icon=":material/check_box:" if on else ":material/check_box_outline_blank:",
+        type="secondary" if on else "tertiary",
+        help=help_text,
+        on_click=lambda: st.session_state.update({state_key: not st.session_state[state_key]}),
+    )
+
+
+def _tts_translation_usable() -> bool:
+    """Translations can be read when the TTS language is auto-detect or the same as "Translate to"."""
+    tts_lang = st.session_state["tts_lang"]
+    return tts_lang == "auto" or tts_lang == st.session_state["translate_target"].split("-")[0]
+
+
+def _tts_translating(paid: bool = False) -> bool:
+    """Whether chat (or, with `paid`, Super Chats) is read translated."""
+    return st.session_state["tts_translate_paid" if paid else "tts_translate"] and _tts_translation_usable()
+
+
+def _reads_translated(msg: dict) -> bool:
+    """Whether this message is read translated; gift names are product names, so gifts never are."""
+    return msg.get("type") != "gift" and _tts_translating(is_paid(msg))
+
+
+def _speech_for(text: str, src_lang: str, translate: bool) -> tuple[str, str]:
+    """(text to speak, voice language). With `translate`, speak the translation."""
+    if not translate:
         return text, src_lang
     translated = tr.get_translation(text, st.session_state["translate_target"])
     if translated:
-        return translated, st.session_state["tts_lang"]
+        # Auto-detect: use the "Translate to" language's voice for the translated text.
+        return translated, st.session_state["translate_target"].split("-")[0]
     # Already in the target language, or the translation failed / isn't ready: read the original.
     return text, "auto"
 
@@ -795,11 +922,12 @@ def _replay_message(msg: dict):
     if st.session_state["tts_skip_emoji"]:
         text = strip_emoji(text, msg.get("platform", "")) or text
     lang = st.session_state["tts_lang"]
-    if not matches_language(text, lang) and not _tts_translating():
+    translate = _reads_translated(msg)
+    if not matches_language(text, lang) and not translate:
         lang = "auto"  # manual replay reads any message, in its own language
-    if _tts_translating() and msg.get("type") != "gift":
+    if translate:
         tr.prefetch([text], st.session_state["translate_target"], wait=3.0)
-        text, lang = _speech_for(text, lang)
+        text, lang = _speech_for(text, lang, True)
     elif msg.get("type") == "gift":
         lang = "auto"
     if is_paid(msg):
@@ -848,17 +976,23 @@ def _poll_chat():
     filt: ChatFilter = st.session_state["filter"]
     allowed, blocked = filt.filter_messages(new_msgs)
 
-    # TTS
+    # TTS: each feed's 🔊 button decides whether its messages are read.
     if st.session_state["tts_enabled"]:
         skip_emoji = st.session_state["tts_skip_emoji"]
         announce_paid = st.session_state["tts_announce_paid"]
+        read_chat = st.session_state["tts_read_chat"]
         translating = _tts_translating()
         to_speak: list[tuple[dict, str]] = []
+        joins: list[dict] = []
         for m in allowed:
             if m["id"] in history_ids or m.get("history"):
                 continue
+            if m.get("type") == "enter":
+                if st.session_state["tts_read_joins"] and m.get("author"):
+                    joins.append(m)
+                continue
             paid = announce_paid and is_paid(m)
-            if paid or m.get("type") in ("textMessageEvent", "danmaku"):
+            if paid or (read_chat and m.get("type") in ("textMessageEvent", "danmaku")):
                 text = m["text"]
                 if skip_emoji:
                     if is_emoji_only(m) and not paid:
@@ -869,8 +1003,9 @@ def _poll_chat():
                 if not paid and not translating and not matches_language(text, st.session_state["tts_lang"]):
                     continue
                 to_speak.append((m, text))
-        if to_speak and translating:
-            tr.prefetch([text for _, text in to_speak], st.session_state["translate_target"], wait=3.0)
+        to_translate = [text for m, text in to_speak if _reads_translated(m)]
+        if to_translate:
+            tr.prefetch(to_translate, st.session_state["translate_target"], wait=3.0)
         # Paid events first, so a burst of chat in the same poll can't delay them.
         to_speak.sort(key=lambda item: not (announce_paid and is_paid(item[0])))
         for m, text in to_speak:
@@ -878,13 +1013,19 @@ def _poll_chat():
             if m.get("type") == "gift":
                 lang = "auto"  # gift names are product names; translating them gives nonsense
             else:
-                text, lang = _speech_for(text, st.session_state["tts_lang"])
+                text, lang = _speech_for(text, st.session_state["tts_lang"], _reads_translated(m))
             _tts_say(
                 format_announcement(m["type"], m["author"], text, lang) if paid
                 else _chat_line(m["author"], text, lang),
                 lang=lang,
                 priority=paid,
             )
+        # Joins come last; a busy room can have many per poll, so only the newest few are read.
+        tts_lang = st.session_state["tts_lang"]
+        for m in joins[-_TTS_MAX_JOINS:]:
+            # Auto-detecting a username (often Latin letters/digits) would pick English for a Chinese stream.
+            lang = tts_lang if tts_lang != "auto" else ("zh" if m.get("platform") in ("bilibili", "missevan") else "auto")
+            _tts_say(format_join(m["author"], lang), lang=lang)
 
     # Update history; join events go to their own feed, never into chat
     _now = time.time()
@@ -1206,6 +1347,172 @@ def _render_missevan_verify(verify: Optional[dict], cookies: dict, key: str):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Remembered settings: kept in this user's browser (localStorage), so they survive refreshes
+# and restarts on Streamlit Cloud too, where the proxy strips app cookies.
+# ──────────────────────────────────────────────────────────────────────────────
+
+_SETTINGS_STORE = "mpc_settings"
+_SETTINGS_READ_JS = """
+export default function(component) {
+    let prefs = {};
+    try {
+        const v = JSON.parse(window.localStorage.getItem("%s") || "{}");
+        if (v && typeof v === "object" && !Array.isArray(v)) prefs = v;
+    } catch (e) {}
+    component.setStateValue("prefs", prefs);
+}
+""" % _SETTINGS_STORE
+
+
+def _pref_flag(v):
+    if not isinstance(v, bool):
+        raise ValueError
+    return v
+
+
+def _pref_pick(options):
+    def parse(v):
+        if not isinstance(v, str) or v not in options:
+            raise ValueError
+        return v
+    return parse
+
+
+def _pref_num(lo, hi, cast=int):
+    def parse(v):
+        if isinstance(v, bool) or not isinstance(v, (int, float)) or not lo <= v <= hi:
+            raise ValueError
+        return cast(v)
+    return parse
+
+
+def _pref_text(limit):
+    def parse(v):
+        if not isinstance(v, str):
+            raise ValueError
+        return v[:limit]
+    return parse
+
+
+def _pref_scales(v):
+    if not isinstance(v, dict) or any(v.get(f) not in _TEXT_SIZES for f in _FEEDS):
+        raise ValueError
+    return {f: int(v[f]) for f in _FEEDS}
+
+
+def _pref_order(v):
+    if not isinstance(v, list) or sorted(v) != sorted(_FEEDS):
+        raise ValueError
+    return list(v)
+
+
+def _pref_sides(v):
+    if not isinstance(v, dict) or any(v.get(f) not in ("left", "right") for f in _FEEDS):
+        raise ValueError
+    return {f: v[f] for f in _FEEDS}
+
+
+def _pref_sites(v):
+    if not isinstance(v, list) or any(s not in overlay_server.SITES for s in v):
+        raise ValueError
+    return list(dict.fromkeys(v))
+
+
+_PREFS = {
+    **{k: _pref_flag for k in (
+        "tts_enabled", "tts_translate", "tts_translate_paid", "tts_skip_name", "tts_announce_paid", "tts_read_chat", "tts_read_joins",
+        "tts_skip_emoji", "translate_enabled", "show_enter_events", "obs_enabled", "obs_chat_enabled",
+        "overlay_visible", "overlay_show_username", "live_notify", "show_yt", "show_bili", "show_me",
+    )},
+    "tts_rate": _pref_num(80, 300),
+    "tts_volume": _pref_num(0.0, 1.0, float),
+    "tts_lang": _pref_pick(TTS_LANGUAGES),
+    "tts_output": _pref_pick(("server", "browser")),
+    "translate_target": _pref_pick(tr.LANGUAGES),
+    "sc_reading": _pref_pick(reading.MODES),
+    "max_chat_display": _pref_num(50, 1000),
+    "feed_layout": _pref_pick(("columns", "stack")),
+    "feed_order": _pref_order,
+    "feed_sides": _pref_sides,
+    "text_scale": _pref_scales,
+    "overlay_count": _pref_num(1, overlay_server.MAX_MESSAGES),
+    "overlay_sc_count": _pref_num(0, overlay_server.MAX_MESSAGES),
+    "overlay_sites": _pref_sites,
+    "overlay_text": _pref_text(2000),
+    "obs_chat_source": _pref_text(200),
+    "ui_lang": _pref_pick(i18n.UI_LANGUAGES),
+    "chat_tz": _pref_pick(("", *_TIMEZONES)),
+    "overlay_channel": lambda v: overlay_server.clean_channel(_pref_text(40)(v)),
+}
+# These are also in the URL (?lang= / ?tz= / ?overlay=); a link that sets them wins over the browser copy.
+_PREF_URL_PARAMS = {"ui_lang": "lang", "chat_tz": "tz", "overlay_channel": "overlay"}
+# Keyed widgets that copy their value from a setting; dropped so they redraw with the restored one.
+_PREF_MIRRORS = {"ui_lang": "ui_lang_select", "chat_tz": "chat_tz_select", "sc_reading": "sc_reading_pick"}
+
+
+@st.cache_resource
+def _settings_reader():
+    return st.components.v2.component("settings_reader", js=_SETTINGS_READ_JS)
+
+
+def _settings_blob() -> str:
+    return json.dumps({k: st.session_state[k] for k in _PREFS if k in st.session_state},
+                      sort_keys=True, ensure_ascii=False)
+
+
+def _apply_saved_settings() -> None:
+    """Apply the settings the browser sent on the previous run, before any widget is drawn."""
+    saved = st.session_state.pop("_settings_pending", None)
+    if saved is None:
+        return
+    for key, parse in _PREFS.items():
+        if key not in saved or (key in _PREF_URL_PARAMS and _PREF_URL_PARAMS[key] in st.query_params):
+            continue
+        try:
+            st.session_state[key] = parse(saved[key])
+        except (ValueError, TypeError):
+            continue
+        if key in _PREF_MIRRORS:
+            st.session_state.pop(_PREF_MIRRORS[key], None)
+    if "lang" not in st.query_params and st.session_state["ui_lang"] != "en":
+        st.query_params["lang"] = st.session_state["ui_lang"]
+    if "tz" not in st.query_params and st.session_state["chat_tz"]:
+        st.query_params["tz"] = st.session_state["chat_tz"]
+    st.session_state["_settings_saved"] = _settings_blob()
+
+
+def _read_saved_settings() -> None:
+    """New browser session: ask the browser for its saved settings once.
+
+    Drawn after every widget: if the browser's answer interrupted a run before the widgets were
+    created, Streamlit would show their default values instead of the ones in session state."""
+    if st.session_state.get("_settings_loaded"):
+        return
+    saved = _settings_reader()(
+        key="settings_reader", default={"prefs": None}, on_prefs_change=lambda: None,
+    ).prefs
+    if saved is None:  # the browser hasn't answered yet
+        return
+    st.session_state["_settings_loaded"] = True
+    st.session_state["_settings_pending"] = dict(saved)
+    st.rerun()
+
+
+def _save_settings() -> None:
+    """Write the settings to this browser when they changed (never before the saved ones were loaded)."""
+    if not st.session_state.get("_settings_loaded") or "_settings_pending" in st.session_state:
+        return
+    blob = _settings_blob()
+    if blob != st.session_state.get("_settings_saved"):
+        st.session_state["_settings_saved"] = blob
+        st.html(f"<script>try {{ window.localStorage.setItem({json.dumps(_SETTINGS_STORE)}, "
+                f"{json.dumps(blob)}); }} catch (e) {{}}</script>", unsafe_allow_javascript=True)
+
+
+_apply_saved_settings()
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Sidebar
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -1258,14 +1565,6 @@ with st.sidebar:
         index=_tr_keys.index(st.session_state["translate_target"]),
         format_func=lambda k: t(tr.LANGUAGES[k]),
     )
-    _rd_keys = list(reading.MODES)
-    st.session_state["sc_reading"] = st.selectbox(
-        t("Super Chat reading aid"),
-        _rd_keys,
-        index=_rd_keys.index(st.session_state["sc_reading"]),
-        format_func=lambda k: t(reading.MODES[k]),
-        help=t("Shows pinyin / hiragana above Chinese characters in Super Chats so you can read them aloud."),
-    )
 
     st.divider()
 
@@ -1294,35 +1593,11 @@ with st.sidebar:
         format_func=lambda k: t(TTS_LANGUAGES[k][0]),
         help=t("Auto-detect reads every message in its own language. Picking a language only reads chat written in that language."),
     )
-    st.session_state["tts_skip_emoji"] = st.checkbox(
-        t("Ignore emoji"),
-        value=st.session_state["tts_skip_emoji"],
-        help=t("Skip emoji-only messages and stickers, and don't read emoji inside messages."),
-    )
-    st.session_state["tts_announce_paid"] = st.checkbox(
-        t("Always announce gifts & Super Chats"),
-        value=st.session_state["tts_announce_paid"],
-        help=t(
-            "Reads gifts, Super Chats and memberships in any language, ahead of normal chat "
-            "(normal chat waits until they're done)."
-        ),
-    )
-    st.session_state["tts_skip_name"] = st.checkbox(
-        t("Don't read usernames for regular chat"),
-        value=st.session_state["tts_skip_name"],
-        help=t("Reads only the message text. Gifts and Super Chats still say who sent them."),
-    )
-    st.session_state["tts_translate"] = st.checkbox(
-        t("Read translated chat"),
-        value=st.session_state["tts_translate"],
-        help=t(
-            "When the TTS language matches \"Translate to\" (Translation section), every message is "
-            "read translated into that language. Otherwise messages are read in their original language."
-        ),
-    )
-    if st.session_state["tts_translate"] and not _tts_translating():
+    st.caption(t("Choose what is read with 🔊 / 🔇 at the top of each list (Gifts & Super Chats, Chat, Joins). "
+                 "Gifts & Super Chats are read first, in any language."))
+    if (st.session_state["tts_translate"] or st.session_state["tts_translate_paid"]) and not _tts_translation_usable():
         st.caption(t(
-            "⚠️ Not active: set the TTS language to the same language as \"Translate to\" ({target}).",
+            "⚠️ Not active: set the TTS language to Auto-detect or to the same language as \"Translate to\" ({target}).",
             target=t(tr.LANGUAGES[st.session_state["translate_target"]]),
         ))
     if st.button(t("▶ Test voice")):
@@ -1339,10 +1614,6 @@ with st.sidebar:
     )
 
     st.divider()
-    st.session_state["show_enter_events"] = st.checkbox(
-        t("Show join events"), value=st.session_state["show_enter_events"],
-        help=t("Show viewers entering the room in a separate feed under Gifts & Super Chats."),
-    )
     st.session_state["max_chat_display"] = st.number_input(
         t("Max messages displayed"), 50, 1000, st.session_state["max_chat_display"]
     )
@@ -1685,16 +1956,93 @@ def _emote_buttons(items: list[dict], key: str, locked_help: str, on_pick=None) 
     return picked
 
 
+def _emote_pack_keys(packs: list[dict], key: str) -> list[str]:
+    """Expander keys from the pack names (packs have no ID), so open/closed survives a refresh."""
+    seen: dict[str, int] = {}
+    keys = []
+    for pack in packs:
+        name = pack.get("name") or "?"
+        seen[name] = seen.get(name, 0) + 1
+        keys.append(f"emo_pack_{key}_{zlib.crc32(name.encode('utf-8')):08x}_{seen[name]}")
+    return keys
+
+
+# Which emote packs are open, kept in this user's browser (localStorage) so it survives refreshes and restarts.
+_EMOTE_PACK_PREFS = "emote_pack_prefs"
+_EMOTE_PACK_STORE = "mpc_emote_packs"
+_EMOTE_PACK_READ_JS = """
+export default function(component) {
+    let prefs = {};
+    try {
+        const v = JSON.parse(window.localStorage.getItem("%s") || "{}");
+        if (v && typeof v === "object" && !Array.isArray(v)) prefs = v;
+    } catch (e) {}
+    component.setStateValue("prefs", prefs);
+}
+""" % _EMOTE_PACK_STORE
+
+
+@st.cache_resource
+def _emote_pack_reader():
+    return st.components.v2.component("emote_pack_reader", js=_EMOTE_PACK_READ_JS)
+
+
+def _load_emote_pack_prefs() -> None:
+    """New browser session: read the remembered open/closed packs once (the browser answers on a rerun)."""
+    if _EMOTE_PACK_PREFS in st.session_state:
+        return
+    prefs = _emote_pack_reader()(
+        key="emote_pack_reader", default={"prefs": None}, on_prefs_change=lambda: None,
+    ).prefs
+    if prefs is None:  # the browser hasn't answered yet
+        return
+    st.session_state[_EMOTE_PACK_PREFS] = {
+        k: v for k, v in dict(prefs).items() if isinstance(k, str) and k.startswith("emo_pack_") and isinstance(v, bool)
+    }
+
+
+def _save_emote_pack_prefs() -> None:
+    if st.session_state.pop("_emote_pack_prefs_dirty", False):
+        data = json.dumps(st.session_state.get(_EMOTE_PACK_PREFS, {}), sort_keys=True)
+        st.html(f"<script>try {{ window.localStorage.setItem({json.dumps(_EMOTE_PACK_STORE)}, "
+                f"{json.dumps(data)}); }} catch (e) {{}}</script>", unsafe_allow_javascript=True)
+
+
+def _remember_emote_packs(keys: list[str]) -> None:
+    prefs = st.session_state.setdefault(_EMOTE_PACK_PREFS, {})
+    for k in keys:
+        prefs[k] = bool(st.session_state.get(k))
+    st.session_state["_emote_pack_prefs_dirty"] = True
+
+
+def _set_emote_packs_open(keys: list[str], is_open: bool) -> None:
+    for k in keys:
+        st.session_state[k] = is_open
+    _remember_emote_packs(keys)
+
+
 def _emote_packs(packs: list[dict], key: str, locked_help: str) -> dict | None:
-    """All packs in one flowing grid, each starting with its name, so nothing needs tabs or scrolling."""
+    """One collapsible section per pack; the room owner's packs (⭐) start open. Closed packs aren't
+    rendered at all, which keeps a room with many packs quick. Open/closed is remembered per user."""
     picked = None
-    with st.container(horizontal=True, gap="small", key=f"emote_grid_{key}"):
-        for n, pack in enumerate(packs):
-            if n:
-                st.markdown('<hr class="emote-pack-sep">', unsafe_allow_html=True)
-            label = ("⭐ " if pack.get("owner") else "") + (pack["name"] or "?")
-            st.markdown(f'<span class="emote-pack-label">{html_lib.escape(label)}</span>',
-                        unsafe_allow_html=True, width="content")
+    keys = _emote_pack_keys(packs, key)
+    any_owner = any(p.get("owner") for p in packs)
+    prefs = st.session_state.get(_EMOTE_PACK_PREFS, {})
+    tools = st.container(horizontal=True, gap="small")
+    tools.button(t("Expand all"), key=f"emo_{key}_expand", type="tertiary", icon=":material/unfold_more:",
+                 on_click=_set_emote_packs_open, args=(keys, True))
+    tools.button(t("Collapse all"), key=f"emo_{key}_collapse", type="tertiary", icon=":material/unfold_less:",
+                 on_click=_set_emote_packs_open, args=(keys, False))
+    for n, (pack, pack_key) in enumerate(zip(packs, keys)):
+        label = ("⭐ " if pack.get("owner") else "") + (pack["name"] or "?") + f" ({len(pack['emotes'])})"
+        # Streamlit forgets a widget's state while it isn't shown (picker closed), so the prefs are the source.
+        if pack_key not in st.session_state:
+            st.session_state[pack_key] = prefs.get(pack_key, bool(pack.get("owner")) or (not any_owner and n == 0))
+        exp = st.expander(label, key=pack_key, type="compact",
+                          on_change=_remember_emote_packs, args=([pack_key],))
+        if not exp.open:
+            continue
+        with exp, st.container(horizontal=True, gap="small", key=f"emote_grid_{key}{n}"):
             for i, e in enumerate(pack["emotes"]):
                 if _emote_button(e, f"emo_{key}{n}_{i}", locked_help):
                     picked = e
@@ -1747,7 +2095,7 @@ _EMOTE_IMG_JS = """<script>(() => {
   fix(document);
   // Keep emote popovers inside the window: when they open low, the bottom (last packs) was unreachable.
   const fit = () => document.querySelectorAll('[data-testid="stPopoverBody"]').forEach((p) => {
-    if (!p.querySelector('[class*="st-key-emote_grid_"]')) return;
+    if (!p.querySelector('[class*="st-key-emote_grid_"], [class*="st-key-emo_bili_expand"]')) return;
     const room = Math.max(240, Math.floor(window.innerHeight - p.getBoundingClientRect().top - 12));
     if (p.style.maxHeight !== room + 'px') p.style.setProperty('max-height', room + 'px', 'important');
   });
@@ -1760,6 +2108,8 @@ def _site_emote_row(yt_chat: str, yt_vid: str, bili_room: str) -> None:
     """One picker per site, each sending only to its own site. YouTube stamps are collected into a
     draft (several stamps plus text per message); a Bilibili emote is a danmaku of its own."""
     st.html(_EMOTE_IMG_JS, unsafe_allow_javascript=True)
+    _load_emote_pack_prefs()
+    _save_emote_pack_prefs()
     row = st.container(horizontal=True, vertical_alignment="center", gap="small")
     row.markdown(f"**{t('Site emotes')}:**", width="content")
     yt_pop = row.popover("YouTube", icon="😀", key="emo_pop_yt", on_change="rerun", disabled=not yt_chat,
@@ -1803,7 +2153,9 @@ def _site_emote_row(yt_chat: str, yt_vid: str, bili_room: str) -> None:
             refresh = st.button(t("🔄 Refresh"), key="emo_bili_refresh")
             if refresh or cache.get("room") != bili_room or time.time() - cache.get("ts", 0) > _EMOTE_TTL:
                 packs, err = bili.get_emoticons(bili_room)
-                cache.update(room=bili_room, ts=time.time(), packs=packs, err=err)
+                # A Bilibili server hiccup shouldn't stick for the whole TTL: try again after a minute.
+                ts = time.time() - (_EMOTE_TTL - 60 if err == getattr(bili, "_EMOTE_SERVER_ERR", None) else 0)
+                cache.update(room=bili_room, ts=ts, packs=packs, err=err)
             st.caption(t("Sent only to Bilibili, as a sticker danmaku. 🔒 emotes need e.g. this room's fan medal, "
                          "a guard membership, or charging (充电) the streamer for the 充电表情 tab."))
             if cache.get("err"):
@@ -1888,9 +2240,17 @@ with tab_chat:
 
     # ── Platform filter ───────────────────────────────────────────────────────
     show_row = st.container(horizontal=True, vertical_alignment="center", gap="large")
-    show_yt = show_row.checkbox("YouTube", value=True, key="show_yt")
-    show_bili = show_row.checkbox("Bilibili", value=True, key="show_bili")
-    show_me = show_row.checkbox(t("MissEvan"), value=True, key="show_me")
+    show_yt = show_row.checkbox("YouTube", key="show_yt")
+    show_bili = show_row.checkbox("Bilibili", key="show_bili")
+    show_me = show_row.checkbox(t("MissEvan"), key="show_me")
+    show_row.space("stretch")
+    show_row.segmented_control(
+        t("Layout"), ["columns", "stack"], key="feed_layout", required=True, label_visibility="collapsed",
+        format_func=lambda v: t("◫ 2 columns") if v == "columns" else t("☰ 1 column"),
+        help=t("Use ▲ ▼ on each list to change its position, and ◀ ▶ to move it to the other column."),
+    )
+    if st.session_state["tts_enabled"]:
+        _tts_stop_buttons(show_row, "feeds")
 
     hidden_platforms = {
         p for p, shown in (("youtube", show_yt), ("bilibili", show_bili), ("missevan", show_me)) if not shown
@@ -1913,24 +2273,39 @@ with tab_chat:
         )
 
     scales = st.session_state["text_scale"]
+    _joins_shown = st.session_state["show_enter_events"]
+    feed_order, feed_sides, stacked = _feed_layout_state()
+    if stacked:
+        feed_columns = [feed_order]
+    else:
+        feed_columns = [[f for f in feed_order if feed_sides[f] == side] for side in ("left", "right")]
+        feed_columns = [c for c in feed_columns if c]
     st.markdown(
         f"<style>.st-key-chat_feed {{ --chat-scale: {scales['chat'] / 100}; }}"
-        f".st-key-paid_feed {{ --chat-scale: {scales['paid'] / 100}; }}</style>",
+        f".st-key-paid_feed {{ --chat-scale: {scales['paid'] / 100}; }}"
+        f"{_feed_height_css(feed_columns, stacked, _joins_shown)}</style>",
         unsafe_allow_html=True,
     )
-    chat_col, paid_col = st.container(key="chat_paid").columns([3, 2])
-    with chat_col:
+
+    def _chat_feed():
         chat_head = st.container(horizontal=True, vertical_alignment="center")
         chat_head.markdown(f"**💬 {t('Chat')}**", width="content")
-        chat_head.space("stretch")
+        _feed_tts_button(chat_head, "tts_read_chat")
         if st.session_state["tts_enabled"]:
-            _tts_stop_buttons(chat_head, "chat")
-        _text_size_buttons(chat_head, "chat", stretch=False)
+            _tts_option(chat_head, "tts_skip_emoji", t("Ignore emoji"),
+                        t("Skip emoji-only messages and stickers, and don't read emoji inside messages."))
+            _tts_option(chat_head, "tts_skip_name", t("Don't read usernames"),
+                        t("Reads only the message text. Gifts and Super Chats still say who sent them."))
+            _tts_option(chat_head, "tts_translate", t("Read translated chat"), t(
+                "When the TTS language is Auto-detect or matches \"Translate to\" (Translation section), every chat "
+                "message is read translated into that language. Otherwise messages are read in their original language."
+            ))
+        _feed_tools(chat_head, "chat")
         with st.container(key="chat_feed"):
             for msg in reversed(visible):
                 _render_message(msg, key_prefix="chat")
 
-    with paid_col:
+    def _paid_feed():
         thanked_ids: set = st.session_state["thanked_ids"]
         pending = [m for m in paid_all if m["id"] not in thanked_ids]
         paid_head = st.container(horizontal=True, vertical_alignment="center")
@@ -1943,27 +2318,65 @@ with tab_chat:
             t("🙏 Mark all thanked"), key="thank_all", disabled=not pending,
             on_click=_set_thanked, args=([m["id"] for m in pending], True),
         )
-        _text_size_buttons(paid_head, "paid")
+        with paid_head.popover(f"🔤 {t('Super Chat reading aid')}"):
+            _rd_keys = list(reading.MODES)
+            # on_change stores the choice before the rerun, so feeds drawn above this one use it too.
+            st.selectbox(
+                t("Super Chat reading aid"),
+                _rd_keys,
+                index=_rd_keys.index(st.session_state["sc_reading"]),
+                key="sc_reading_pick",
+                format_func=lambda k: t(reading.MODES[k]),
+                help=t("Shows pinyin / furigana above Chinese characters in Super Chats and all usernames "
+                       "so you can read them aloud. Translations into Japanese get furigana too."),
+                on_change=lambda: st.session_state.update(sc_reading=st.session_state["sc_reading_pick"]),
+            )
+        _feed_tts_button(paid_head, "tts_announce_paid")
+        if st.session_state["tts_enabled"]:
+            _tts_option(paid_head, "tts_translate_paid", t("Read translated Super Chats"), t(
+                "When the TTS language is Auto-detect or matches \"Translate to\" (Translation section), Super Chat "
+                "messages are read translated into that language. Gift names are always read as they are."
+            ))
+        _feed_tools(paid_head, "paid")
         with st.container(key="paid_feed"):
             if not paid_all:
                 st.caption(t("No gifts or Super Chats yet."))
             for msg in reversed(paid_all[-200:]):
                 _render_message(msg, key_prefix="paid", thank=True)
 
-        if st.session_state["show_enter_events"]:
-            joins = [m for m in st.session_state["join_messages"] if m.get("platform") not in hidden_platforms]
-            join_head = st.container(horizontal=True, vertical_alignment="center")
-            join_head.markdown(f"**👋 {t('Joins')}** · {t('{n} total', n=len(joins))}", width="content")
-            _text_size_buttons(join_head, "join")
+    def _join_feed():
+        joins = [m for m in st.session_state["join_messages"] if m.get("platform") not in hidden_platforms]
+        join_head = st.container(horizontal=True, vertical_alignment="center")
+        join_head.markdown(f"**👋 {t('Joins')}** · {t('{n} total', n=len(joins))}", width="content")
+        join_head.button(
+            t("🙈 Hide") if _joins_shown else t("👁️ Show"), key="toggle_joins",
+            help=t("Show or hide viewers entering the room."),
+            on_click=lambda: st.session_state.update(show_enter_events=not st.session_state["show_enter_events"]),
+        )
+        _feed_tts_button(join_head, "tts_read_joins")
+        _feed_tools(join_head, "join", text_size=_joins_shown)
+        if _joins_shown:
             rows = "".join(
                 f'<div class="join-row"><span class="join-time">{_fmt_time(m.get("timestamp", ""))}</span>'
-                f'{_platform_badge(m)}<b>{html_lib.escape(m.get("author", ""))}</b></div>'
+                f'{_platform_badge(m)}<b>{_author_html(m.get("author", ""))}</b></div>'
                 for m in reversed(joins[-150:])
             ) or f'<div class="join-empty">{t("No one has joined yet.")}</div>'
             st.markdown(
                 f'<div class="join-feed" style="--chat-scale: {scales["join"] / 100}">{rows}</div>',
                 unsafe_allow_html=True,
             )
+
+    _feed_renderers = {"chat": _chat_feed, "paid": _paid_feed, "join": _join_feed}
+    feeds_box = st.container(key="chat_paid")
+    if len(feed_columns) == 1:
+        targets = [feeds_box]
+    else:
+        # The column holding the chat gets more room, as chat lines are longer than gift lines.
+        targets = feeds_box.columns([3 if "chat" in c else 2 for c in feed_columns])
+    for target, column in zip(targets, feed_columns):
+        with target:
+            for feed in column:
+                _feed_renderers[feed]()
 
     # Auto-refresh placeholder
     st.markdown(
@@ -1978,6 +2391,10 @@ with tab_chat:
 
 with tab_obs:
     # Everything OBS-related lives here: it's for the streamer only.
+    # Filled in below, once the overlay settings further down have produced the link.
+    _overlay_quick = st.container(border=True)
+    # The overlay settings render right under the link they change.
+    _overlay_settings = st.expander(t("⚙️ Overlay settings"), expanded=True)
     _obs_local = _is_local_client()
     if not _obs_local:
         # The OBS WebSocket can start/stop the stream, so only the computer running the dashboard gets it.
@@ -2119,10 +2536,47 @@ with tab_obs:
         t("Use the overlay URL in OBS as a **Browser Source** to show a transparent chat on stream.")
     )
 
-    st.text_input(
-        t("Overlay channel"), key="overlay_channel", max_chars=40,
-        help=t("Each dashboard user can pick their own channel name so their overlays don't overwrite each other. Letters, digits, - and _ only."),
-    )
+    st.caption(t("⬆️ The overlay settings are at the top of this tab, under the standalone overlay link."))
+
+    _overlay_site_labels = {"youtube": "YouTube", "bilibili": "Bilibili", "missevan": t("MissEvan")}
+    # A stale/unknown entry would make format_func return None, which newer Streamlit can't serialize.
+    st.session_state["overlay_sites"] = [s for s in st.session_state["overlay_sites"] if s in _overlay_site_labels]
+    with _overlay_settings:
+        _set_l, _set_r = st.columns(2)
+        with _set_l:
+            st.multiselect(
+                t("Sites on this overlay"), list(_overlay_site_labels), key="overlay_sites",
+                format_func=lambda s: _overlay_site_labels.get(s, str(s)),
+                help=t("Show only some sites' chat — e.g. one Browser Source per site. Adds ?site=… to the overlay URL; "
+                       "leave all selected (or empty) for every site."),
+            )
+            st.number_input(
+                t("Messages shown in OBS overlay"), min_value=1, max_value=overlay_server.MAX_MESSAGES,
+                step=1, key="overlay_count",
+            )
+            st.number_input(
+                t("Super Chats & gifts shown in OBS overlay"), min_value=0, max_value=overlay_server.MAX_MESSAGES,
+                step=1, key="overlay_sc_count",
+                help=t("Super Chats, gifts and memberships are pinned to the top of the overlay, apart from regular chat, so busy chat never pushes them away. Set to 0 to hide them."),
+            )
+            st.toggle(t("Show usernames in OBS overlay"), key="overlay_show_username")
+        with _set_r:
+            overlay_text = st.text_area(
+                t("Custom overlay message (shown permanently on stream)"),
+                value=st.session_state["overlay_text"],
+                height=80,
+            )
+            st.session_state["overlay_text"] = overlay_text
+            st.session_state["overlay_visible"] = st.toggle(
+                t("Show custom overlay message"), value=st.session_state["overlay_visible"]
+            )
+            st.text_input(
+                t("Overlay channel"), key="overlay_channel", max_chars=40,
+                help=t("Each dashboard user can pick their own channel name so their overlays don't overwrite each other. Letters, digits, - and _ only."),
+            )
+    overlay_count = int(st.session_state["overlay_count"])
+    overlay_sc_count = int(st.session_state["overlay_sc_count"])
+
     _overlay_ch = overlay_server.clean_channel(st.session_state["overlay_channel"])
     if _overlay_ch == overlay_server.DEFAULT_CHANNEL:
         st.query_params.pop("overlay", None)
@@ -2147,15 +2601,6 @@ with tab_obs:
         if _via_dashboard:
             return _dash_base + "?view=overlay" + (f"&{query}" if query else "")
         return f"{_overlay_base}/overlay" + (f"?{query}" if query else "")
-    _overlay_site_labels = {"youtube": "YouTube", "bilibili": "Bilibili", "missevan": t("MissEvan")}
-    # A stale/unknown entry would make format_func return None, which newer Streamlit can't serialize.
-    st.session_state["overlay_sites"] = [s for s in st.session_state["overlay_sites"] if s in _overlay_site_labels]
-    st.multiselect(
-        t("Sites on this overlay"), list(_overlay_site_labels), key="overlay_sites",
-        format_func=lambda s: _overlay_site_labels.get(s, str(s)),
-        help=t("Show only some sites' chat — e.g. one Browser Source per site. Adds ?site=… to the overlay URL; "
-               "leave all selected (or empty) for every site."),
-    )
     _overlay_sites = [s for s in overlay_server.SITES if s in st.session_state["overlay_sites"]]
     if len(_overlay_sites) == len(overlay_server.SITES):
         _overlay_sites = []  # every site: keep the URL short
@@ -2185,30 +2630,6 @@ with tab_obs:
         else:
             st.caption(t("The overlay only accepts connections from this computer. If OBS runs on another machine, set OVERLAY_HOST=0.0.0.0 in .env and restart."))
 
-    # Live overlay text
-    overlay_text = st.text_area(
-        t("Custom overlay message (shown permanently on stream)"),
-        value=st.session_state["overlay_text"],
-        height=80,
-    )
-    st.session_state["overlay_text"] = overlay_text
-
-    st.session_state["overlay_visible"] = st.toggle(
-        t("Show custom overlay message"), value=st.session_state["overlay_visible"]
-    )
-    st.toggle(t("Show usernames in OBS overlay"), key="overlay_show_username")
-    st.number_input(
-        t("Messages shown in OBS overlay"), min_value=1, max_value=overlay_server.MAX_MESSAGES,
-        step=1, key="overlay_count",
-    )
-    overlay_count = int(st.session_state["overlay_count"])
-    st.number_input(
-        t("Super Chats & gifts shown in OBS overlay"), min_value=0, max_value=overlay_server.MAX_MESSAGES,
-        step=1, key="overlay_sc_count",
-        help=t("Super Chats, gifts and memberships are pinned to the top of the overlay, apart from regular chat, so busy chat never pushes them away. Set to 0 to hide them."),
-    )
-    overlay_sc_count = int(st.session_state["overlay_sc_count"])
-
     # Standalone overlay: the overlay server reads the sites itself, no dashboard needed.
     _yt_source = st.session_state["yt_watch_channel"] or st.session_state["yt_chat_input"]
     _yt_channel = ytw.channel_url(_yt_source or "")
@@ -2220,32 +2641,57 @@ with tab_obs:
         "missevan": me.parse_room_id(str(st.session_state["me_room_id"] or "")),
     }
     _standalone = {k: v for k, v in _standalone.items() if v and (not _overlay_sites or k in _overlay_sites)}
+    with _overlay_quick:
+        st.markdown("**" + t("🖥️ Standalone overlay for OBS") + "**")
+        if not _standalone:
+            st.info(t("Enter a YouTube channel, Bilibili room or MissEvan room in the 📡 Stream Monitoring tab "
+                      "to get your overlay link."))
     if _standalone:
         _params = dict(_standalone)
-        if overlay_count != 5:
-            _params["n"] = overlay_count
-        if overlay_sc_count != 3:
-            _params["sc"] = overlay_sc_count
         if not st.session_state["overlay_show_username"]:
             _params["names"] = 0
         if st.session_state["translate_enabled"]:
             _params["tr"] = st.session_state["translate_target"]
-        if st.session_state["overlay_visible"] and overlay_text:
-            _params["text"] = overlay_text
-        _standalone_url = _overlay_link(urlencode(_params, safe="@,"))
-        st.markdown("**" + t("Standalone overlay (no dashboard needed)") + "**")
-        st.code(_standalone_url, language=None)
-        st.caption(t(
-            "This URL reads the chat by itself, like a logged-out viewer, as long as the overlay server runs — "
-            "you can close the dashboard. Edit the youtube= (@handle, channel or video link), bilibili= and "
-            "missevan= (room ID or link) values to show any channel. Options: n= chat lines, sc= Super Chats & gifts, "
-            "names=0 hides usernames, tr=en adds translations, text= custom message. "
-            "Bilibili hides viewer names from logged-out readers, so they appear masked."
-        ))
-        st.caption(t(
-            "While this dashboard is open and reading the same rooms, the standalone overlay shows exactly the "
-            "Recent Chat Preview below (your login, filters and blocked users included)."
-        ))
+        _text = {"text": overlay_text} if st.session_state["overlay_visible"] and overlay_text else {}
+        # n= / sc= are always listed so they're easy to find and edit by hand in OBS. 0 turns a section off,
+        # so Super Chats and chat can go on separate OBS screens, each using the whole Browser Source.
+        _variants = [
+            (t("All (Super Chats & gifts on top, chat below)"), {"n": overlay_count, "sc": overlay_sc_count, **_text}),
+            (t("Super Chats & gifts only"), {"n": 0, "sc": overlay_sc_count or 3}),
+            (t("Chat only"), {"n": overlay_count, "sc": 0, **_text}),
+        ]
+        with _overlay_quick:
+            _links = [(_label, _overlay_link(urlencode({**_params, **_extra}, safe="@,"))) for _label, _extra in _variants]
+            # With sc=0 in the settings, "All" is the same as "Chat only"; keep the clearer label.
+            if _links[0][1] in {url for _, url in _links[1:]}:
+                _links = _links[1:]
+            for _i, (_label, _standalone_url) in enumerate(_links):
+                st.caption(f"**{_label}**")
+                _url_col, _open_col = st.columns([6, 1], vertical_alignment="center")
+                _url_col.code(_standalone_url, language=None)
+                _open_col.link_button(t("↗ Open"), _standalone_url, width="stretch", key=f"overlay_open_{_i}")
+            st.caption(t(
+                "Copy the link (point at it, then click the copy icon on its right). In OBS: Sources ＋ → Browser → paste it as the URL "
+                "(Width 400, Height 600) → OK. It keeps working after you close this page, as long as the "
+                "dashboard program is running. The overlay settings below change this link."
+            ))
+            st.caption(t(
+                "Want Super Chats and chat in different places or scenes? Add one Browser Source with the "
+                "\"Super Chats & gifts only\" link and another with the \"Chat only\" link."
+            ))
+            with st.expander(t("What can I change in this link?")):
+                st.caption(t(
+                    "This URL reads the chat by itself, like a logged-out viewer, as long as the overlay server runs — "
+                    "you can close the dashboard. Edit the youtube= (@handle, channel or video link), bilibili= and "
+                    "missevan= (room ID or link) values to show any channel. Options: n= chat lines, sc= Super Chats & gifts "
+                    "(0 hides that part; the other then uses the whole height), "
+                    "names=0 hides usernames, tr=en adds translations, text= custom message. "
+                    "Bilibili hides viewer names from logged-out readers, so they appear masked."
+                ))
+                st.caption(t(
+                    "While this dashboard is open and reading the same rooms, the standalone overlay shows exactly the "
+                    "Recent Chat Preview below (your login, filters and blocked users included)."
+                ))
     def _on_overlay(m: dict) -> bool:
         return not _overlay_sites or m.get("platform") in _overlay_sites
 
@@ -2583,12 +3029,130 @@ def _cookie_verify(site_label: str, cookies: dict) -> Optional[dict]:
     return ytw.verify_login(cookies) if cookies else None
 
 
+_COOKIE_SITES = {"YouTube": "youtube", "Bilibili": "bilibili", "MissEvan": "missevan"}
+
+
+def _saved_login(site: str) -> Optional[dict]:
+    """{"ok", "name"} for the current user's saved login on `site`, or None when there is none."""
+    if not user_login.get(site):
+        return None
+    if site == "youtube":
+        state, name_key = _cached_yt_cookie_login(_login_key("youtube"), ytw.selected_page_id()), "name"
+    elif site == "bilibili":
+        state, name_key = _cached_bili_login(_login_key("bilibili")), "uname"
+    else:
+        state, name_key = _me_login_state() or {}, "username"
+    return {"ok": bool(state.get("is_login")), "name": state.get(name_key, ""),
+            "unknown": bool(state.get("error"))}
+
+
+def _clear_all_logins() -> None:
+    for site in _COOKIE_SITES.values():
+        bc.clear_login(site)
+    for key in ("_yt_saved_name", "_yt_saved_msg", "_me_saved_msg", "_me_saved_uid", "yt_send_as"):
+        st.session_state.pop(key, None)
+    st.toast(t("Deleted all your logins."))
+
+
+def _read_pasted_cookies(raw: str) -> None:
+    """Pick the site, then parse and verify pasted cookies; the outcome goes to session state."""
+    raw = raw or ""
+    detected = bc.detect_site(raw) if raw.strip() else None
+    if detected:
+        st.session_state["cookie_site"] = detected
+    site_label = st.session_state.get("cookie_site") or next(iter(bc.SITES))
+    if (raw, site_label) == st.session_state.get("_cookie_last_raw") and st.session_state.get("cookie_result"):
+        return  # already read (e.g. the box lost focus, then Read cookies was clicked)
+    st.session_state.pop("cookie_result", None)
+    st.session_state.pop("_cookie_error", None)
+    st.session_state["_cookie_last_raw"] = (raw, site_label)
+    if not raw.strip():
+        return
+    try:
+        cookies = bc.parse_cookie_text(raw, bc.SITES[site_label])
+        if not cookies:
+            raise bc.CookieReadError(t("No cookies for {site} found in that text.", site=site_label))
+        st.session_state["cookie_result"] = {
+            "browser": t("the pasted cookies"), "site": site_label, "cookies": cookies,
+            "verify": _cookie_verify(site_label, cookies),
+        }
+    except bc.CookieReadError as exc:
+        st.session_state["_cookie_error"] = str(exc)
+
+
+def _on_cookie_read() -> None:
+    uploaded = st.session_state.get("cookie_upload")
+    raw = (uploaded.getvalue().decode("utf-8", errors="replace") if uploaded
+           else st.session_state.get("cookie_paste", ""))
+    _read_pasted_cookies(raw)
+
+
+def _clear_cookie_box() -> None:
+    st.session_state["cookie_paste"] = ""
+    for key in ("cookie_result", "_cookie_error", "_cookie_last_raw"):
+        st.session_state.pop(key, None)
+
+
+_CLIPBOARD_JS = """
+export default function(component) {
+    const { setTriggerValue, parentElement, data } = component;
+    const button = parentElement.querySelector("button");
+    button.textContent = data.label;
+    button.onclick = async () => {
+        try {
+            setTriggerValue("text", await navigator.clipboard.readText());
+        } catch (err) {
+            setTriggerValue("error", String((err && err.name) || err));
+        }
+    };
+}
+"""
+_CLIPBOARD_CSS = """
+button { font: inherit; color: #fff; background: #ff4b4b; border: 1px solid #ff4b4b; border-radius: .5rem;
+         padding: .25rem .75rem; min-height: 2.5rem; cursor: pointer; }
+button:hover { background: #ff3333; border-color: #ff3333; }
+"""
+
+
+@st.cache_resource
+def _clipboard_paste_button():
+    # A real click in the page: browsers only allow reading the clipboard on a user gesture.
+    return st.components.v2.component("clipboard_paste", html="<button type='button'></button>",
+                                      css=_CLIPBOARD_CSS, js=_CLIPBOARD_JS)
+
+
 with tab_cookies:
     st.subheader(t("🍪 Import login cookies"))
     st.caption(t(
         "Your logins are yours only: other people opening this dashboard don't see or use them. "
         "They are kept encrypted in this browser, so they survive a refresh; use 🚪 Clear login to forget them."
     ))
+
+    # ── Saved logins with quick delete ────────────────────────────────────────
+    st.markdown("**" + t("🔑 Your saved logins") + "**")
+    _any_saved = False
+    for _col, (_label, _site) in zip(st.columns(len(_COOKIE_SITES)), _COOKIE_SITES.items()):
+        _saved = _saved_login(_site)
+        _any_saved = _any_saved or _saved is not None
+        with _col.container(border=True):
+            if _saved is None:
+                _line = t("— not logged in")
+            elif _saved["ok"]:
+                _line = "✅ " + (_saved["name"] or t("logged in"))
+            elif _saved["unknown"]:
+                _line = t("❔ saved (couldn't check)")
+            else:
+                _line = t("⚠️ expired")
+            st.markdown(f"**{_label}** · {_line}")
+            st.button(
+                t("🗑️ Delete"), key=f"cookie_delete_{_site}", disabled=_saved is None, width="stretch",
+                on_click=_clear_login, args=(_label, _site),
+                help=t("Forget your login cookies for this site (also removed from this browser)."),
+            )
+    if _any_saved:
+        st.button(t("🗑️ Delete all logins"), key="cookie_delete_all", type="tertiary", on_click=_clear_all_logins)
+
+    st.divider()
     _src_browser, _src_paste = t("🧭 Browser on this computer"), t("📋 Paste / upload cookies")
     # Reading a browser's cookie store means the *server's* browser, so only offer it to the server's own user.
     _cookie_sources = [_src_browser, _src_paste] if _is_local_client() else [_src_paste]
@@ -2597,31 +3161,41 @@ with tab_cookies:
         help=t("Use Paste / upload when the app runs on another computer or a server, "
                "where it can't see your browser."),
     )
-    site_label = st.selectbox(t("Site"), list(bc.SITES), key="cookie_site")
 
     if cookie_source == _src_paste:
         st.caption(t(
             "In your own browser, export the site's cookies with an extension such as "
             "\"Get cookies.txt LOCALLY\" or \"Cookie-Editor\" (Export → JSON or Netscape), or copy the "
             "Cookie request header from DevTools (F12 → Network → any request to the site). "
-            "Paste it below or upload the exported file. Only cookies for the chosen site are used."
+            "Then click 📋 Paste from clipboard — the site is detected and the cookies are checked right away."
         ))
-        pasted = st.text_area(t("Cookies"), key="cookie_paste", height=120,
-                              placeholder="SESSDATA=…; bili_jct=…   /   cookies.txt   /   [{\"name\": …}]")
-        uploaded = st.file_uploader(t("…or upload an exported file"), type=["txt", "json"], key="cookie_upload")
-        if st.button(t("Read cookies"), type="primary", key="cookie_parse"):
-            raw = uploaded.getvalue().decode("utf-8", errors="replace") if uploaded else pasted
-            try:
-                cookies = bc.parse_cookie_text(raw, bc.SITES[site_label])
-                if not cookies:
-                    raise bc.CookieReadError(t("No cookies for {site} found in that text.", site=site_label))
-                st.session_state["cookie_result"] = {
-                    "browser": t("the pasted cookies"), "site": site_label, "cookies": cookies,
-                    "verify": _cookie_verify(site_label, cookies),
-                }
-            except bc.CookieReadError as exc:
-                st.session_state.pop("cookie_result", None)
-                st.error(str(exc))
+        _paste_row = st.container(horizontal=True, vertical_alignment="center")
+        with _paste_row:
+            _clip = _clipboard_paste_button()(
+                key="cookie_clip", data={"label": t("📋 Paste from clipboard")}, width="content",
+                on_text_change=lambda: None, on_error_change=lambda: None,
+            )
+            st.button(t("🧹 Clear box"), key="cookie_clear_box", on_click=_clear_cookie_box)
+        if _clip.get("text") is not None:
+            st.session_state["cookie_paste"] = _clip["text"]
+            st.session_state.pop("_cookie_last_raw", None)
+            _read_pasted_cookies(_clip["text"])
+        elif _clip.get("error"):
+            st.warning(t("This browser didn't allow reading the clipboard. Click in the box below and press "
+                         "Ctrl+V instead."))
+    site_label = st.selectbox(
+        t("Site"), list(bc.SITES), key="cookie_site",
+        help=t("Picked automatically when the pasted cookies show which site they are for."),
+    )
+
+    if cookie_source == _src_paste:
+        st.text_area(t("Cookies"), key="cookie_paste", height=120, on_change=_on_cookie_read,
+                     placeholder="SESSDATA=…; bili_jct=…   /   cookies.txt   /   [{\"name\": …}]")
+        st.file_uploader(t("…or upload an exported file"), type=["txt", "json"], key="cookie_upload",
+                         on_change=_on_cookie_read)
+        st.button(t("Read cookies"), type="primary", key="cookie_parse", on_click=_on_cookie_read)
+        if st.session_state.get("_cookie_error"):
+            st.error(st.session_state["_cookie_error"])
     elif not bc.BROWSER_COOKIE_LIB_OK:
         st.error(t("browser-cookie3 is not installed. Run `pip install browser-cookie3`."))
     else:
@@ -2712,7 +3286,9 @@ with tab_cookies:
                 width="stretch",
             )
 
+_read_saved_settings()
 _sync_login_cookie()
+_save_settings()
 _emit_live_alerts()
 _emit_browser_tts()
 

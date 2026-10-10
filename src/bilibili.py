@@ -244,6 +244,24 @@ def _decode_send_gift_v2(pb: str) -> list[dict]:
     return gifts
 
 
+def _decode_interact_word_v2(pb: str) -> dict:
+    """Decode an INTERACT_WORD_V2 packet into an INTERACT_WORD-shaped dict (schema from blivedm)."""
+    try:
+        f = _pb_fields(base64.b64decode(pb))
+    except Exception:
+        return {}
+
+    def num(n: int) -> int:
+        return f[n][0] if n in f and isinstance(f[n][0], int) else 0
+
+    return {
+        "uid": num(1),
+        "uname": bytes(f[2][0]).decode("utf-8", "replace") if 2 in f else "",
+        "msg_type": num(5),
+        "timestamp": num(7),
+    }
+
+
 class DanmakuListener:
     """
     Starts a bilibili-api LiveDanmaku WebSocket listener in a background thread.
@@ -406,24 +424,12 @@ class DanmakuListener:
 
             @danmaku.on("INTERACT_WORD")
             async def on_enter(event):
-                data = event["data"]["data"]
-                if data.get("msg_type") == 1:
-                    self.messages.append(
-                        {
-                            "id": f"bili_enter_{time.time_ns()}",
-                            "platform": "bilibili",
-                            "author": data.get("uname", ""),
-                            "author_id": str(data.get("uid", "")),
-                            "is_owner": False,
-                            "is_moderator": False,
-                            "is_verified": False,
-                            "text": "entered the room",
-                            "type": "enter",
-                            "timestamp": str(int(time.time())),
-                            "avatar": "",
-                            "color": 8421504,
-                        }
-                    )
+                self._enter(event["data"]["data"])
+
+            # Bilibili now sends room entries as protobuf; the JSON INTERACT_WORD no longer arrives.
+            @danmaku.on("INTERACT_WORD_V2")
+            async def on_enter_v2(event):
+                self._enter(_decode_interact_word_v2(event["data"]["data"].get("pb", "")))
 
             if not self._running:
                 return
@@ -433,6 +439,34 @@ class DanmakuListener:
             pass
         finally:
             self._running = False
+
+    def _enter(self, data: dict) -> None:
+        """Record a viewer entering the room (msg_type 1); other interactions are follows/shares."""
+        if data.get("msg_type") != 1:
+            return
+        # Don't list the same viewer twice if one entry arrives as both INTERACT_WORD and _V2.
+        key = (data.get("uid"), data.get("uname"), data.get("timestamp"))
+        recent = self.__dict__.setdefault("_recent_enters", [])
+        if key in recent:
+            return
+        recent.append(key)
+        del recent[:-50]
+        self.messages.append(
+            {
+                "id": f"bili_enter_{time.time_ns()}",
+                "platform": "bilibili",
+                "author": data.get("uname", ""),
+                "author_id": str(data.get("uid", "")),
+                "is_owner": False,
+                "is_moderator": False,
+                "is_verified": False,
+                "text": "entered the room",
+                "type": "enter",
+                "timestamp": str(int(time.time())),
+                "avatar": "",
+                "color": 8421504,
+            }
+        )
 
     def _new_gift(self, data: dict) -> bool:
         """Drop the duplicate when a gift arrives as both SEND_GIFT and SEND_GIFT_V2."""
@@ -638,6 +672,9 @@ def send_danmaku(room_id: str, message: str) -> bool:
         return False
 
 
+_EMOTE_SERVER_ERR = "Bilibili's emote server returned an error. Try 🔄 Refresh in a moment."
+
+
 def get_emoticons(room_id: str) -> tuple[list[dict], str]:
     """The room's emote packs usable for danmaku, plus the streamer's 充电 pack. Returns (packs, error).
 
@@ -650,11 +687,18 @@ def get_emoticons(room_id: str) -> tuple[list[dict], str]:
     upower, up_err = fetch_upower_emotes(room_id)
     if not has_login_credentials():
         return upower, "Not logged in to Bilibili — import cookies in the 🍪 Cookies tab."
-    try:
-        room = live.LiveRoom(room_display_id=int(room_id), credential=_credential())
-        resp = _run(room.get_emoticons())
-    except Exception as exc:
-        return upower, str(exc) or type(exc).__name__
+    for attempt in range(2):  # Bilibili's emote API sometimes answers a one-off -500 服务器错误
+        try:
+            room = live.LiveRoom(room_display_id=int(room_id), credential=_credential())
+            resp = _run(room.get_emoticons())
+            break
+        except Exception as exc:
+            if attempt:
+                if getattr(exc, "code", None) is not None:
+                    print(f"[bilibili] get_emoticons failed: {exc}")
+                    return upower, _EMOTE_SERVER_ERR
+                return upower, str(exc) or type(exc).__name__
+            time.sleep(1)
     packs = parse_emoticons(resp)
     uid, uname = _room_owner(room_id)
     # Skip ours only if Bilibili already lists *this* streamer's 充电 pack (it may list other streamers' ones).
@@ -664,7 +708,9 @@ def get_emoticons(room_id: str) -> tuple[list[dict], str]:
     else:
         up_err = ""
     garb = garb_packs_owned_by(uid, [p for p in packs if _pack_kind(p) == "garb"])
-    return (rank_packs(packs, uid, uname, garb),
+    packs = rank_packs(packs, uid, uname, garb)
+    label_garb_packs(packs)
+    return (packs,
             f"充电表情 couldn't be loaded: {up_err}" if up_err else "")
 
 
@@ -712,15 +758,47 @@ def _garb_owners(name: str) -> set[int]:
     return owners
 
 
-def garb_packs_owned_by(uid: int, packs: list[dict]) -> set[str]:
-    """Names (as from garb_name) of the given 装扮 packs that the 装扮 shop says belong to `uid`."""
+def _garb_owner_map(packs: list[dict]) -> dict[str, set[int]]:
+    """{装扮 name: streamer UIDs} for the given 装扮 packs, per the 装扮 shop."""
     names = {garb_name(p) for p in packs} - {"", "装扮表情"}
-    if not uid or not names:
-        return set()
+    if not names:
+        return {}
     from concurrent.futures import ThreadPoolExecutor
     with ThreadPoolExecutor(max_workers=min(8, len(names))) as pool:
-        owners = dict(zip(names, pool.map(_garb_owners, names)))
-    return {n for n, mids in owners.items() if uid in mids}
+        return dict(zip(names, pool.map(_garb_owners, names)))
+
+
+def garb_packs_owned_by(uid: int, packs: list[dict]) -> set[str]:
+    """Names (as from garb_name) of the given 装扮 packs that the 装扮 shop says belong to `uid`."""
+    if not uid:
+        return set()
+    return {n for n, mids in _garb_owner_map(packs).items() if uid in mids}
+
+
+_up_names: dict[int, str] = {}
+
+
+def _up_name(uid: int) -> str:
+    """A Bilibili user's name; "" if it couldn't be fetched."""
+    if uid not in _up_names:
+        try:
+            resp = requests.get("https://api.live.bilibili.com/live_user/v1/Master/info",
+                                params={"uid": uid}, timeout=5, headers={"User-Agent": _BROWSER_UA})
+            name = str(((resp.json().get("data") or {}).get("info") or {}).get("uname") or "")
+        except (requests.RequestException, ValueError, AttributeError):
+            return ""  # not cached: retry on the next refresh
+        _up_names[uid] = name
+    return _up_names[uid]
+
+
+def label_garb_packs(packs: list[dict]) -> None:
+    """Add the UP主 a 装扮 pack belongs to (per the 装扮 shop) to its name: "<装扮> · <UP主>"."""
+    garb = [p for p in packs if _pack_kind(p) == "garb"]
+    owners = _garb_owner_map(garb)
+    for p in garb:
+        ups = [n for n in (_up_name(mid) for mid in sorted(owners.get(garb_name(p), ()))) if n]
+        if ups and not any(u in p["name"] for u in ups):
+            p["name"] = f"{p['name']} · {' / '.join(ups)}"
 
 
 def _name_tokens(uname: str) -> list[str]:
@@ -889,8 +967,7 @@ def _split_garb_pack(pack: dict) -> list[dict]:
     for e in pack["emotes"]:
         m = _GARB_RE.match(e["unique"])
         groups.setdefault(m.group(1) if m else "", []).append(e)
-    if len(groups) < 2:
-        return [pack]
+    # Each 装扮 usually comes as its own pack, also named "装扮表情": name it after the 装扮 too.
     return [{**pack, "name": name or pack["name"], "emotes": items} for name, items in groups.items()]
 
 

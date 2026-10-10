@@ -54,12 +54,12 @@ def snapshot(messages: list[dict], translate_enabled: bool, target: str,
     `paid_messages` (gifts, Super Chats, memberships) is a separate list the dashboard never
     trims for chat volume, so busy regular chat can't push paid events off the overlay.
     """
-    count = max(1, min(int(count), MAX_MESSAGES))
+    count = max(0, min(int(count), MAX_MESSAGES))
     paid_count = max(0, min(int(paid_count), MAX_MESSAGES))
     chat = _last_per_site([
         m for m in messages
         if m.get("type") in ("textMessageEvent", "danmaku") and m.get("text")
-    ], count)
+    ], count) if count else []
     if paid_messages is None:
         paid_messages = [m for m in messages if is_superchat(m)]
     paid = _last_per_site([m for m in paid_messages if m.get("text")], paid_count) if paid_count else []
@@ -125,19 +125,23 @@ def parse_sites(values: list[str]) -> set[str]:
     return sites
 
 
-def view(data: dict, sites: set[str]) -> dict:
-    """What one overlay URL shows: only `sites` (all when empty), trimmed to the configured counts."""
+def view(data: dict, sites: set[str], count: int | None = None, paid_count: int | None = None) -> dict:
+    """What one overlay URL shows: only `sites` (all when empty), trimmed to the configured counts.
+    `count` / `paid_count` (the URL's n= / sc=) can lower them further; 0 turns that section off, so
+    one OBS screen can show only Super Chats and another only chat."""
     def pick(items: list[dict], n: int) -> list[dict]:
         if sites:
             items = [m for m in items if m.get("platform") in sites]
         return items[-n:] if n else []
 
-    count = data.get("count", MAX_MESSAGES)
-    paid_count = data.get("paid_count", MAX_MESSAGES)
+    count = data.get("count", MAX_MESSAGES) if count is None else min(count, data.get("count", MAX_MESSAGES))
+    paid_count = (data.get("paid_count", MAX_MESSAGES) if paid_count is None
+                  else min(paid_count, data.get("paid_count", MAX_MESSAGES)))
     return {
         "paid": pick(data.get("paid", []), paid_count),
         "messages": pick(data.get("messages", []), count),
         "custom_text": data.get("custom_text", ""),
+        "layout": "only-chat" if not paid_count else "only-paid" if not count else "",
     }
 
 
@@ -179,7 +183,7 @@ def feed_snapshot(key: "overlay_feeds.FeedKey", query: dict) -> dict:
 
 
 _PAGE_CSS = """
-  #paid, #chat { position: fixed; left: 20px; width: min(420px, calc(100vw - 40px)); overflow: hidden;
+  #paid, #chat { position: fixed; left: 20px; right: 20px; overflow: hidden;
                  font: 16px 'Segoe UI', sans-serif; color: white; z-index: 1000; }
   #paid { top: 20px; max-height: calc(50vh - 30px); }
   #chat { bottom: 20px; max-height: calc(50vh - 30px); display: flex; flex-direction: column; justify-content: flex-end; }
@@ -194,6 +198,8 @@ _PAGE_CSS = """
   #custom { color: #ffd700; font-weight: bold; white-space: pre-wrap; overflow-wrap: anywhere; }
   .paid-item { background: rgba(120, 0, 0, 0.75); border-left: 4px solid #ffd700; border-radius: 6px; padding: 4px 8px; }
   .paid-item.gift { background: rgba(80, 20, 110, 0.75); border-left-color: #ff8adf; }
+  .only-paid #paid, .only-chat #chat { max-height: calc(100vh - 40px); }
+  .only-chat #paid { display: none; }
 """
 
 
@@ -238,9 +244,10 @@ def _html_list(messages: list[dict], cls: str) -> str:
 def render_html(data: dict) -> str:
     """The overlay body for `overlay_data()` output, as escaped HTML (for pages that can't run scripts)."""
     return (
+        f'<div class="{html.escape(str(data.get("layout") or ""))}">'
         f'<div id="paid">{_html_list(data.get("paid"), "message paid-item")}</div>'
         f'<div id="chat"><div id="messages">{_html_list(data.get("messages"), "message")}</div>'
-        f'<div id="custom">{html.escape(str(data.get("custom_text") or ""))}</div></div>'
+        f'<div id="custom">{html.escape(str(data.get("custom_text") or ""))}</div></div></div>'
     )
 
 
@@ -253,7 +260,7 @@ _PAGE = """<!doctype html>
   html, body { margin: 0; background: transparent; overflow: hidden; }
   body { font: 16px 'Segoe UI', sans-serif; color: white; }
   /* Paid events are pinned to the top and chat to the bottom, so neither can push the other. */
-  #paid, #chat { position: fixed; left: 20px; width: min(420px, calc(100vw - 40px)); overflow: hidden; }
+  #paid, #chat { position: fixed; left: 20px; right: 20px; overflow: hidden; }
   #paid { top: 20px; max-height: calc(50vh - 30px); }
   #chat { bottom: 20px; max-height: calc(50vh - 30px); display: flex; flex-direction: column; justify-content: flex-end; }
   .message { margin: 4px 0; text-shadow: 1px 1px 3px #000; overflow-wrap: anywhere; white-space: pre-wrap; }
@@ -267,6 +274,9 @@ _PAGE = """<!doctype html>
   #custom { color: #ffd700; font-weight: bold; white-space: pre-wrap; overflow-wrap: anywhere; }
   .paid-item { background: rgba(120, 0, 0, 0.75); border-left: 4px solid #ffd700; border-radius: 6px; padding: 4px 8px; }
   .paid-item.gift { background: rgba(80, 20, 110, 0.75); border-left-color: #ff8adf; }
+  /* n=0 / sc=0: one section only (e.g. separate OBS scenes for Super Chats and chat) gets the full height. */
+  .only-paid #paid, .only-chat #chat { max-height: calc(100vh - 40px); }
+  .only-chat #paid { display: none; }
 </style>
 </head>
 <body>
@@ -325,6 +335,7 @@ async function refresh() {
     const response = await fetch("/overlay/data" + location.search, {cache: "no-store"});
     if (!response.ok) throw new Error(`Overlay HTTP ${response.status}`);
     const data = await response.json();
+    document.body.className = data.layout || "";
     renderList("paid", data.paid, "message paid-item");
     renderList("messages", data.messages, "message");
     document.getElementById("custom").textContent = data.custom_text;
@@ -360,7 +371,11 @@ def overlay_data(query: dict, server: "OverlayServer | None" = None) -> dict:
             data = server.channels.get(channel, _EMPTY)
     else:
         data = _EMPTY
-    return view(data, sites)
+    url_count = _int_param(query, "n", -1) if query.get("n") else None
+    url_paid = _int_param(query, "sc", -1) if query.get("sc") else None
+    return view(data, sites,
+                None if url_count is None or url_count < 0 else url_count,
+                None if url_paid is None or url_paid < 0 else url_paid)
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -437,9 +452,10 @@ def ensure_started() -> OverlayServer:
     with _STATE["lock"]:
         old = _STATE["server"]
         if old is not None and isinstance(old, ThreadingHTTPServer) and (
-            not hasattr(old, "mirror") or old.server_address[0] != OVERLAY_HOST
+            type(old) is not OverlayServer or old.server_address[0] != OVERLAY_HOST
         ):
-            # Started by an older version of this module (or with another OVERLAY_HOST): replace it.
+            # Started by an older copy of this module (Streamlit re-imports edited modules, but the running
+            # server keeps answering with the code it was started with) or another OVERLAY_HOST: replace it.
             old.shutdown()
             old.server_close()
             _STATE["server"] = None

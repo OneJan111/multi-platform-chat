@@ -113,6 +113,12 @@ _ANNOUNCE = {
         "ja": "{author}さん：{text}",
         "ko": "{author}님: {text}",
     },
+    "enter": {
+        "zh": "欢迎{author}进入直播间",
+        "en": "{author} joined",
+        "ja": "{author}さんが入室しました",
+        "ko": "{author}님이 입장했습니다",
+    },
 }
 
 
@@ -144,6 +150,12 @@ def format_announcement(msg_type: str, author: str, text: str, lang: str = "auto
     else:
         kind = "superchat"
     return _ANNOUNCE[kind][code].format(author=author, text=announcement_text(text))
+
+
+def format_join(author: str, lang: str = "auto") -> str:
+    """Spoken line for a viewer entering the room, e.g. "Bob joined"."""
+    code = resolve_language(lang, author)
+    return _ANNOUNCE["enter"][code].format(author=author)
 
 
 def _pick_voice(engine, lang: str):

@@ -99,6 +99,31 @@ def parse_cookie_text(text: str, domain: str) -> dict[str, str]:
     return cookies
 
 
+def detect_site(text: str) -> str | None:
+    """The SITES label pasted cookies belong to, or None when it isn't clear."""
+    try:
+        found = {label: parse_cookie_text(text, domain) for label, domain in SITES.items()}
+    except CookieReadError:
+        return None
+    filled = [label for label, cookies in found.items() if cookies]
+    if not filled:
+        return None
+    if len(filled) < len(found) or any(found[label] != found[filled[0]] for label in filled):
+        # The export names its domains.
+        if len(filled) == 1:
+            return filled[0]
+        logins = {"Bilibili": "SESSDATA", "YouTube": "SAPISID"}
+        with_login = [label for label in filled if logins.get(label, "") in found[label]]
+        return with_login[0] if len(with_login) == 1 else None
+    # A plain Cookie header has no domains: go by the cookie names.
+    names = set(found[filled[0]])
+    if names & {"SESSDATA", "bili_jct", "DedeUserID"}:
+        return "Bilibili"
+    if names & set(YOUTUBE_LOGIN_COOKIES):
+        return "YouTube"
+    return None
+
+
 def _co_initialize():
     """Initialise COM for the current thread; return pythoncom to uninitialise later, or None."""
     try:

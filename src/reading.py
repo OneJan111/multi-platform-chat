@@ -1,4 +1,4 @@
-"""Reading aids (pinyin / hiragana ruby) so the streamer can read Super Chats aloud."""
+"""Reading aids (pinyin / furigana ruby) so the streamer can read Super Chats aloud."""
 from __future__ import annotations
 
 import html
@@ -19,10 +19,10 @@ except ImportError:  # pragma: no cover
     KAKASI_OK = False
 
 MODES: dict[str, str] = {
-    "auto": "Auto (pinyin for Chinese, hiragana for Japanese)",
+    "auto": "Auto (pinyin for Chinese, furigana for Japanese)",
     "pinyin": "Pinyin",
-    "hiragana": "Hiragana",
-    "both": "Pinyin + Hiragana",
+    "hiragana": "Furigana",
+    "both": "Pinyin + Furigana",
     "off": "Off",
 }
 

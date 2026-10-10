@@ -33,6 +33,41 @@ _STRINGS: dict[str, tuple[str, str]] = {
         "オフ：ダッシュボードは OBS に接続しません。オン：接続されると、ここに配信・録画・シーン・テキストソースの操作が表示されます。",
     ),
     "OBS functions are off.": ("OBS 功能已关闭。", "OBS 機能はオフです。"),
+    "🖥️ Standalone overlay for OBS": ("🖥️ OBS 独立弹幕层", "🖥️ OBS 用スタンドアロンオーバーレイ"),
+    "Enter a YouTube channel, Bilibili room or MissEvan room in the 📡 Stream Monitoring tab "
+    "to get your overlay link.": (
+        "在 📡 直播监控 标签页输入 YouTube 频道、B站房间或猫耳FM 房间，即可获得弹幕层链接。",
+        "📡 配信モニタリング タブで YouTube チャンネル、Bilibili ルーム、MissEvan ルームを入力すると、"
+        "オーバーレイのリンクが表示されます。",
+    ),
+    "↗ Open": ("↗ 打开", "↗ 開く"),
+    "Copy the link (point at it, then click the copy icon on its right). In OBS: Sources ＋ → Browser → paste it as the URL "
+    "(Width 400, Height 600) → OK. It keeps working after you close this page, as long as the "
+    "dashboard program is running. The overlay settings below change this link.": (
+        "复制链接（把鼠标移到链接上，点右侧的复制图标）。在 OBS 中：来源 ＋ → 浏览器 → 粘贴到 URL（宽 400，高 600）→ 确定。"
+        "只要仪表板程序在运行，关闭此页面后仍然有效。下方的弹幕层设置会改变此链接。",
+        "リンクをコピーします（リンクにマウスを乗せ、右側のコピーアイコンをクリック）。OBS で：ソース ＋ → ブラウザ → URL に貼り付け（幅 400、高さ 600）→ OK。"
+        "ダッシュボードのプログラムが動いていれば、このページを閉じても表示され続けます。"
+        "下のオーバーレイ設定でこのリンクが変わります。",
+    ),
+    "What can I change in this link?": ("这个链接可以改什么？", "このリンクで変更できること"),
+    "All (Super Chats & gifts on top, chat below)": (
+        "全部（醒目留言和礼物在上，弹幕在下）",
+        "すべて（上にスーパーチャットとギフト、下にチャット）",
+    ),
+    "Super Chats & gifts only": ("仅醒目留言和礼物", "スーパーチャットとギフトのみ"),
+    "Chat only": ("仅弹幕", "チャットのみ"),
+    "Want Super Chats and chat in different places or scenes? Add one Browser Source with the "
+    "\"Super Chats & gifts only\" link and another with the \"Chat only\" link.": (
+        "想把醒目留言和弹幕放在不同位置或不同场景？用「仅醒目留言和礼物」链接添加一个浏览器源，再用「仅弹幕」链接添加另一个。",
+        "スーパーチャットとチャットを別の位置やシーンに置きたい場合は、「スーパーチャットとギフトのみ」のリンクと"
+        "「チャットのみ」のリンクでブラウザソースを 1 つずつ追加してください。",
+    ),
+    "⬆️ The overlay settings are at the top of this tab, under the standalone overlay link.": (
+        "⬆️ 弹幕层设置在本标签页顶部的独立弹幕层链接下方。",
+        "⬆️ オーバーレイ設定は、このタブの一番上のスタンドアロンオーバーレイのリンクの下にあります。",
+    ),
+    "⚙️ Overlay settings": ("⚙️ 弹幕层设置", "⚙️ オーバーレイ設定"),
     "📝 OBS Text source": ("📝 OBS 文本源", "📝 OBS テキストソース"),
     "Send chat to OBS Text source": ("将弹幕发送到 OBS 文本源", "チャットを OBS テキストソースに送信"),
     "OBS Text source": ("OBS 文本源", "OBS テキストソース"),
@@ -51,6 +86,8 @@ _STRINGS: dict[str, tuple[str, str]] = {
     "🌐 Translation": ("🌐 翻译", "🌐 翻訳"),
     "Translate chat": ("翻译弹幕", "チャットを翻訳"),
     "Site emotes": ("特制表情包", "サイト専用スタンプ"),
+    "Expand all": ("全部展开", "すべて展開"),
+    "Collapse all": ("全部收起", "すべて折りたたむ"),
     "Each site's own emotes, sent only to that site.": ("各网站的特制表情包，只发到该网站。", "各サイト専用のスタンプは、そのサイトにだけ送信されます。"),
     "🔄 Refresh": ("🔄 刷新", "🔄 更新"),
     "Members only": ("仅限会员", "メンバー限定"),
@@ -75,6 +112,9 @@ _STRINGS: dict[str, tuple[str, str]] = {
         "「充电表情」は配信者への充電（充电）が必要です。",
     ),
     "This room has no emotes you can send.": ("这个房间没有你可以发送的表情包。", "この部屋で送信できるスタンプはありません。"),
+    "Bilibili's emote server returned an error. Try 🔄 Refresh in a moment.": (
+        "B站表情包接口返回服务器错误，请稍后点击 🔄 刷新重试。",
+        "Bilibili のスタンプ API がサーバーエラーを返しました。少し待ってから 🔄 更新してください。"),
     "Only YouTube stamps — not sent to {site}.": ("只有 YouTube 表情包——未发送到 {site}。", "YouTube スタンプのみのため、{site} には送信しませんでした。"),
     "Not logged in to Bilibili — import cookies in the 🍪 Cookies tab.": (
         "未登录 B站——请在 🍪 Cookies 标签页导入 Cookie。", "Bilibili に未ログインです。🍪 Cookies タブで Cookie を読み込んでください。"),
@@ -165,9 +205,10 @@ _STRINGS: dict[str, tuple[str, str]] = {
     ),
     "Translate to": ("翻译为", "翻訳先"),
     "Super Chat reading aid": ("醒目留言注音", "スーパーチャットの読み仮名"),
-    "Shows pinyin / hiragana above Chinese characters in Super Chats so you can read them aloud.": (
-        "在醒目留言的汉字上方显示拼音 / 平假名，方便朗读。",
-        "スーパーチャットの漢字の上にピンイン／ひらがなを表示し、読み上げやすくします。",
+    "Shows pinyin / furigana above Chinese characters in Super Chats and all usernames so you can read them aloud. "
+    "Translations into Japanese get furigana too.": (
+        "在醒目留言和所有用户名的汉字上方显示拼音 / 振假名，方便朗读。翻译成日语的文字也会加上振假名。",
+        "スーパーチャットとすべてのユーザー名の漢字の上にピンイン／振り仮名を表示し、読み上げやすくします。日本語への翻訳にも振り仮名を付けます。",
     ),
     "🔊 Text-to-Speech": ("🔊 语音朗读", "🔊 読み上げ"),
     "Enable TTS": ("启用语音朗读", "読み上げを有効化"),
@@ -194,22 +235,38 @@ _STRINGS: dict[str, tuple[str, str]] = {
         "絵文字のみのメッセージやスタンプをスキップし、メッセージ内の絵文字も読み上げません。",
     ),
     "Read translated chat": ("朗读翻译后的弹幕", "翻訳したチャットを読み上げ"),
-    "Always announce gifts & Super Chats": ("总是播报礼物和醒目留言", "ギフトとスーパーチャットを常に読み上げ"),
-    "Reads gifts, Super Chats and memberships in any language, ahead of normal chat "
-    "(normal chat waits until they're done).": (
-        "无论语言都会播报礼物、醒目留言和会员，并优先于普通弹幕（普通弹幕会等它们读完）。",
-        "言語に関係なくギフト・スーパーチャット・メンバーシップを通常のチャットより優先して読み上げます（通常のチャットはその後に読み上げ）。",
+    "Read translated Super Chats": ("朗读翻译后的醒目留言", "翻訳したスーパーチャットを読み上げ"),
+    "When the TTS language is Auto-detect or matches \"Translate to\" (Translation section), Super Chat "
+    "messages are read translated into that language. Gift names are always read as they are.": (
+        "当 TTS 语言为自动检测，或与「翻译为」语言（翻译设置）相同时，醒目留言会翻译成该语言后朗读。礼物名称始终按原样朗读。",
+        "TTS の言語が自動検出、または「翻訳先」（翻訳セクション）と同じ場合、スーパーチャットのメッセージをその言語に翻訳して読み上げます。ギフト名は常にそのまま読み上げます。",
     ),
-    "When the TTS language matches \"Translate to\" (Translation section), every message is "
-    "read translated into that language. Otherwise messages are read in their original language.": (
-        "当 TTS 语言与「翻译为」语言（翻译设置）相同时，所有消息都会翻译成该语言后朗读；否则按原文语言朗读。",
-        "TTS の言語が「翻訳先」（翻訳セクション）と同じ場合、すべてのメッセージをその言語に翻訳して読み上げます。異なる場合は元の言語で読み上げます。",
+    "Choose what is read with 🔊 / 🔇 at the top of each list (Gifts & Super Chats, Chat, Joins). "
+    "Gifts & Super Chats are read first, in any language.": (
+        "在每个列表（礼物和醒目留言、弹幕、进场）顶部用 🔊 / 🔇 选择要朗读的内容。礼物和醒目留言无论语言都会优先朗读。",
+        "各リスト（ギフトとスーパーチャット、チャット、入室）の上の 🔊 / 🔇 で読み上げる内容を選べます。"
+        "ギフトとスーパーチャットは言語に関係なく優先して読み上げます。",
     ),
-    "⚠️ Not active: set the TTS language to the same language as \"Translate to\" ({target}).": (
-        "⚠️ 未生效：请把 TTS 语言设为与「翻译为」相同的语言（{target}）。",
-        "⚠️ 無効：TTS の言語を「翻訳先」と同じ言語（{target}）にしてください。",
+    "🔊 Read aloud": ("🔊 朗读", "🔊 読み上げ"),
+    "🔇 Muted": ("🔇 不朗读", "🔇 読み上げない"),
+    "Text-to-speech reads this list. Click to mute it.": (
+        "语音朗读会读这个列表。点击可静音。",
+        "このリストを読み上げます。クリックするとミュートします。",
     ),
-    "Don't read usernames for regular chat": ("普通弹幕不朗读用户名", "通常のチャットではユーザー名を読み上げない"),
+    "Text-to-speech doesn't read this list. Click to read it aloud.": (
+        "语音朗读不会读这个列表。点击可开启朗读。",
+        "このリストは読み上げません。クリックすると読み上げます。",
+    ),
+    "When the TTS language is Auto-detect or matches \"Translate to\" (Translation section), every chat "
+    "message is read translated into that language. Otherwise messages are read in their original language.": (
+        "当 TTS 语言为自动检测，或与「翻译为」语言（翻译设置）相同时，所有弹幕都会翻译成该语言后朗读；否则按原文语言朗读。",
+        "TTS の言語が自動検出、または「翻訳先」（翻訳セクション）と同じ場合、すべてのチャットをその言語に翻訳して読み上げます。異なる場合は元の言語で読み上げます。",
+    ),
+    "⚠️ Not active: set the TTS language to Auto-detect or to the same language as \"Translate to\" ({target}).": (
+        "⚠️ 未生效：请把 TTS 语言设为自动检测，或与「翻译为」相同的语言（{target}）。",
+        "⚠️ 無効：TTS の言語を自動検出、または「翻訳先」と同じ言語（{target}）にしてください。",
+    ),
+    "Don't read usernames": ("不朗读用户名", "ユーザー名を読み上げない"),
     "Reads only the message text. Gifts and Super Chats still say who sent them.": (
         "只朗读消息内容。礼物和醒目留言仍会说出发送者。",
         "メッセージ本文のみを読み上げます。ギフトとスーパーチャットは送り主の名前も読み上げます。",
@@ -234,7 +291,8 @@ _STRINGS: dict[str, tuple[str, str]] = {
     "⏭ Skipped the current message": ("⏭ 已跳过当前消息", "⏭ 現在のメッセージをスキップしました"),
     "Speed (WPM)": ("语速（WPM）", "速度（WPM）"),
     "Volume": ("音量", "音量"),
-    "Show join events": ("显示进场消息", "入室イベントを表示"),
+    "🙈 Hide": ("🙈 隐藏", "🙈 非表示"),
+    "👁️ Show": ("👁️ 显示", "👁️ 表示"),
     "Max messages displayed": ("最多显示消息数", "最大表示メッセージ数"),
     "🗑️ Clear chat history": ("🗑️ 清空弹幕记录", "🗑️ チャット履歴を消去"),
     # Option labels from src modules
@@ -245,13 +303,13 @@ _STRINGS: dict[str, tuple[str, str]] = {
     "Chinese (繁體中文)": ("繁體中文", "中国語（繁體中文）"),
     "Korean (한국어)": ("韩语（한국어）", "韓国語（한국어）"),
     "English": ("英语（English）", "英語（English）"),
-    "Auto (pinyin for Chinese, hiragana for Japanese)": (
-        "自动（中文用拼音，日语用平假名）",
-        "自動（中国語はピンイン、日本語はひらがな）",
+    "Auto (pinyin for Chinese, furigana for Japanese)": (
+        "自动（中文用拼音，日语用振假名）",
+        "自動（中国語はピンイン、日本語は振り仮名）",
     ),
     "Pinyin": ("拼音", "ピンイン"),
-    "Hiragana": ("平假名", "ひらがな"),
-    "Pinyin + Hiragana": ("拼音 + 平假名", "ピンイン + ひらがな"),
+    "Furigana": ("振假名", "振り仮名"),
+    "Pinyin + Furigana": ("拼音 + 振假名", "ピンイン + 振り仮名"),
     "Off": ("关闭", "オフ"),
     # ── Chat rendering ───────────────────────────────────────────────────────
     "Block this user (hides their messages; saved permanently)": (
@@ -302,9 +360,17 @@ _STRINGS: dict[str, tuple[str, str]] = {
     "No gifts or Super Chats yet.": ("还没有礼物或醒目留言。", "まだギフトやスーパーチャットはありません。"),
     "Joins": ("进场", "入室"),
     "No one has joined yet.": ("还没有人进场。", "まだ誰も入室していません。"),
-    "Show viewers entering the room in a separate feed under Gifts & Super Chats.": (
-        "在“礼物与醒目留言”下方的单独列表中显示进场的观众。",
-        "入室した視聴者を「ギフトとスーパーチャット」の下の別欄に表示します。"),
+    "Show or hide viewers entering the room.": ("显示或隐藏进场的观众。", "入室した視聴者を表示／非表示にします。"),
+    "Layout": ("布局", "レイアウト"),
+    "◫ 2 columns": ("◫ 2 栏", "◫ 2 列"),
+    "☰ 1 column": ("☰ 1 栏", "☰ 1 列"),
+    "Use ▲ ▼ on each list to change its position, and ◀ ▶ to move it to the other column.": (
+        "用各列表上的 ▲ ▼ 调整位置，◀ ▶ 移到另一栏。",
+        "各リストの ▲ ▼ で位置を変更し、◀ ▶ でもう一方の列へ移動します。"),
+    "Move up": ("上移", "上へ移動"),
+    "Move down": ("下移", "下へ移動"),
+    "Move to the left column": ("移到左栏", "左の列へ移動"),
+    "Move to the right column": ("移到右栏", "右の列へ移動"),
     "Thanked": ("已感谢", "お礼済み"),
     "Mark as thanked": ("标为已感谢", "お礼済みにする"),
     "Undo: mark as not thanked yet": ("撤销：标为未感谢", "取り消し：未お礼に戻す"),
@@ -497,15 +563,38 @@ _STRINGS: dict[str, tuple[str, str]] = {
     "In your own browser, export the site's cookies with an extension such as "
     "\"Get cookies.txt LOCALLY\" or \"Cookie-Editor\" (Export → JSON or Netscape), or copy the "
     "Cookie request header from DevTools (F12 → Network → any request to the site). "
-    "Paste it below or upload the exported file. Only cookies for the chosen site are used.": (
+    "Then click 📋 Paste from clipboard — the site is detected and the cookies are checked right away.": (
         "在你自己的浏览器中，用 \"Get cookies.txt LOCALLY\" 或 \"Cookie-Editor\" 等扩展导出该网站的 Cookie"
         "（导出为 JSON 或 Netscape 格式），或从开发者工具复制 Cookie 请求头（F12 → 网络 → 任意发往该网站的请求）。"
-        "粘贴到下方或上传导出的文件。只会使用所选网站的 Cookie。",
+        "然后点击 📋 从剪贴板粘贴——会自动识别网站并立即检查 Cookie。",
         "自分のブラウザで \"Get cookies.txt LOCALLY\" や \"Cookie-Editor\" などの拡張機能を使ってサイトの Cookie を"
         "エクスポートするか（JSON または Netscape 形式）、開発者ツールから Cookie リクエストヘッダーをコピーしてください"
-        "（F12 → ネットワーク → サイトへの任意のリクエスト）。下に貼り付けるか、エクスポートしたファイルをアップロードします。"
-        "選択したサイトの Cookie だけが使われます。",
+        "（F12 → ネットワーク → サイトへの任意のリクエスト）。次に 📋 クリップボードから貼り付け をクリックすると、"
+        "サイトが自動で判別され、Cookie がすぐに確認されます。",
     ),
+    "📋 Paste from clipboard": ("📋 从剪贴板粘贴", "📋 クリップボードから貼り付け"),
+    "🧹 Clear box": ("🧹 清空输入框", "🧹 入力欄をクリア"),
+    "This browser didn't allow reading the clipboard. Click in the box below and press "
+    "Ctrl+V instead.": (
+        "此浏览器不允许读取剪贴板。请点击下方输入框，然后按 Ctrl+V。",
+        "このブラウザではクリップボードを読み取れませんでした。下の入力欄をクリックして Ctrl+V を押してください。",
+    ),
+    "Picked automatically when the pasted cookies show which site they are for.": (
+        "当粘贴的 Cookie 能看出属于哪个网站时，会自动选择。",
+        "貼り付けた Cookie からサイトが分かる場合は自動で選ばれます。",
+    ),
+    "🔑 Your saved logins": ("🔑 已保存的登录", "🔑 保存済みのログイン"),
+    "— not logged in": ("— 未登录", "— 未ログイン"),
+    "logged in": ("已登录", "ログイン済み"),
+    "❔ saved (couldn't check)": ("❔ 已保存（无法检查）", "❔ 保存済み（確認できません）"),
+    "⚠️ expired": ("⚠️ 已过期", "⚠️ 期限切れ"),
+    "🗑️ Delete": ("🗑️ 删除", "🗑️ 削除"),
+    "Forget your login cookies for this site (also removed from this browser).": (
+        "删除你在该网站的登录 Cookie（也会从此浏览器中移除）。",
+        "このサイトのログイン Cookie を削除します（このブラウザからも削除されます）。",
+    ),
+    "🗑️ Delete all logins": ("🗑️ 删除所有登录", "🗑️ すべてのログインを削除"),
+    "Deleted all your logins.": ("已删除你的所有登录。", "すべてのログインを削除しました。"),
     "Cookies": ("Cookie", "Cookie"),
     "…or upload an exported file": ("…或上传导出的文件", "…またはエクスポートしたファイルをアップロード"),
     "No cookies for {site} found in that text.": ("在该文本中未找到 {site} 的 Cookie。", "そのテキストに {site} の Cookie が見つかりません。"),

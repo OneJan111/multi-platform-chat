@@ -1,7 +1,7 @@
 import base64
 import unittest
 
-from src.bilibili import DanmakuListener, _decode_send_gift_v2
+from src.bilibili import DanmakuListener, _decode_interact_word_v2, _decode_send_gift_v2
 
 
 def _varint(n: int) -> bytes:
@@ -176,6 +176,19 @@ class BilibiliGiftTests(unittest.TestCase):
 
     def test_invalid_protobuf_is_ignored(self):
         self.assertEqual(_decode_send_gift_v2("not base64!!"), [])
+        self.assertEqual(_decode_interact_word_v2("not base64!!"), {})
+
+    def test_interact_word_v2_entry_is_recorded_once(self):
+        pb = b"".join([_field(1, 42), _field(2, "观众"), _field(5, 1), _field(7, 1760000000)])
+        data = _decode_interact_word_v2(base64.b64encode(pb).decode())
+        self.assertEqual(data, {"uid": 42, "uname": "观众", "msg_type": 1, "timestamp": 1760000000})
+
+        listener = DanmakuListener.__new__(DanmakuListener)
+        listener.messages = []
+        listener._enter(data)
+        listener._enter(dict(data))  # same entry again (e.g. V1 + V2)
+        listener._enter({**data, "msg_type": 2})  # a follow, not an entry
+        self.assertEqual([(m["type"], m["author"]) for m in listener.messages], [("enter", "观众")])
 
     def test_gift_from_guard_member_carries_membership(self):
         message = DanmakuListener._gift_message({
@@ -274,6 +287,20 @@ class BilibiliEmoticonTests(unittest.TestCase):
                          "emoticons": [emo("upower_[甲_1]"), emo("upower_[乙_2]"), emo("upower_[甲_3]")]}]}
         packs = parse_emoticons(resp)
         self.assertEqual([(p["name"], len(p["emotes"])) for p in packs], [("甲", 2), ("乙", 1)])
+        resp = {"data": [{"pkg_name": "装扮表情", "pkg_type": 5, "emoticons": [emo("upower_[请吃红小豆吧！_眨眼]")]},
+                         {"pkg_name": "装扮表情", "pkg_type": 5, "emoticons": [emo("upower_[夏日集_好耶]")]}]}
+        self.assertEqual([p["name"] for p in parse_emoticons(resp)], ["请吃红小豆吧！", "夏日集"])
+
+    def test_garb_pack_labelled_with_up_name(self):
+        from unittest import mock
+        from src import bilibili as b
+        packs = [{"name": "夏日集", "type": 5, "emotes": [{"unique": "upower_[夏日集_好耶]"}]},
+                 {"name": "官方装扮", "type": 5, "emotes": [{"unique": "upower_[官方装扮_a]"}]},
+                 {"name": "通用表情", "type": 1, "emotes": [{"unique": "official_1"}]}]
+        with mock.patch.object(b, "_garb_owners", side_effect=lambda n: {42} if n == "夏日集" else set()), \
+             mock.patch.object(b, "_up_name", return_value="Ya酱"):
+            b.label_garb_packs(packs)
+        self.assertEqual([p["name"] for p in packs], ["夏日集 · Ya酱", "官方装扮", "通用表情"])
 
     def test_upower_pack_prefers_unlocked_tier(self):
         from src.bilibili import parse_upower_emotes
