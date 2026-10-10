@@ -74,9 +74,9 @@ hl = _fresh(hl)
 ytw = _fresh(ytw)
 yt = _fresh(yt)
 bili = _fresh(bili)
-if not hasattr(overlay_server, "render_html"):  # stale copy from before a code update (state survives reload)
-    import importlib
-    overlay_server = importlib.reload(overlay_server)
+reading = _fresh(reading)
+# Overlay state lives on `sys` and ensure_started() replaces a server from an older copy, so reloading is safe.
+overlay_server = _fresh(overlay_server)
 from src.config import (
     BILIBILI_ROOM_ID, CHAT_POLL_INTERVAL, MISSEVAN_ROOM_ID, OBS_HOST, OBS_PORT, OVERLAY_HOST,
     OVERLAY_PUBLIC_URL, YOUTUBE_CHANNEL,
@@ -627,6 +627,39 @@ def _author_html(name: str) -> str:
     return f'<span class="chat-reading">{annotated.replace("<br>", " · ")}</span>'
 
 
+def _message_text_html(msg: dict, text: str) -> str:
+    emote_map = msg.get("emotes") or {}
+    text_html = emotes.text_to_html(
+        text, emote_map, msg.get("sticker_url", ""), msg.get("sticker_caption", False)
+    )
+    mode = st.session_state["sc_reading"]
+    if msg.get("sticker_url"):
+        annotated = reading.annotate_html(text, mode)
+        if not msg.get("sticker_caption"):
+            return text_html
+        if not annotated:
+            return text_html
+        caption_prefix = html_lib.escape(text) + "<br>"
+        if text_html.startswith(caption_prefix):
+            return f'<span class="chat-reading">{annotated}</span>{text_html[len(caption_prefix):]}'
+        return text_html
+
+    source = text
+    placeholders = []
+    for index, code in enumerate(sorted((c for c in emote_map if c in text), key=len, reverse=True)):
+        placeholder = f"STREAMINGEMOTE{index}TOKEN"
+        while placeholder in source:
+            placeholder = "_" + placeholder
+        source = source.replace(code, placeholder)
+        placeholders.append((placeholder, emotes.text_to_html(code, emote_map)))
+    annotated = reading.annotate_html(source, mode)
+    if not annotated:
+        return text_html
+    for placeholder, emote_html in placeholders:
+        annotated = annotated.replace(placeholder, emote_html)
+    return f'<span class="chat-reading">{annotated}</span>'
+
+
 def _render_message(msg: dict, key_prefix: str = "", thank: bool = False):
     # Widget keys must be unique per run even if a platform sends the same message id twice.
     base_key = f"{key_prefix}_{msg['id']}"
@@ -641,13 +674,7 @@ def _render_message(msg: dict, key_prefix: str = "", thank: bool = False):
     ts = _fmt_time(msg.get("timestamp", ""))
     author = _author_html(msg.get("author", ""))
     text = msg.get("text", "")
-    text_html = emotes.text_to_html(text, msg.get("emotes"), msg.get("sticker_url", ""), msg.get("sticker_caption", False))
-    # Super Chats and gifts get pinyin / furigana so their text (and gift names) can be read aloud.
-    reading_aid = "super" in msg.get("type", "").lower() or msg.get("type") == "gift"
-    if reading_aid:
-        annotated = reading.annotate_html(text, st.session_state["sc_reading"])
-        if annotated:
-            text_html = f'<span class="chat-reading">{annotated}</span>'
+    text_html = _message_text_html(msg, text)
     translation_html = ""
     if st.session_state["translate_enabled"] and text and msg.get("type") != "enter":
         target = st.session_state["translate_target"]
@@ -655,13 +682,11 @@ def _render_message(msg: dict, key_prefix: str = "", thank: bool = False):
         if translated is None:
             translation_html = f'<div class="chat-translation pending">🌐 {t("translating…")}</div>'
         elif translated:
-            # The translation's language is known: furigana for Japanese (all messages), pinyin for
-            # Chinese (Super Chats and gifts, like their original text); none when 注音 is off.
             rd_mode = ""
             if st.session_state["sc_reading"] != "off":
                 if target.startswith("ja"):
                     rd_mode = "hiragana"
-                elif target.startswith("zh") and reading_aid:
+                elif target.startswith("zh"):
                     rd_mode = "pinyin"
             annotated = reading.annotate_html(translated, rd_mode) if rd_mode else ""
             body = f'<span class="chat-reading">{annotated}</span>' if annotated else html_lib.escape(translated)
@@ -2364,6 +2389,18 @@ with tab_chat:
     def _chat_feed():
         chat_head = st.container(horizontal=True, vertical_alignment="center")
         chat_head.markdown(f"**💬 {t('Chat')}**", width="content")
+        with chat_head.popover(f"🔤 {t('Chat reading aid')}"):
+            _rd_keys = list(reading.MODES)
+            st.selectbox(
+                t("Chat reading aid"),
+                _rd_keys,
+                index=_rd_keys.index(st.session_state["sc_reading"]),
+                key="sc_reading_pick",
+                format_func=lambda k: t(reading.MODES[k]),
+                help=t("Shows pinyin / furigana above Chinese characters in chat, Super Chats, gifts and all usernames "
+                       "so you can read them aloud. Translations get furigana when Japanese and pinyin when Chinese."),
+                on_change=lambda: st.session_state.update(sc_reading=st.session_state["sc_reading_pick"]),
+            )
         _feed_tts_button(chat_head, "tts_read_chat")
         if st.session_state["tts_enabled"]:
             _tts_option(chat_head, "tts_skip_emoji", t("Ignore emoji"),
@@ -2392,20 +2429,6 @@ with tab_chat:
             t("🙏 Mark all thanked"), key="thank_all", disabled=not pending,
             on_click=_set_thanked, args=([m["id"] for m in pending], True),
         )
-        with paid_head.popover(f"🔤 {t('Super Chat reading aid')}"):
-            _rd_keys = list(reading.MODES)
-            # on_change stores the choice before the rerun, so feeds drawn above this one use it too.
-            st.selectbox(
-                t("Super Chat reading aid"),
-                _rd_keys,
-                index=_rd_keys.index(st.session_state["sc_reading"]),
-                key="sc_reading_pick",
-                format_func=lambda k: t(reading.MODES[k]),
-                help=t("Shows pinyin / furigana above Chinese characters in Super Chats, gifts and all usernames "
-                       "so you can read them aloud. Translations get furigana when Japanese, and Super Chat "
-                       "and gift translations get pinyin when Chinese."),
-                on_change=lambda: st.session_state.update(sc_reading=st.session_state["sc_reading_pick"]),
-            )
         _feed_tts_button(paid_head, "tts_announce_paid")
         if st.session_state["tts_enabled"]:
             _tts_option(paid_head, "tts_translate_paid", t("Read translated Super Chats"), t(
