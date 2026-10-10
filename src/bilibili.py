@@ -16,7 +16,18 @@ from typing import Optional
 import requests
 
 from src import emotes, user_login
-from src.config import BILIBILI_ROOM_ID
+from src.config import (
+    BILIBILI_ANCHOR_INFO_URL,
+    BILIBILI_GARB_SEARCH_URL,
+    BILIBILI_GUARD_ICON_URL,
+    BILIBILI_LIVE_ORIGIN,
+    BILIBILI_MASTER_INFO_URL,
+    BILIBILI_POWER_RIGHTS_URL,
+    BILIBILI_ROOM_ID,
+    BILIBILI_ROOM_INFO_URL,
+    BILIBILI_SHORT_LINK_ORIGIN,
+    BILIBILI_WEB_ORIGIN,
+)
 
 try:
     from bilibili_api import Credential, live, user
@@ -56,7 +67,11 @@ def _resolve_short_link(url: str) -> str:
     """b23.tv links (the app's Share button) redirect to the real live.bilibili.com URL."""
     if url in _short_links:
         return _short_links[url]
-    target = url if url.startswith(("http://", "https://")) else "https://" + url
+    if url.startswith(("http://", "https://")):
+        target = url
+    else:
+        _, separator, path = url.partition("/")
+        target = BILIBILI_SHORT_LINK_ORIGIN + (f"/{path}" if separator else "")
     try:
         resp = requests.head(target, allow_redirects=True, timeout=5,
                              headers={"User-Agent": "Mozilla/5.0"})
@@ -127,8 +142,7 @@ def get_room_info(room_id: str = "") -> dict:
 def _get_room_info_http(room_id: str) -> dict:
     """Fallback HTTP call to Bilibili API without library."""
     try:
-        url = f"https://api.live.bilibili.com/room/v1/Room/get_info?room_id={room_id}"
-        resp = requests.get(url, timeout=5)
+        resp = requests.get(BILIBILI_ROOM_INFO_URL, params={"room_id": room_id}, timeout=5)
         data = resp.json().get("data", {})
         return {
             "room_id": room_id,
@@ -153,15 +167,12 @@ def _yuan(coins: int) -> str:
 
 
 _GUARD_NAMES = {1: "总督", 2: "提督", 3: "舰长"}
-_GUARD_ICON = "https://i0.hdslb.com/bfs/activity-plat/static/20200716/1d0c5a1b042efb59f46d4ba1286c6727/icon-guard{}.png"
-
-
 def _guard_icon(level) -> str:
     try:
         level = int(level or 0)
     except (TypeError, ValueError):
         return ""
-    return _GUARD_ICON.format(level) if level in _GUARD_NAMES else ""
+    return BILIBILI_GUARD_ICON_URL.format(level) if level in _GUARD_NAMES else ""
 
 
 def _is_red_pocket_gift(data: dict) -> bool:
@@ -742,9 +753,9 @@ def _garb_owners(name: str) -> set[int]:
         return _garb_owner_cache[name]
     owners: set[int] = set()
     try:
-        resp = requests.get("https://api.bilibili.com/x/garb/v2/mall/home/search",
+        resp = requests.get(BILIBILI_GARB_SEARCH_URL,
                             params={"key_word": name, "pn": 1, "ps": 20}, timeout=5,
-                            headers={"User-Agent": _BROWSER_UA, "Referer": "https://www.bilibili.com/"})
+                            headers={"User-Agent": _BROWSER_UA, "Referer": f"{BILIBILI_WEB_ORIGIN}/"})
         items = ((resp.json().get("data") or {}).get("list")) or []
     except (requests.RequestException, ValueError, AttributeError):
         return owners  # not cached: retry on the next refresh
@@ -782,7 +793,7 @@ def _up_name(uid: int) -> str:
     """A Bilibili user's name; "" if it couldn't be fetched."""
     if uid not in _up_names:
         try:
-            resp = requests.get("https://api.live.bilibili.com/live_user/v1/Master/info",
+            resp = requests.get(BILIBILI_MASTER_INFO_URL,
                                 params={"uid": uid}, timeout=5, headers={"User-Agent": _BROWSER_UA})
             name = str(((resp.json().get("data") or {}).get("info") or {}).get("uname") or "")
         except (requests.RequestException, ValueError, AttributeError):
@@ -839,7 +850,7 @@ def _room_owner(room_id: str) -> tuple[int, str]:
     rid = str(room_id)
     if rid not in _room_names:
         try:
-            resp = requests.get("https://api.live.bilibili.com/live_user/v1/UserInfo/get_anchor_in_room",
+            resp = requests.get(BILIBILI_ANCHOR_INFO_URL,
                                 params={"roomid": rid}, timeout=5, headers={"User-Agent": _BROWSER_UA})
             info = (resp.json().get("data") or {}).get("info") or {}
             if info.get("uid"):
@@ -858,7 +869,7 @@ def _room_owner_uid(room_id: str) -> int:
         return _room_uids[rid]
     uid = 0
     try:
-        resp = requests.get("https://api.live.bilibili.com/room/v1/Room/get_info",
+        resp = requests.get(BILIBILI_ROOM_INFO_URL,
                             params={"room_id": rid}, timeout=5, headers={"User-Agent": _BROWSER_UA})
         uid = int((resp.json().get("data") or {}).get("uid") or 0)
     except (requests.RequestException, ValueError, AttributeError):
@@ -896,9 +907,9 @@ def fetch_upower_emotes(room_id: str) -> tuple[list[dict], str]:
     for cookies in ([login, None] if login else [None]):
         try:
             resp = requests.get(
-                "https://api.bilibili.com/x/upowerv2/gw/rights/index", params={"up_mid": uid}, timeout=8,
-                headers={"User-Agent": _BROWSER_UA, "Referer": f"https://live.bilibili.com/{room_id}",
-                         "Origin": "https://live.bilibili.com"},
+                BILIBILI_POWER_RIGHTS_URL, params={"up_mid": uid}, timeout=8,
+                headers={"User-Agent": _BROWSER_UA, "Referer": f"{BILIBILI_LIVE_ORIGIN}/{room_id}",
+                         "Origin": BILIBILI_LIVE_ORIGIN},
                 cookies=cookies,
             )
             data = resp.json()

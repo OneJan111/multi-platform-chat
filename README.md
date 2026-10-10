@@ -15,7 +15,7 @@ The UI is available in **English / 简体中文 / 日本語** and fits PC and ta
 | 🎁 **Gifts & Super Chats** | Gifts (including free gifts), Super Chats, Super Stickers, memberships and paid questions appear in their own column. YouTube gift memberships show the gifter's purchase ("Gifted 10 memberships") and each recipient ("received a gift membership by …"). Bilibili 🧧 红包 show the sender, price and contents, then the winners when the draw ends. Recipients and winners are listed but not read aloud. Mark each one 🙏 *thanked* (it is greyed out) or *Mark all thanked*. |
 | 👋 **Joins** | Viewers entering the room are listed in their own feed under the gifts, not mixed into chat (use *🙈 Hide* / *👁️ Show* on the Joins header). |
 | 🛡️ **Moderation** | 🚫 on any message blocks that user. Blocked users, keyword & regex filters and allow-lists are saved to `chat_filters.json` and kept after restarts. |
-| 🌐 **Translation** | Inline translation of chat to Chinese (Simplified/Traditional), English, Japanese or Korean. No API key needed. |
+| 🌐 **Translation** | Inline translation of chat to Chinese (Simplified/Traditional), English, Japanese or Korean. Uses Google by default; optionally configure DeepL with an API key. Enabled translations send chat text to the selected provider. |
 | 🔤 **Reading aids** | Pinyin / furigana ruby over Super Chat text and usernames so the streamer can read them aloud; translations into Japanese get furigana, and Super Chat translations into Chinese get pinyin. |
 | 💾 **Remembered settings** | Your settings (TTS, translation, feed layout, text size, OBS overlay options, language, time zone, …) are saved in this browser and restored next time. Room IDs, stream URLs and chat aren't saved; logins use their own cookie. |
 | 🔊 **Text-to-speech** | Reads chat aloud on this computer (offline `pyttsx3` or online gTTS) or **in the viewer's browser with the device's own voices** (used automatically when the dashboard is opened from another device or Streamlit Cloud). Includes: language filter, emoji skipping, reading the translated text (when the TTS language is Auto-detect or matches *Translate to*), skipping usernames for regular chat, **announcing gifts & Super Chats first**, a 🔊 replay button on every message, and **⏭ Skip / ⏹ Stop TTS** buttons to cut off a sensitive comment instantly. |
@@ -50,6 +50,9 @@ The template only contains placeholder values (`your-…`, `xxx`). **Replace the
 | `YOUTUBE_CHANNEL` | Default YouTube channel link (or stream URL) in the Stream Monitoring tab; click *Start listening* to watch it | `https://www.youtube.com/@Ya-chan` |
 | `BILIBILI_ROOM_ID` | Default Bilibili live room | — |
 | `MISSEVAN_ROOM_ID` | Default MissEvan live room | `869215180` |
+| `TRANSLATION_PROVIDER` | Translation service: `google` or `deepl` | `google` |
+| `DEEPL_API_KEY` | DeepL API key (required when `TRANSLATION_PROVIDER=deepl`) | — |
+| `DEEPL_TRANSLATE_URL` | DeepL API endpoint; use `https://api-free.deepl.com/v2/translate` for Free or `https://api.deepl.com/v2/translate` for Pro | DeepL API Free |
 | `OBS_HOST` | OBS WebSocket host | `localhost` |
 | `OBS_PORT` | OBS WebSocket port | `4455` |
 | `OBS_PASSWORD` | OBS WebSocket password | — |

@@ -19,14 +19,20 @@ from urllib.parse import unquote, urlparse
 import requests
 
 from src import emotes, user_login
+from src.config import (
+    YOUTUBE_ACCOUNT_MENU_URL,
+    YOUTUBE_ACCOUNTS_LIST_URL,
+    YOUTUBE_CHAT_PAGE_URL,
+    YOUTUBE_GET_LIVE_CHAT_URL,
+    YOUTUBE_WEB_ORIGIN,
+    YOUTUBE_SEND_CHAT_URL,
+    YOUTUBE_WATCH_PAGE_URL,
+)
 
 _UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
 )
-_CHAT_PAGE = "https://www.youtube.com/live_chat"
-_WATCH_PAGE = "https://www.youtube.com/watch"
-_GET_LIVE_CHAT = "https://www.youtube.com/youtubei/v1/live_chat/get_live_chat"
 _TIMEOUT = 10
 
 _session = requests.Session()
@@ -154,7 +160,7 @@ def channel_emojis(video_id: str, fetch: bool = False, refresh: bool = False) ->
         _picker_fetched[video_id] = time.time()
         try:
             page = _auth_session(login_cookies()).get(
-                _CHAT_PAGE, params={"is_popout": 1, "v": video_id}, timeout=_TIMEOUT).text
+                YOUTUBE_CHAT_PAGE_URL, params={"is_popout": 1, "v": video_id}, timeout=_TIMEOUT).text
             _remember_emojis(video_id, _initial_data(page, "ytInitialData"))
         except requests.RequestException:
             pass
@@ -313,7 +319,7 @@ def _next_continuation(continuations: list) -> tuple[str, int]:
 
 def _open(video_id: str) -> str:
     """Load the chat window page and return the continuation for the full "Live chat" view."""
-    resp = _session.get(_CHAT_PAGE, params={"is_popout": 1, "v": video_id}, timeout=_TIMEOUT)
+    resp = _session.get(YOUTUBE_CHAT_PAGE_URL, params={"is_popout": 1, "v": video_id}, timeout=_TIMEOUT)
     if resp.status_code != 200:
         raise ChatUnavailable(f"YouTube returned HTTP {resp.status_code} for the chat page.")
     ver = re.search(r'"INNERTUBE_CONTEXT_CLIENT_VERSION":"([^"]+)"', resp.text)
@@ -366,7 +372,7 @@ def get_messages(video_id: str, continuation: str = "",
             "context": {"client": {"clientName": "WEB", "clientVersion": _client_version[video_id]}},
             "continuation": continuation,
         }
-        resp = _session.post(_GET_LIVE_CHAT, params={"prettyPrint": "false"}, json=body, timeout=_TIMEOUT)
+        resp = _session.post(YOUTUBE_GET_LIVE_CHAT_URL, params={"prettyPrint": "false"}, json=body, timeout=_TIMEOUT)
         data = resp.json()
     except ChatUnavailable:
         return [], "", 10000
@@ -397,7 +403,7 @@ def get_messages(video_id: str, continuation: str = "",
 def get_video_status(video_id: str) -> dict:
     """Live status from the public watch page, in the same shape as youtube.get_video_live_status."""
     try:
-        resp = _session.get(_WATCH_PAGE, params={"v": video_id}, timeout=_TIMEOUT)
+        resp = _session.get(YOUTUBE_WATCH_PAGE_URL, params={"v": video_id}, timeout=_TIMEOUT)
     except requests.RequestException:
         return {}
     player = _initial_data(resp.text, "ytInitialPlayerResponse")
@@ -449,9 +455,9 @@ def channel_url(value: str) -> str:
     """Normalise a channel link / @handle / UC… ID to https://www.youtube.com/<channel>, or "" if not a channel."""
     value = value.strip().rstrip("/")
     if _HANDLE_RE.match(value):
-        return f"https://www.youtube.com/{value}"
+        return f"{YOUTUBE_WEB_ORIGIN}/{value}"
     if _CHANNEL_ID_RE.match(value):
-        return f"https://www.youtube.com/channel/{value}"
+        return f"{YOUTUBE_WEB_ORIGIN}/channel/{value}"
     if "://" not in value and "youtube.com" in value:
         value = "https://" + value
     parsed = urlparse(value)
@@ -460,9 +466,9 @@ def channel_url(value: str) -> str:
         return ""
     parts = [unquote(p) for p in parsed.path.split("/") if p]
     if parts and parts[0].startswith("@"):
-        return f"https://www.youtube.com/{parts[0]}"
+        return f"{YOUTUBE_WEB_ORIGIN}/{parts[0]}"
     if len(parts) >= 2 and parts[0] in ("channel", "c", "user"):
-        return f"https://www.youtube.com/{parts[0]}/{parts[1]}"
+        return f"{YOUTUBE_WEB_ORIGIN}/{parts[0]}/{parts[1]}"
     return ""
 
 
@@ -484,7 +490,8 @@ def find_live_video(channel: str) -> dict:
     name = re.search(r'<meta property="og:title" content="([^"]*)"', html)
     result["channel"] = unescape(name.group(1)) if name else ""
     # When the channel is live (or has a scheduled stream), /live serves that stream's watch page.
-    canonical = re.search(r'<link rel="canonical" href="https://www\.youtube\.com/watch\?v=([\w-]{11})"', html)
+    canonical = re.search(
+        rf'<link rel="canonical" href="{re.escape(YOUTUBE_WEB_ORIGIN)}/watch\?v=([\w-]{{11}})"', html)
     if not canonical:
         return result
     player = _initial_data(html, "ytInitialPlayerResponse")
@@ -501,10 +508,6 @@ def find_live_video(channel: str) -> dict:
 # youtube.com authenticates its own requests with the login cookies plus a
 # SAPISIDHASH header (SHA-1 of "timestamp SAPISID origin"); this does the same.
 
-_ORIGIN = "https://www.youtube.com"
-_SEND = "https://www.youtube.com/youtubei/v1/live_chat/send_message"
-_ACCOUNT_MENU = "https://www.youtube.com/youtubei/v1/account/account_menu"
-_ACCOUNTS_LIST = "https://www.youtube.com/youtubei/v1/account/accounts_list"
 _FALLBACK_CLIENT_VERSION = "2.20241001.00.00"
 
 
@@ -545,7 +548,7 @@ def _auth_headers(cookies: dict[str, str]) -> dict[str, str]:
     ts = str(int(time.time()))
 
     def h(scheme: str, secret: str) -> str:
-        return f"{scheme} {ts}_{hashlib.sha1(f'{ts} {secret} {_ORIGIN}'.encode()).hexdigest()}"
+        return f"{scheme} {ts}_{hashlib.sha1(f'{ts} {secret} {YOUTUBE_WEB_ORIGIN}'.encode()).hexdigest()}"
 
     parts = []
     if cookies.get("SAPISID") or cookies.get("__Secure-3PAPISID"):
@@ -556,8 +559,8 @@ def _auth_headers(cookies: dict[str, str]) -> dict[str, str]:
         parts.append(h("SAPISID3PHASH", cookies["__Secure-3PAPISID"]))
     return {
         "Authorization": " ".join(parts),
-        "Origin": _ORIGIN,
-        "X-Origin": _ORIGIN,
+        "Origin": YOUTUBE_WEB_ORIGIN,
+        "X-Origin": YOUTUBE_WEB_ORIGIN,
         "X-Goog-AuthUser": "0",
         "Content-Type": "application/json",
         # Act as a secondary channel (brand account) of the same Google login; empty = the main channel.
@@ -597,7 +600,7 @@ def list_channels(cookies: dict[str, str] | None = None) -> dict:
             "context": {"client": {"clientName": "WEB", "clientVersion": _FALLBACK_CLIENT_VERSION, "hl": "en"}},
             "accountReadMask": {"returnOwner": True, "returnBrandAccounts": True, "returnPersonaAccounts": False},
         }
-        resp = s.post(_ACCOUNTS_LIST, params={"prettyPrint": "false"}, json=body, headers=headers, timeout=_TIMEOUT)
+        resp = s.post(YOUTUBE_ACCOUNTS_LIST_URL, params={"prettyPrint": "false"}, json=body, headers=headers, timeout=_TIMEOUT)
         if resp.status_code != 200:
             return {"channels": [], "error": f"HTTP {resp.status_code}"}
         channels, seen = [], set()
@@ -628,7 +631,7 @@ def verify_login(cookies: dict[str, str] | None = None) -> dict:
     try:
         s = _auth_session(cookies)
         body = {"context": {"client": {"clientName": "WEB", "clientVersion": _FALLBACK_CLIENT_VERSION, "hl": "en"}}}
-        resp = s.post(_ACCOUNT_MENU, params={"prettyPrint": "false"}, json=body, headers=_auth_headers(cookies), timeout=_TIMEOUT)
+        resp = s.post(YOUTUBE_ACCOUNT_MENU_URL, params={"prettyPrint": "false"}, json=body, headers=_auth_headers(cookies), timeout=_TIMEOUT)
         if resp.status_code != 200:
             return {"is_login": False, "name": ""}
         m = (re.search(r'"accountName":\{"simpleText":"((?:[^"\\]|\\.)*)"', resp.text)
@@ -646,7 +649,7 @@ def send_message(video_id: str, message: str) -> tuple[bool, str]:
         return False, "Not logged in to YouTube — import cookies in the 🍪 Cookies tab."
     try:
         s = _auth_session(cookies)
-        page = s.get(_CHAT_PAGE, params={"is_popout": 1, "v": video_id}, timeout=_TIMEOUT).text
+        page = s.get(YOUTUBE_CHAT_PAGE_URL, params={"is_popout": 1, "v": video_id}, timeout=_TIMEOUT).text
         if '"LOGGED_IN":true' not in page:
             return False, "YouTube says these cookies are signed out — re-import them in the 🍪 Cookies tab."
         _remember_emojis(video_id, _initial_data(page, "ytInitialData"))
@@ -666,7 +669,7 @@ def send_message(video_id: str, message: str) -> tuple[bool, str]:
             "params": params.group(1),
             "richMessage": {"textSegments": message_segments(message, channel_emojis(video_id))},
         }
-        resp = s.post(_SEND, params={"prettyPrint": "false"}, json=body, headers=_auth_headers(cookies), timeout=_TIMEOUT)
+        resp = s.post(YOUTUBE_SEND_CHAT_URL, params={"prettyPrint": "false"}, json=body, headers=_auth_headers(cookies), timeout=_TIMEOUT)
         data = resp.json()
         if resp.status_code == 200 and "error" not in data:
             # Blocked sends (slow mode, too long, ...) come back as a system message instead of the chat item.

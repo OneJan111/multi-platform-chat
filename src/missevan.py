@@ -13,12 +13,19 @@ from typing import Optional
 import requests
 
 from src import user_login
+from src.config import (
+    MISSEVAN_CHAT_HISTORY_URL,
+    MISSEVAN_CHATROOM_META_URL,
+    MISSEVAN_ROOM_INFO_URL,
+    MISSEVAN_SEND_MESSAGE_URL,
+    MISSEVAN_USER_INFO_URL,
+    MISSEVAN_WEB_ORIGIN,
+    MISSEVAN_WEBSOCKET_URL,
+)
 
 log = logging.getLogger(__name__)
 
 _UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36"
-_API = "https://fm.missevan.com/api"
-_WS_URL = "wss://im.missevan.com/ws?room_id={room_id}"
 _HEARTBEAT = "\u2764\ufe0f"  # the site's keep-alive frame is literally "❤️"
 _HEARTBEAT_EVERY = 25
 
@@ -52,10 +59,10 @@ def has_login() -> bool:
 def _session(cookies: Optional[dict[str, str]] = None) -> requests.Session:
     """Session with the saved login cookies (if any); /api/user/info adds the FM_SESS cookies the chat server needs."""
     s = requests.Session()
-    s.headers.update({"User-Agent": _UA, "Referer": "https://fm.missevan.com/", "Origin": "https://fm.missevan.com"})
+    s.headers.update({"User-Agent": _UA, "Referer": f"{MISSEVAN_WEB_ORIGIN}/", "Origin": MISSEVAN_WEB_ORIGIN})
     for name, value in (login_cookies() if cookies is None else cookies).items():
         s.cookies.set(name, value, domain=".missevan.com")
-    s.get(f"{_API}/user/info", timeout=10)
+    s.get(MISSEVAN_USER_INFO_URL, timeout=10)
     return s
 
 
@@ -63,7 +70,7 @@ def verify_login(cookies: Optional[dict[str, str]] = None) -> dict:
     """Who the cookies belong to: {"is_login", "username", "user_id"} (+ "error" on failure)."""
     try:
         s = _session(cookies)
-        user = (s.get(f"{_API}/user/info", timeout=10).json().get("info") or {}).get("user") or {}
+        user = (s.get(MISSEVAN_USER_INFO_URL, timeout=10).json().get("info") or {}).get("user") or {}
         return {"is_login": bool(user.get("user_id")), "username": user.get("username", ""), "user_id": user.get("user_id", 0)}
     except Exception as exc:
         return {"is_login": False, "username": "", "user_id": 0, "error": str(exc)}
@@ -85,7 +92,7 @@ def send_message(room_id: str, message: str) -> tuple[bool, str]:
         csrf = s.cookies.get("bili_jct")
         if csrf:
             body["csrf"] = csrf
-        r = s.post(f"{_API}/chatroom/message/send", json=body, headers={"Referer": f"https://fm.missevan.com/live/{room_id}"}, timeout=10)
+        r = s.post(MISSEVAN_SEND_MESSAGE_URL, json=body, headers={"Referer": f"{MISSEVAN_WEB_ORIGIN}/live/{room_id}"}, timeout=10)
         data = r.json()
         if data.get("code") == 0:
             return True, ""
@@ -97,7 +104,7 @@ def send_message(room_id: str, message: str) -> tuple[bool, str]:
 def get_room_info(room_id: str) -> dict:
     """Room title, streamer, live flag and audience size. Returns {} on failure."""
     try:
-        r = requests.get(f"{_API}/v2/live/{room_id}", headers={"User-Agent": _UA}, timeout=10)
+        r = requests.get(MISSEVAN_ROOM_INFO_URL.format(room_id=room_id), headers={"User-Agent": _UA}, timeout=10)
         data = r.json()
         if data.get("code") != 0:
             return {}
@@ -124,7 +131,7 @@ def get_room_info(room_id: str) -> dict:
 
 def _admins(s: requests.Session, room_id: str) -> set[int]:
     try:
-        d = s.get(f"{_API}/v2/chatroom/meta", params={"room_id": room_id}, timeout=10).json()
+        d = s.get(MISSEVAN_CHATROOM_META_URL, params={"room_id": room_id}, timeout=10).json()
         return {a["user_id"] for a in (d.get("info") or {}).get("members", {}).get("admin", [])}
     except Exception:
         return set()
@@ -231,9 +238,9 @@ class MissEvanListener:
                     first = False
                 cookie = "; ".join(f"{c.name}={c.value}" for c in s.cookies)
                 self._ws = websocket.create_connection(
-                    _WS_URL.format(room_id=self.room_id),
+                    MISSEVAN_WEBSOCKET_URL.format(room_id=self.room_id),
                     header=[f"User-Agent: {_UA}", f"Cookie: {cookie}"],
-                    origin="https://fm.missevan.com",
+                    origin=MISSEVAN_WEB_ORIGIN,
                     timeout=5,
                 )
                 self._ws.send(json.dumps({"action": "join", "uuid": str(uuid.uuid4()), "type": "room", "room_id": int(self.room_id)}))
@@ -271,7 +278,7 @@ class MissEvanListener:
 
     def _load_history(self, s: requests.Session):
         try:
-            d = s.get(f"{_API}/v2/chatroom/history/message", params={"room_id": self.room_id}, timeout=10).json()
+            d = s.get(MISSEVAN_CHAT_HISTORY_URL, params={"room_id": self.room_id}, timeout=10).json()
             for h in (d.get("info") or {}).get("history") or []:
                 if h.get("type") == "message":
                     msg = self._chat(h.get("msg_id", ""), h.get("user") or {}, h.get("message", ""), h.get("create_time"))

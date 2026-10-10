@@ -4,6 +4,7 @@ from __future__ import annotations
 import requests
 
 from src import user_login
+from src.config import BILIBILI_LOGIN_INFO_URL, BILIBILI_WEB_ORIGIN
 
 try:
     import browser_cookie3
@@ -172,9 +173,9 @@ def verify_bilibili_login(cookies: dict[str, str]) -> dict:
     """Ask Bilibili who these cookies belong to. Returns {"is_login", "uname", "mid"}."""
     try:
         resp = requests.get(
-            "https://api.bilibili.com/x/web-interface/nav",
+            BILIBILI_LOGIN_INFO_URL,
             cookies={k: cookies[k] for k in BILIBILI_LOGIN_COOKIES if k in cookies},
-            headers={"User-Agent": "Mozilla/5.0", "Referer": "https://www.bilibili.com"},
+            headers={"User-Agent": "Mozilla/5.0", "Referer": BILIBILI_WEB_ORIGIN},
             timeout=5,
         )
         data = resp.json().get("data") or {}

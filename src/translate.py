@@ -11,7 +11,13 @@ from concurrent.futures import ThreadPoolExecutor
 
 import requests
 
-_ENDPOINT = "https://clients5.google.com/translate_a/t"
+from src.config import (
+    DEEPL_API_KEY,
+    DEEPL_TRANSLATE_URL,
+    GOOGLE_TRANSLATE_URL,
+    TRANSLATION_PROVIDER,
+)
+
 _RETRY_AFTER = 60.0  # seconds before retrying a failed translation
 _MAX_CACHE = 3000
 
@@ -32,13 +38,40 @@ _pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="translate")
 _session = requests.Session()  # keep-alive: a cold TLS connection costs ~2s
 _BATCH_ITEMS = 25
 _BATCH_CHARS = 600  # CJK expands ~9x when URL-encoded; keep request URLs well under limits
+_DEEPL_TARGETS = {
+    "zh-CN": "ZH",
+    "zh-TW": "ZH-HANT",
+    "en": "EN",
+    "ja": "JA",
+    "ko": "KO",
+}
 
 
 def translate_batch(texts: list[str], target: str, timeout: float = 10.0) -> list[tuple[str, str]]:
     """Blocking translation of several texts in one request. Returns [(translated, source_lang)]."""
+    if TRANSLATION_PROVIDER == "deepl":
+        try:
+            deepl_target = _DEEPL_TARGETS[target]
+        except KeyError as exc:
+            raise ValueError(f"DeepL does not support the configured target language: {target}") from exc
+        resp = _session.post(
+            DEEPL_TRANSLATE_URL,
+            json={"text": texts, "target_lang": deepl_target},
+            headers={"Authorization": f"DeepL-Auth-Key {DEEPL_API_KEY}"},
+            timeout=timeout,
+        )
+        resp.raise_for_status()
+        translations = resp.json().get("translations", [])
+        if len(translations) != len(texts):
+            raise ValueError(f"expected {len(texts)} results, got {len(translations)}")
+        return [
+            (item["text"], str(item.get("detected_source_language", "")).lower())
+            for item in translations
+        ]
+
     params = [("client", "dict-chrome-ex"), ("sl", "auto"), ("tl", target)]
     params += [("q", t) for t in texts]
-    resp = _session.get(_ENDPOINT, params=params, timeout=timeout)
+    resp = _session.get(GOOGLE_TRANSLATE_URL, params=params, timeout=timeout)
     resp.raise_for_status()
     data = resp.json()
     if len(data) != len(texts):

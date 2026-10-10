@@ -8,7 +8,7 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
 from src import youtube_web
-from src.config import YOUTUBE_API_KEY
+from src.config import YOUTUBE_API_KEY, YOUTUBE_API_SERVICE, YOUTUBE_API_VERSION
 
 
 def _api_key() -> str:
@@ -19,7 +19,7 @@ def _api_key() -> str:
 
 def _read_service():
     """Data API service for public reads when YOUTUBE_API_KEY is set, else None (use youtube_web)."""
-    return build("youtube", "v3", developerKey=_api_key()) if _api_key() else None
+    return build(YOUTUBE_API_SERVICE, YOUTUBE_API_VERSION, developerKey=_api_key()) if _api_key() else None
 
 
 # Chat IDs with this prefix are read through youtube_web (no login / API key) using the video ID.
