@@ -1,6 +1,7 @@
 ﻿# Secrets
 /.env
 /.login_secret
+/.streamlit/secrets.toml
 /youtube_token.json
 
 # Local data (blocked viewers list)

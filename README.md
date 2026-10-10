@@ -60,6 +60,7 @@ The template only contains placeholder values (`your-…`, `xxx`). **Replace the
 | `LOGIN_SECRET` | Key that encrypts each user's logins in their browser. Changing it logs everyone out | random, in `.login_secret` |
 
 > ⚠️ `.env` and `.login_secret` contain secrets and are listed in `.gitignore`. Never commit or share them.
+> For Streamlit Community Cloud, set `LOGIN_SECRET = "your-long-random-secret"` in the app's **Secrets** settings. Locally, you can put the same TOML entry in `.streamlit/secrets.toml`. The `.env`/environment value takes precedence; if neither is set, the app generates `.login_secret`.
 
 ## Running
 

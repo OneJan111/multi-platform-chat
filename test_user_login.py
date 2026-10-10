@@ -1,5 +1,12 @@
+import base64
+import hashlib
+import os
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
+from cryptography.fernet import Fernet
 from src import bilibili as bili
 from src import browser_cookies as bc
 from src import missevan as me
@@ -59,6 +66,21 @@ class UserLoginTests(unittest.TestCase):
         self.assertEqual(ul.decode("garbage"), {})
         self.assertEqual(ul.join_cookies({f"{ul.COOKIE_NAME}_n": "2", f"{ul.COOKIE_NAME}_0": "x"}), "")
         self.assertEqual(ul.encode({}), "")
+
+    def test_fernet_uses_streamlit_toml_secret(self):
+        with TemporaryDirectory() as temp_dir:
+            secret_file = Path(temp_dir) / ".login_secret"
+            with (
+                patch.dict(os.environ, {"LOGIN_SECRET": ""}),
+                patch("streamlit.secrets", {"LOGIN_SECRET": "toml-secret"}),
+                patch.object(ul, "_SECRET_FILE", secret_file),
+            ):
+                expected = Fernet(
+                    base64.urlsafe_b64encode(hashlib.sha256(b"toml-secret").digest())
+                )
+                token = ul._fernet().encrypt(b"test")
+                self.assertEqual(expected.decrypt(token), b"test")
+                self.assertFalse(secret_file.exists())
 
 
 if __name__ == "__main__":

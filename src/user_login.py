@@ -135,6 +135,15 @@ def _fernet():
 
     secret = os.getenv("LOGIN_SECRET", "").strip()
     if not secret:
+        import streamlit as st
+
+        try:
+            secret = str(st.secrets.get("LOGIN_SECRET", "")).strip()
+        except FileNotFoundError as exc:
+            if exc.__cause__ is not None:
+                raise
+
+    if not secret:
         if not _SECRET_FILE.exists():
             _SECRET_FILE.write_text(secrets.token_urlsafe(48), encoding="utf-8")
             try:
