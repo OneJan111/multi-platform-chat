@@ -50,6 +50,8 @@ _DEEPL_TARGETS = {
 def translate_batch(texts: list[str], target: str, timeout: float = 10.0) -> list[tuple[str, str]]:
     """Blocking translation of several texts in one request. Returns [(translated, source_lang)]."""
     if TRANSLATION_PROVIDER == "deepl":
+        if not DEEPL_API_KEY:
+            raise RuntimeError("TRANSLATION_PROVIDER is 'deepl' but DEEPL_API_KEY is not set.")
         try:
             deepl_target = _DEEPL_TARGETS[target]
         except KeyError as exc:

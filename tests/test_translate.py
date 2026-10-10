@@ -43,6 +43,16 @@ class TranslationProviderTests(unittest.TestCase):
         get.assert_called_once()
         response.raise_for_status.assert_called_once_with()
 
+    def test_deepl_requires_api_key_only_when_translation_is_requested(self):
+        with (
+            patch.object(translate, "TRANSLATION_PROVIDER", "deepl"),
+            patch.object(translate, "DEEPL_API_KEY", ""),
+            patch.object(translate._session, "post") as post,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "DEEPL_API_KEY is not set"):
+                translate.translate_batch(["hello"], "en")
+        post.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

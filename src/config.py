@@ -48,8 +48,6 @@ DEEPL_API_KEY: str = os.getenv("DEEPL_API_KEY", "").strip()
 TRANSLATION_PROVIDER: str = os.getenv("TRANSLATION_PROVIDER", "google").strip().lower()
 if TRANSLATION_PROVIDER not in {"google", "deepl"}:
     raise ValueError("TRANSLATION_PROVIDER must be 'google' or 'deepl'.")
-if TRANSLATION_PROVIDER == "deepl" and not DEEPL_API_KEY:
-    raise ValueError("DEEPL_API_KEY is required when TRANSLATION_PROVIDER is 'deepl'.")
 
 # YouTube
 YOUTUBE_API_KEY: str = os.getenv("YOUTUBE_API_KEY", "")

@@ -31,6 +31,7 @@ st.set_page_config(
 
 from src import bilibili as bili
 from src import browser_cookies as bc
+from src import config as app_config
 from src import emotes
 from src import highlights as hl
 from src import i18n
@@ -60,6 +61,10 @@ def _fresh(mod):
         mod._loaded_mtime = mtime
     return mod
 
+
+# Refresh shared configuration before modules that import its constants; Streamlit can
+# retain config while reloading modules after a code update.
+app_config = _fresh(app_config)
 
 # Dependencies first: youtube imports youtube_web; bilibili and youtube_web import emotes.
 emotes = _fresh(emotes)
