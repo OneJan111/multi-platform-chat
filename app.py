@@ -165,6 +165,9 @@ h3 .site-icon { margin-right: 0.15em; position: relative; top: -0.08em; }
 .dot-error  { background: #ff5252; }
 /* Invisible helper that reads the encrypted login cookie in the browser (see _restore_user_logins) */
 .st-key-login_cookie_reader { display: none !important; }
+/* Invisible helpers (scripts, style blocks) would each still take a gap in the page */
+[data-testid="stElementContainer"]:has(> [data-testid="stHtml"] > script:only-child),
+[data-testid="stElementContainer"]:has([data-testid="stMarkdownContainer"] > style:only-child) { display: none !important; }
 /* ── Responsive layout (PC + tablet) ── */
 [data-testid="stMainBlockContainer"] {
     padding: 2.5rem 1.5rem 1rem;
@@ -236,6 +239,32 @@ h3 .site-icon { margin-right: 0.15em; position: relative; top: -0.08em; }
 /* Touch screens: bigger tap targets */
 @media (hover: none) and (pointer: coarse) {
     .st-key-chat_feed button, .st-key-paid_feed button { min-height: 2.6rem; min-width: 2.6rem; }
+}
+/* ── Phones ── */
+@media (max-width: 640px) {
+    [data-testid="stMainBlockContainer"] { padding: 3.25rem 0.5rem 1rem; }
+    [data-testid="stMainBlockContainer"] hr { margin: 0.1rem 0; }
+    /* Control rows wrap here: keep the wrapped lines close together (their gap is meant for one line) */
+    [data-testid="stMainBlockContainer"] [data-testid="stHorizontalBlock"] { row-gap: 0.4rem !important; }
+    .st-key-send_targets, .st-key-show_row { column-gap: 0.9rem !important; }
+    /* Feeds always stack on phones, so the 2-column / 1-column switch, its spacer and ◀ ▶ do nothing */
+    .st-key-feed_layout, .st-key-show_row > [data-testid="stElementContainer"]:has([data-testid="stSpace"]),
+    [class*="st-key-move_"][class*="_side"] { display: none !important; }
+    .st-key-emote_row [data-testid="stElementContainer"]:has([data-testid="stCaptionContainer"]) { display: none !important; }
+    /* Feed headers: compact buttons so they take fewer lines */
+    .st-key-chat_paid button { min-height: 2rem; padding: 0.1rem 0.5rem; font-size: 0.85rem; }
+    .st-key-chat_paid [data-testid="stPopover"] button { min-height: 2rem; }
+    /* Message rows: the bubble gets the width, the 🔊 / 🚫 buttons stay tappable */
+    .st-key-chat_feed button, .st-key-paid_feed button {
+        min-height: 2.4rem; min-width: 2.2rem; padding: 0.1rem 0.25rem; font-size: 0.95rem;
+    }
+    .st-key-chat_feed [data-testid="stHorizontalBlock"],
+    .st-key-paid_feed [data-testid="stHorizontalBlock"] { gap: 2px !important; }
+    .chat-bubble { padding: 4px 7px; }
+    /* Feeds grow with their messages up to these heights, so an empty list doesn't take half the screen */
+    .st-key-chat_feed { height: auto !important; min-height: 0; max-height: 60dvh !important; padding-bottom: 1rem; }
+    .st-key-paid_feed { height: auto !important; min-height: 0; max-height: 40dvh !important; padding-bottom: 1rem; }
+    .join-feed { height: auto; max-height: 110px; margin-bottom: 1rem; }
 }
 /* Overlay preview */
 .overlay-box {
@@ -582,20 +611,27 @@ def _render_message(msg: dict, key_prefix: str = "", thank: bool = False):
     author = _author_html(msg.get("author", ""))
     text = msg.get("text", "")
     text_html = emotes.text_to_html(text, msg.get("emotes"), msg.get("sticker_url", ""), msg.get("sticker_caption", False))
-    if "super" in msg.get("type", "").lower():
+    is_sc = "super" in msg.get("type", "").lower()
+    if is_sc:
         annotated = reading.annotate_html(text, st.session_state["sc_reading"])
         if annotated:
             text_html = f'<span class="chat-reading">{annotated}</span>'
     translation_html = ""
     if st.session_state["translate_enabled"] and text and msg.get("type") != "enter":
-        translated = tr.get_translation(text, st.session_state["translate_target"])
+        target = st.session_state["translate_target"]
+        translated = tr.get_translation(text, target)
         if translated is None:
             translation_html = f'<div class="chat-translation pending">🌐 {t("translating…")}</div>'
         elif translated:
-            # Translations into Japanese get furigana (pinyin would be no help) unless 注音 is off.
-            ja_reading = (st.session_state["translate_target"].startswith("ja")
-                          and st.session_state["sc_reading"] != "off")
-            annotated = reading.annotate_html(translated, "hiragana") if ja_reading else ""
+            # The translation's language is known: furigana for Japanese (all messages), pinyin for
+            # Chinese (Super Chats, like their original text); none when 注音 is off.
+            rd_mode = ""
+            if st.session_state["sc_reading"] != "off":
+                if target.startswith("ja"):
+                    rd_mode = "hiragana"
+                elif target.startswith("zh") and is_sc:
+                    rd_mode = "pinyin"
+            annotated = reading.annotate_html(translated, rd_mode) if rd_mode else ""
             body = f'<span class="chat-reading">{annotated}</span>' if annotated else html_lib.escape(translated)
             translation_html = f'<div class="chat-translation">🌐 {body}</div>'
     html = (
@@ -793,9 +829,10 @@ def _feed_tools(head, feed: str, text_size: bool = True):
 
 def _feed_height_css(columns: list[list[str]], stacked: bool, joins_shown: bool) -> str:
     """Fit the scrolling chat / gift boxes to the screen height, sharing it with the other feeds in their column."""
-    if stacked:
-        return (".st-key-chat_feed { height: 50dvh !important; max-height: 50dvh !important; }"
-                ".st-key-paid_feed { height: 35dvh !important; max-height: 35dvh !important; }")
+    if stacked:  # narrower screens use the main stylesheet's heights
+        return ("@media (min-width: 641px) {"
+                ".st-key-chat_feed { height: 50dvh !important; max-height: 50dvh !important; }"
+                ".st-key-paid_feed { height: 35dvh !important; max-height: 35dvh !important; }}")
     rules = []
     for column in columns:
         big = [f for f in column if f != "join"]
@@ -2110,7 +2147,7 @@ def _site_emote_row(yt_chat: str, yt_vid: str, bili_room: str) -> None:
     st.html(_EMOTE_IMG_JS, unsafe_allow_javascript=True)
     _load_emote_pack_prefs()
     _save_emote_pack_prefs()
-    row = st.container(horizontal=True, vertical_alignment="center", gap="small")
+    row = st.container(horizontal=True, vertical_alignment="center", gap="small", key="emote_row")
     row.markdown(f"**{t('Site emotes')}:**", width="content")
     yt_pop = row.popover("YouTube", icon="😀", key="emo_pop_yt", on_change="rerun", disabled=not yt_chat,
                          help=None if yt_chat else t("Start the YouTube listener first."))
@@ -2178,7 +2215,7 @@ with tab_chat:
     # ── Send message ──────────────────────────────────────────────────────────
     yt_chat = st.session_state.get("selected_chat_id", "")
     bili_room_send = st.session_state["bili_room_id"]
-    tgt_row = st.container(horizontal=True, vertical_alignment="center", gap="medium")
+    tgt_row = st.container(horizontal=True, vertical_alignment="center", gap="medium", key="send_targets")
     tgt_row.markdown(f"**{t('Send to')}:**", width="content")
     send_yt = tgt_row.checkbox(
         "YouTube", key="send_yt", value=True, disabled=not yt_chat,
@@ -2239,7 +2276,7 @@ with tab_chat:
     st.divider()
 
     # ── Platform filter ───────────────────────────────────────────────────────
-    show_row = st.container(horizontal=True, vertical_alignment="center", gap="large")
+    show_row = st.container(horizontal=True, vertical_alignment="center", gap="large", key="show_row")
     show_yt = show_row.checkbox("YouTube", key="show_yt")
     show_bili = show_row.checkbox("Bilibili", key="show_bili")
     show_me = show_row.checkbox(t("MissEvan"), key="show_me")
@@ -2328,7 +2365,8 @@ with tab_chat:
                 key="sc_reading_pick",
                 format_func=lambda k: t(reading.MODES[k]),
                 help=t("Shows pinyin / furigana above Chinese characters in Super Chats and all usernames "
-                       "so you can read them aloud. Translations into Japanese get furigana too."),
+                       "so you can read them aloud. Translations get furigana when Japanese, and Super Chat "
+                       "translations get pinyin when Chinese."),
                 on_change=lambda: st.session_state.update(sc_reading=st.session_state["sc_reading_pick"]),
             )
         _feed_tts_button(paid_head, "tts_announce_paid")

@@ -206,9 +206,9 @@ _STRINGS: dict[str, tuple[str, str]] = {
     "Translate to": ("翻译为", "翻訳先"),
     "Super Chat reading aid": ("醒目留言注音", "スーパーチャットの読み仮名"),
     "Shows pinyin / furigana above Chinese characters in Super Chats and all usernames so you can read them aloud. "
-    "Translations into Japanese get furigana too.": (
-        "在醒目留言和所有用户名的汉字上方显示拼音 / 振假名，方便朗读。翻译成日语的文字也会加上振假名。",
-        "スーパーチャットとすべてのユーザー名の漢字の上にピンイン／振り仮名を表示し、読み上げやすくします。日本語への翻訳にも振り仮名を付けます。",
+    "Translations get furigana when Japanese, and Super Chat translations get pinyin when Chinese.": (
+        "在醒目留言和所有用户名的汉字上方显示拼音 / 振假名，方便朗读。日语译文加振假名，醒目留言的中文译文加拼音。",
+        "スーパーチャットとすべてのユーザー名の漢字の上にピンイン／振り仮名を表示し、読み上げやすくします。日本語の翻訳には振り仮名、スーパーチャットの中国語の翻訳にはピンインを付けます。",
     ),
     "🔊 Text-to-Speech": ("🔊 语音朗读", "🔊 読み上げ"),
     "Enable TTS": ("启用语音朗读", "読み上げを有効化"),
