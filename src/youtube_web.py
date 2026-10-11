@@ -18,7 +18,7 @@ from urllib.parse import unquote, urlparse
 
 import requests
 
-from src import emotes, user_login
+from src import emotes, gifts, user_login
 from src.config import (
     YOUTUBE_ACCOUNT_MENU_URL,
     YOUTUBE_ACCOUNTS_LIST_URL,
@@ -257,10 +257,14 @@ def _parse_action(action: dict) -> dict | None:
         msg_type = "textMessageEvent"
     elif kind == "liveChatPaidMessageRenderer":
         msg_type = "superChatEvent"
-        text = f"[Super Chat {_runs_text(r.get('purchaseAmountText', {}))}] {text}".rstrip()
+        amount = _runs_text(r.get("purchaseAmountText", {}))
+        text = f"[Super Chat {amount}] {text}".rstrip()
+        gifts.set_value(extra, *gifts.parse_amount(amount))
     elif kind == "liveChatPaidStickerRenderer":
         msg_type = "superStickerEvent"
-        text = f"[Super Sticker {_runs_text(r.get('purchaseAmountText', {}))}]"
+        amount = _runs_text(r.get("purchaseAmountText", {}))
+        text = f"[Super Sticker {amount}]"
+        gifts.set_value(extra, *gifts.parse_amount(amount))
     elif kind == "liveChatMembershipItemRenderer":
         msg_type = "newSponsorEvent"
         header = _runs_text(r.get("headerSubtext", {})) or _runs_text(r.get("headerPrimaryText", {}))

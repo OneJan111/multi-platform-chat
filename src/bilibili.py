@@ -15,7 +15,7 @@ from typing import Optional
 
 import requests
 
-from src import emotes, user_login
+from src import emotes, gifts, user_login
 from src.config import (
     BILIBILI_ANCHOR_INFO_URL,
     BILIBILI_GARB_SEARCH_URL,
@@ -164,6 +164,11 @@ def _get_room_info_http(room_id: str) -> dict:
 def _yuan(coins: int) -> str:
     """Format gold coins (1000 = ¥1) as yuan."""
     return f"{coins / 1000:g}"
+
+
+def _set_coins(msg: dict, coins) -> dict:
+    """Record a paid event's value in yuan (gold coins / 1000) for the gift leaderboard."""
+    return gifts.set_value(msg, "¥", (coins or 0) / 1000)
 
 
 _GUARD_NAMES = {1: "总督", 2: "提督", 3: "舰长"}
@@ -369,7 +374,7 @@ class DanmakuListener:
             @danmaku.on("SUPER_CHAT_MESSAGE")
             async def on_superchat(event):
                 data = event["data"]["data"]
-                self.messages.append(
+                self.messages.append(gifts.set_value(
                     {
                         "id": f"bili_sc_{time.time_ns()}",
                         "platform": "bilibili",
@@ -385,8 +390,9 @@ class DanmakuListener:
                         "timestamp": str(data.get("start_time", int(time.time()))),
                         "avatar": data.get("user_info", {}).get("face", ""),
                         "color": 16711680,
-                    }
-                )
+                    },
+                    "¥", data.get("price", 0),
+                ))
 
             @danmaku.on("SEND_GIFT")
             async def on_gift(event):
@@ -530,7 +536,7 @@ class DanmakuListener:
         )
         msg["membership"] = _guard_name(data.get("guard_level"))
         msg["membership_icon"] = _guard_icon(data.get("guard_level"))
-        return msg
+        return _set_coins(msg, price_coins if paid else 0)
 
     @staticmethod
     def _guard_text(data: dict, paid_coins: int, list_coins: int) -> str:
@@ -562,6 +568,7 @@ class DanmakuListener:
         paid_coins = entry["paid"] if entry["paid"] is not None else entry["list"]
         # Mutate in place so a toast arriving after GUARD_BUY corrects the shown price.
         entry["msg"]["text"] = self._guard_text(entry["data"], paid_coins, entry["list"] or 0)
+        _set_coins(entry["msg"], paid_coins)
 
     def _red_pocket(self, kind: str, data: dict) -> None:
         """Track a 红包 from purchase to draw.
@@ -643,6 +650,7 @@ class DanmakuListener:
             text += f" · 内含 {entry['awards']}"
         # Mutate in place: the row may already be on screen when the draw's contents arrive.
         entry["msg"]["text"] = text
+        _set_coins(entry["msg"], entry["coins"])
 
     @staticmethod
     def _gift_msg(author: str, uid, avatar: str, text: str, free: bool = False) -> dict:

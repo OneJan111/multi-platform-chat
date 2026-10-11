@@ -21,7 +21,7 @@ class OverlayTests(unittest.TestCase):
         self.assertEqual(len(data["messages"]), 5)
         self.assertEqual(data["messages"][0], {
             "author": "viewer", "text": "message 2",
-            "translation": "en: message 2", "platform": "missevan",
+            "translation": "en: message 2", "platform": "missevan", "at": 0,
         })
         self.assertEqual(data["custom_text"], "hello")
         self.assertNotIn("private", json.dumps(data))
@@ -36,7 +36,7 @@ class OverlayTests(unittest.TestCase):
         data = overlay_server.snapshot(messages, True, "en", lambda *_: "translated",
                                        show_username=False)
         self.assertEqual(data["messages"], [{
-            "text": "hello", "translation": "translated", "platform": "youtube",
+            "text": "hello", "translation": "translated", "platform": "youtube", "at": 0,
         }])
         self.assertNotIn("private-name", json.dumps(data))
 
@@ -57,10 +57,9 @@ class OverlayTests(unittest.TestCase):
             {"type": "superStickerEvent", "text": "[Super Sticker $2]", "platform": "youtube"},
             {"type": "gift", "text": "gift", "platform": "bilibili"},
         ]
-        data = overlay_server.view(
-            overlay_server.snapshot(messages, False, "en", lambda *_: "", paid_count=2), set())
+        data = overlay_server.snapshot(messages, False, "en", lambda *_: "", paid_count=2)
         self.assertEqual([m["text"] for m in data["messages"]], ["hi"])
-        self.assertEqual([m["text"] for m in data["paid"]],
+        self.assertEqual([m["text"] for m in overlay_server.view(data, set(), count=0)["paid"]],
                          ["[Super Chat $5] yo", "[Super Sticker $2]"])
         hidden = overlay_server.snapshot(messages, False, "en", lambda *_: "", paid_count=0)
         self.assertEqual(hidden["paid"], [])
@@ -117,11 +116,9 @@ class OverlayTests(unittest.TestCase):
                                        paid_count=1, paid_messages=paid)
         texts = lambda d, k="messages": [m["text"] for m in d[k]]
         everything = overlay_server.view(data, set())
-        self.assertEqual(texts(everything), ["b7", "b8", "b9"])
-        self.assertEqual(texts(everything, "paid"), ["[SC] b"])
+        self.assertEqual(texts(everything), ["[SC] b", "b7", "b8", "b9"])  # no stamps: paid first
         yt_only = overlay_server.view(data, overlay_server.parse_sites(["yt"]))
-        self.assertEqual(texts(yt_only), ["y0", "y1", "y2"])
-        self.assertEqual(texts(yt_only, "paid"), ["[SC] yt"])
+        self.assertEqual(texts(yt_only), ["[SC] yt", "y0", "y1", "y2"])
         self.assertEqual(overlay_server.parse_sites(["bili,ME", "youtube", "bogus"]),
                          {"bilibili", "missevan", "youtube"})
         self.assertEqual(overlay_server.parse_sites([]), set())
@@ -133,11 +130,11 @@ class OverlayTests(unittest.TestCase):
             base = f"http://127.0.0.1:{server.server_address[1]}"
             server.publish(data, "alice")
             with urlopen(base + "/overlay/data?ch=alice&site=youtube") as response:
-                self.assertEqual(texts(json.load(response)), ["y0", "y1", "y2"])
+                self.assertEqual(texts(json.load(response)), ["[SC] yt", "y0", "y1", "y2"])
             with urlopen(base + "/overlay/data?ch=alice&site=missevan") as response:
                 self.assertEqual(json.load(response)["messages"], [])
             with urlopen(base + "/overlay/data?ch=alice") as response:
-                self.assertEqual(texts(json.load(response)), ["b7", "b8", "b9"])
+                self.assertEqual(texts(json.load(response)), ["[SC] b", "b7", "b8", "b9"])
         finally:
             server.shutdown()
             server.server_close()
@@ -172,9 +169,10 @@ class OverlayTests(unittest.TestCase):
                 key, {"n": ["3"], "names": ["0"], "text": ["hey"]}), set())
         finally:
             overlay_feeds.get = original_get
-        self.assertEqual([m["text"] for m in data["messages"]], ["b5", "b6", "b7"])
+        # Stamped on arrival: the Super Chat and the gift came after the chat lines.
+        self.assertEqual([m["text"] for m in data["messages"]], ["b5", "b6", "b7", "[SC ¥30] hi", "free"])
         self.assertNotIn("author", data["messages"][0])
-        self.assertEqual([m["text"] for m in data["paid"]], ["[SC ¥30] hi", "free"])
+        self.assertEqual([m.get("paid", False) for m in data["messages"]], [False] * 3 + [True] * 2)
         self.assertEqual(data["custom_text"], "hey")
 
     def test_bilibili_room_id_or_url(self):
@@ -313,12 +311,58 @@ class OverlayHtmlTests(unittest.TestCase):
                              ([{"text": "b"}], [], "only-chat"))
             # URL counts can lower the dashboard's, not raise them; bad values are ignored.
             both = overlay_server.overlay_data({"ch": ["me"], "n": ["50"], "sc": ["x"]}, server)
-            self.assertEqual((len(both["messages"]), len(both["paid"]), both["layout"]), (2, 1, ""))
+            self.assertEqual((len(both["messages"]), both["paid"], both["layout"]), (3, [], "mixed"))
         finally:
             server.server_close()
         self.assertIn('<div class="only-paid">', overlay_server.render_html({"layout": "only-paid"}))
         self.assertEqual(overlay_server.snapshot([{"type": "danmaku", "text": "x"}], False, "", lambda *_: "",
                                                  count=0)["messages"], [])
+
+    def test_all_mixes_paid_and_chat_in_arrival_order(self):
+        chat = [{"type": "danmaku", "text": f"c{i}", "platform": "bilibili", "_arrived": i * 10}
+                for i in range(1, 6)]
+        paid = [{"type": "superchat", "text": "sc", "platform": "bilibili", "_arrived": 25},
+                {"type": "gift", "text": "gift", "platform": "bilibili", "_arrived": 45}]
+        data = overlay_server.snapshot(chat, False, "en", lambda *_: "", count=3,
+                                       paid_count=3, paid_messages=paid)
+        mixed = overlay_server.view(data, set())
+        self.assertEqual(mixed["layout"], "mixed")
+        self.assertEqual([m["text"] for m in mixed["messages"]], ["sc", "c3", "c4", "gift", "c5"])
+        self.assertEqual([bool(m.get("paid")) for m in mixed["messages"]], [True, False, False, True, False])
+        self.assertNotIn("paid", data["paid"][0])  # shared snapshot isn't modified
+        out = overlay_server.render_html(mixed)
+        self.assertIn('class="message paid-item gift"', out)
+        self.assertIn('<div class="mixed">', out)
+        # Per-URL counts and the other variants are unchanged.
+        self.assertEqual([m["text"] for m in overlay_server.view(data, set(), count=1)["messages"]],
+                         ["sc", "gift", "c5"])
+        self.assertEqual(overlay_server.view(data, set(), paid_count=0)["layout"], "only-chat")
+        self.assertEqual(overlay_server.view(data, set(), count=0)["layout"], "only-paid")
+        self.assertEqual(overlay_server.order_key({"timestamp": "1700000000"}), 1700000000 * 10**9)
+        self.assertEqual(overlay_server.order_key({"timestamp": "1700000000123"}), 1700000000123 * 10**6)
+        self.assertGreater(overlay_server.order_key({"timestamp": "2024-01-01T00:00:00Z"}), 0)
+        self.assertEqual(overlay_server.order_key({}), 0)
+
+    def test_n_without_sc_is_one_chat_of_n_messages(self):
+        chat = [{"type": "danmaku", "text": f"c{i}", "platform": "bilibili", "_arrived": i * 10}
+                for i in range(1, 6)]
+        paid = [{"type": "gift", "text": f"g{i}", "platform": "bilibili", "_arrived": 100 + i} for i in range(4)]
+        data = overlay_server.snapshot(chat, False, "en", lambda *_: "", count=5,
+                                       paid_count=2, paid_messages=paid)
+        server = overlay_server.OverlayServer(0, "127.0.0.1")
+        try:
+            server.publish(data, channel="me")
+            single = overlay_server.overlay_data({"ch": ["me"], "n": ["5"]}, server)
+            # All four recent gifts (more than sc's 2) and the last chat line, as one chat of 5.
+            self.assertEqual([m["text"] for m in single["messages"]], ["c5", "g0", "g1", "g2", "g3"])
+            self.assertEqual((single["paid"], single["layout"]), ([], "mixed"))
+            separate = overlay_server.overlay_data({"ch": ["me"], "n": ["5"], "sc": ["2"]}, server)
+            self.assertEqual([m["text"] for m in separate["messages"]], ["c1", "c2", "c3", "c4", "c5", "g2", "g3"])
+            server.publish(dict(data, paid_count=0), channel="me")  # dashboard hides paid events
+            self.assertEqual([m["text"] for m in overlay_server.overlay_data({"ch": ["me"], "n": ["3"]}, server)
+                              ["messages"]], ["c3", "c4", "c5"])
+        finally:
+            server.server_close()
 
 
 class OverlayReadingTests(unittest.TestCase):

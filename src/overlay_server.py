@@ -8,6 +8,7 @@ import socket
 import sys
 import threading
 import time
+from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Callable
 from urllib.parse import parse_qs, urlparse
@@ -43,6 +44,23 @@ def clean_channel(name: str) -> str:
 def is_superchat(msg: dict) -> bool:
     """Bilibili/MissEvan 'superchat', YouTube 'superChatEvent' / 'superStickerEvent'."""
     return "super" in str(msg.get("type", "")).lower() and bool(msg.get("text"))
+
+
+def order_key(msg: dict) -> int:
+    """When a message arrived (ns), to merge Super Chats / gifts with chat in time order.
+
+    Prefers the local arrival stamp; falls back to the platform timestamp (epoch seconds or ISO 8601)."""
+    arrived = msg.get("_arrived")
+    if isinstance(arrived, int):
+        return arrived
+    ts = str(msg.get("timestamp") or "").strip()
+    if ts.isdigit():
+        n = int(ts)
+        return n * 1_000_000 if n > 10**11 else n * 1_000_000_000  # epoch ms or s
+    try:
+        return int(datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp() * 1_000_000_000)
+    except ValueError:
+        return 0
 
 
 def _text_parts(text: str, codes) -> list[str]:
@@ -87,7 +105,9 @@ def snapshot(messages: list[dict], translate_enabled: bool, target: str,
     ], count) if count else []
     if paid_messages is None:
         paid_messages = [m for m in messages if is_superchat(m)]
-    paid = _last_per_site([m for m in paid_messages if m.get("text")], paid_count) if paid_count else []
+    # Up to `count` paid events too, so a single-chat link (n= without sc=) can be all gifts.
+    paid = _last_per_site([m for m in paid_messages if m.get("text")],
+                          max(paid_count, count)) if paid_count else []
 
     def item_for(msg: dict) -> dict:
         text = msg["text"]
@@ -97,6 +117,7 @@ def snapshot(messages: list[dict], translate_enabled: bool, target: str,
             "text": text,
             "translation": translated or "",
             "platform": msg.get("platform", ""),
+            "at": order_key(msg),
         }
         if msg.get("type") == "gift":
             item["kind"] = "gift"
@@ -161,21 +182,38 @@ def parse_sites(values: list[str]) -> set[str]:
     return sites
 
 
-def view(data: dict, sites: set[str], count: int | None = None, paid_count: int | None = None) -> dict:
+def view(data: dict, sites: set[str], count: int | None = None, paid_count: int | None = None,
+         single: bool = False) -> dict:
     """What one overlay URL shows: only `sites` (all when empty), trimmed to the configured counts.
     `count` / `paid_count` (the URL's n= / sc=) can lower them further; 0 turns that section off, so
-    one OBS screen can show only Super Chats and another only chat."""
+    one OBS screen can show only Super Chats and another only chat. With both on, Super Chats / gifts
+    and chat are shown together in one list, in the order they arrived (paid rows keep their highlight).
+    `single` (n= without sc=): one chat of the last `count` messages, Super Chats and gifts included."""
     def pick(items: list[dict], n: int) -> list[dict]:
         if sites:
             items = [m for m in items if m.get("platform") in sites]
         return items[-n:] if n else []
 
     count = data.get("count", MAX_MESSAGES) if count is None else min(count, data.get("count", MAX_MESSAGES))
+    if single and count:
+        # Paid events are still hidden when the dashboard set them to 0.
+        paid = pick(data.get("paid", []), MAX_MESSAGES) if data.get("paid_count", MAX_MESSAGES) else []
+        merged = [{**m, "paid": True} for m in paid] + pick(data.get("messages", []), MAX_MESSAGES)
+        merged.sort(key=lambda m: m.get("at") or 0)
+        return {"paid": [], "messages": merged[-count:], "custom_text": data.get("custom_text", ""),
+                "layout": "mixed"}
     paid_count = (data.get("paid_count", MAX_MESSAGES) if paid_count is None
                   else min(paid_count, data.get("paid_count", MAX_MESSAGES)))
+    paid = pick(data.get("paid", []), paid_count)
+    messages = pick(data.get("messages", []), count)
+    if count and paid_count:
+        # Copies: `data` is a shared snapshot served to every overlay URL.
+        merged = [{**m, "paid": True} for m in paid] + messages
+        merged.sort(key=lambda m: m.get("at") or 0)  # stable: equal times keep paid-before-chat
+        return {"paid": [], "messages": merged, "custom_text": data.get("custom_text", ""), "layout": "mixed"}
     return {
-        "paid": pick(data.get("paid", []), paid_count),
-        "messages": pick(data.get("messages", []), count),
+        "paid": paid,
+        "messages": messages,
         "custom_text": data.get("custom_text", ""),
         "layout": "only-chat" if not paid_count else "only-paid" if not count else "",
     }
@@ -236,8 +274,8 @@ _PAGE_CSS = """
   .paid-item { background: rgba(120, 0, 0, 0.75); border-left: 4px solid #ffd700; border-radius: 6px; padding: 4px 8px; }
   .paid-item.gift { background: rgba(80, 20, 110, 0.75); border-left-color: #ff8adf; }
   .message rt { font-size: 0.6em; color: #ffe08a; }
-  .only-paid #paid, .only-chat #chat { max-height: calc(100vh - 40px); }
-  .only-chat #paid { display: none; }
+  .only-paid #paid, .only-chat #chat, .mixed #chat { max-height: calc(100vh - 40px); }
+  .only-chat #paid, .mixed #paid { display: none; }
 """
 
 
@@ -275,7 +313,7 @@ def _html_text(msg: dict) -> str:
 def _html_list(messages: list[dict], cls: str) -> str:
     rows = []
     for msg in messages or []:
-        row_cls = cls + (" gift" if msg.get("kind") == "gift" else "")
+        row_cls = cls + (" paid-item" if msg.get("paid") else "") + (" gift" if msg.get("kind") == "gift" else "")
         parts = []
         if msg.get("author"):
             site = msg.get("platform") if msg.get("platform") in SITES else ""
@@ -326,6 +364,9 @@ _PAGE = """<!doctype html>
   /* n=0 / sc=0: one section only (e.g. separate OBS scenes for Super Chats and chat) gets the full height. */
   .only-paid #paid, .only-chat #chat { max-height: calc(100vh - 40px); }
   .only-chat #paid { display: none; }
+  /* Both on: Super Chats, gifts and chat share one list in arrival order, using the full height. */
+  .mixed #chat { max-height: calc(100vh - 40px); }
+  .mixed #paid { display: none; }
 </style>
 </head>
 <body>
@@ -373,7 +414,7 @@ function renderList(id, messages, cls) {
   list.replaceChildren();
   for (const msg of messages || []) {
     const row = document.createElement("div");
-    row.className = cls + (msg.kind === "gift" ? " gift" : "");
+    row.className = cls + (msg.paid ? " paid-item" : "") + (msg.kind === "gift" ? " gift" : "");
     if (msg.author) {
       const author = document.createElement("div");
       author.className = "author " + (["youtube", "bilibili", "missevan"].includes(msg.platform) ? msg.platform : "");
@@ -438,7 +479,8 @@ def overlay_data(query: dict, server: "OverlayServer | None" = None) -> dict:
     url_paid = _int_param(query, "sc", -1) if query.get("sc") else None
     return view(data, sites,
                 None if url_count is None or url_count < 0 else url_count,
-                None if url_paid is None or url_paid < 0 else url_paid)
+                None if url_paid is None or url_paid < 0 else url_paid,
+                single=url_count is not None and url_count >= 0 and not query.get("sc"))
 
 
 class _Handler(BaseHTTPRequestHandler):

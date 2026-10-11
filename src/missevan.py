@@ -12,7 +12,7 @@ from typing import Optional
 
 import requests
 
-from src import user_login
+from src import gifts, user_login
 from src.config import (
     MISSEVAN_CHAT_HISTORY_URL,
     MISSEVAN_CHATROOM_META_URL,
@@ -326,17 +326,20 @@ class MissEvanListener:
         elif kind == "question" and event == "ask":
             q = m.get("content") or {}
             user = m.get("user") or q.get("user") or q
-            self.messages.append(self._base(
+            self.messages.append(gifts.set_value(self._base(
                 f"me_q_{q.get('question_id') or time.time_ns()}", user,
                 f"[提问 💎{q.get('price', 0)}] {q.get('question', '')}", "superchat", q.get("created_time"),
-            ))
+            ), "💎", q.get("price")))
         elif kind == "gift" and event == "send":
             g = m.get("gift") or {}
             oid = str(m.get("oid") or "").strip("0")  # some gifts carry a placeholder all-zero oid
-            self.messages.append(self._base(
+            num = g.get("num") or 1
+            # Gift prices are in 钻石 (diamonds) per item, when MissEvan sends them.
+            value = (g.get("price") or 0) * num if isinstance(g.get("price"), (int, float)) else 0
+            self.messages.append(gifts.set_value(self._base(
                 f"me_gift_{oid or time.time_ns()}", m.get("user") or {},
-                f"🎁 {g.get('name', '')} ×{g.get('num', 1)}", "gift", m.get("time"),
-            ))
+                f"🎁 {g.get('name', '')} ×{num}", "gift", m.get("time"),
+            ), "💎", value))
         elif kind == "member" and event == "join_queue":
             for u in m.get("queue") or []:
                 if u.get("user_id"):

@@ -51,9 +51,9 @@ _STRINGS: dict[str, tuple[str, str]] = {
         "下のオーバーレイ設定でこのリンクが変わります。",
     ),
     "What can I change in this link?": ("这个链接可以改什么？", "このリンクで変更できること"),
-    "All (Super Chats & gifts on top, chat below)": (
-        "全部（醒目留言和礼物在上，弹幕在下）",
-        "すべて（上にスーパーチャットとギフト、下にチャット）",
+    "All (Super Chats, gifts and chat together)": (
+        "全部（醒目留言、礼物和弹幕在一起）",
+        "すべて（スーパーチャット・ギフト・チャットをまとめて表示）",
     ),
     "Super Chats & gifts only": ("仅醒目留言和礼物", "スーパーチャットとギフトのみ"),
     "Chat only": ("仅弹幕", "チャットのみ"),
@@ -482,6 +482,17 @@ _STRINGS: dict[str, tuple[str, str]] = {
     "Message Rate (per minute)": ("消息速率（每分钟）", "メッセージ数（毎分）"),
     "Messages per Minute": ("每分钟消息数", "1分あたりのメッセージ数"),
     "Top Chatters": ("发言排行", "発言ランキング"),
+    "🎁 Gift Leaderboard": ("🎁 礼物榜", "🎁 ギフトランキング"),
+    "Top supporters from gifts, Super Chats and memberships received while this dashboard is open. Amounts in "
+    "different currencies aren't added together: each site is ranked by its most used currency.": (
+        "统计本页面打开期间收到的礼物、醒目留言（SC）和会员。不同币种的金额不会相加：每个网站按最常用的币种排名。",
+        "このダッシュボードを開いている間に届いたギフト・スーパーチャット・メンバーシップの上位支援者です。"
+        "通貨の異なる金額は合算せず、サイトごとに最も多い通貨で順位を付けます。"),
+    "The gift leaderboard will appear once gifts or Super Chats arrive.": (
+        "收到礼物或醒目留言后将显示礼物榜。", "ギフトやスーパーチャットが届くとギフトランキングが表示されます。"),
+    "User": ("用户", "ユーザー"),
+    "Gifts": ("次数", "回数"),
+    "Total": ("总额", "合計"),
     "Chat stats will appear once messages arrive.": ("收到消息后将显示弹幕统计。", "メッセージが届くとチャット統計が表示されます。"),
     "🛡️ Filtered / blocked messages": ("🛡️ 已过滤 / 屏蔽的消息", "🛡️ フィルター / ブロックされたメッセージ"),
     "No blocked messages.": ("没有被屏蔽的消息。", "ブロックされたメッセージはありません。"),
@@ -554,9 +565,9 @@ _STRINGS: dict[str, tuple[str, str]] = {
     ),
     "Messages shown in OBS overlay": ("OBS 叠加层显示的消息数", "OBS オーバーレイに表示するメッセージ数"),
     "Super Chats & gifts shown in OBS overlay": ("OBS 叠加层显示的醒目留言和礼物数", "OBS オーバーレイに表示するスーパーチャット・ギフト数"),
-    "Super Chats, gifts and memberships are pinned to the top of the overlay, apart from regular chat, so busy chat never pushes them away. Set to 0 to hide them.": (
-        "醒目留言、礼物和会员固定在叠加层顶部，与普通弹幕分开，弹幕再多也不会把它们挤走。设为 0 则隐藏。",
-        "スーパーチャット・ギフト・メンバーシップはオーバーレイ上部に固定され、通常チャットとは別なので、チャットが多くても押し出されません。0 で非表示。",
+    "How many the \"Super Chats & gifts only\" link shows. In the \"All\" link, Super Chats, gifts and memberships appear in the chat in the order they arrived, within its message count. Set to 0 to hide them.": (
+        "「仅醒目留言和礼物」链接显示的数量。在「全部」链接中，醒目留言、礼物和会员按到达顺序显示在弹幕里，计入消息数。设为 0 则隐藏。",
+        "「スーパーチャットとギフトのみ」リンクで表示する数。「すべて」リンクでは、スーパーチャット・ギフト・メンバーシップが届いた順にチャット内に表示され、メッセージ数に含まれます。0 で非表示。",
     ),
     "Recent Chat Preview (last {n} messages)": ("最近弹幕预览（最后 {n} 条）", "最近のチャットプレビュー（最新 {n} 件）"),
     # ── Cookies tab ──────────────────────────────────────────────────────────

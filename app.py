@@ -33,6 +33,7 @@ from src import bilibili as bili
 from src import browser_cookies as bc
 from src import config as app_config
 from src import emotes
+from src import gifts
 from src import highlights as hl
 from src import i18n
 from src import missevan as me
@@ -66,8 +67,9 @@ def _fresh(mod):
 # retain config while reloading modules after a code update.
 app_config = _fresh(app_config)
 
-# Dependencies first: youtube imports youtube_web; bilibili and youtube_web import emotes.
+# Dependencies first: youtube imports youtube_web; bilibili and youtube_web import emotes and gifts.
 emotes = _fresh(emotes)
+gifts = _fresh(gifts)
 i18n = _fresh(i18n)
 _tts = _fresh(_tts)
 hl = _fresh(hl)
@@ -154,6 +156,21 @@ h3 .site-icon { margin-right: 0.15em; position: relative; top: -0.08em; }
 [class*="st-key-emote_grid_"] [data-testid="stElementContainer"] { width: auto !important; }
 [class*="st-key-emote_grid_"] button { padding: 1px 2px; min-height: 0; }
 [class*="st-key-emote_grid_"] button img { height: 32px !important; max-height: 32px !important; width: auto; }
+@media (hover: hover) and (pointer: fine) {
+    .chat-text img,
+    [class*="st-key-emote_grid_"] button img {
+        position: relative;
+        z-index: 1;
+        transition: transform 120ms ease;
+        transform-origin: center;
+    }
+    .chat-text img:hover,
+    [class*="st-key-emote_grid_"] button img:hover {
+        z-index: 10;
+        transform: scale(2.5);
+        filter: drop-shadow(0 2px 5px rgba(0,0,0,0.45));
+    }
+}
 /* Emote pickers: wide enough to show a whole pack without scrolling */
 [data-testid="stPopoverBody"]:has([class*="st-key-emote_grid_"], [class*="st-key-emo_bili_expand"]) {
     max-width: min(64rem, 92vw) !important; width: min(64rem, 92vw) !important; max-height: 88vh !important;
@@ -1123,8 +1140,11 @@ def _poll_chat():
 
     # Update history; join events go to their own feed, never into chat
     _now = time.time()
+    _now_ns = time.time_ns()
     _log = st.session_state["activity_log"]
-    for m in allowed:
+    for _i, m in enumerate(allowed):
+        # Arrival order, so the overlay and preview can interleave Super Chats / gifts with chat.
+        m.setdefault("_arrived", _now_ns + _i)
         if m.get("type") != "enter":
             _log.append(hl.log_entry(m, is_paid(m) or is_gift(m), _now))
         if is_paid(m) or is_gift(m):
@@ -2283,19 +2303,27 @@ with tab_chat:
         "YouTube", key="send_yt", value=True, disabled=not yt_chat,
         help=None if yt_chat else t("Start the YouTube listener first."),
     )
+    bili_listener_send = st.session_state.get("bili_listener")
+    bili_monitoring = bool(bili_listener_send and bili_listener_send._running)
     send_bili = tgt_row.checkbox(
-        "Bilibili", key="send_bili", value=True, disabled=not bili_room_send,
-        help=None if bili_room_send else t("Enter a Bilibili room ID first."),
+        "Bilibili", key="send_bili", value=True, disabled=not (bili_room_send and bili_monitoring),
+        help=None if bili_room_send and bili_monitoring
+        else t("Enter a Bilibili room ID first.") if not bili_room_send
+        else t("Start the Bilibili listener first."),
     )
     me_room_send = st.session_state["me_room_id"]
     _me_send_login = _me_login_state()
     # A failed check (network error) shouldn't block sending; only a confirmed logout does.
     me_logged_in = bool(_me_send_login and (_me_send_login["is_login"] or _me_send_login.get("error")))
+    me_listener_send = st.session_state.get("me_listener")
+    me_monitoring = bool(me_listener_send and me_listener_send.running)
     send_me = tgt_row.checkbox(
-        t("MissEvan"), key="send_me", value=True, disabled=not (me_room_send and me_logged_in),
-        help=None if me_room_send and me_logged_in
+        t("MissEvan"), key="send_me", value=True,
+        disabled=not (me_room_send and me_logged_in and me_monitoring),
+        help=None if me_room_send and me_logged_in and me_monitoring
         else t("Log in to MissEvan in the 🍪 Cookies tab first.") if not me_logged_in
-        else t("Enter a MissEvan room first."),
+        else t("Enter a MissEvan room first.") if not me_room_send
+        else t("Start the MissEvan listener first."),
     )
     _yt_emo_vid = _yt_video_id() or (yt_chat[len(yt.WEB_CHAT_PREFIX):] if yt.is_web_chat(yt_chat) else "")
     _emotes_ready = hasattr(ytw, "channel_emojis") and hasattr(bili, "get_emoticons")
@@ -2313,18 +2341,18 @@ with tab_chat:
             if send_yt and yt_chat:
                 targets.append(("YouTube", lambda: yt.send_chat(
                     yt_chat, _yt_video_id(), outgoing)))
-            if send_bili and bili_room_send:
+            if send_bili and bili_room_send and bili_monitoring:
                 if other:
                     targets.append(("Bilibili", lambda: (bili.send_danmaku(bili_room_send, other), "")))
                 else:
                     st.info(t("Only YouTube stamps — not sent to {site}.", site="Bilibili"))
-            if send_me and me_room_send and me_logged_in:
+            if send_me and me_room_send and me_logged_in and me_monitoring:
                 if other:
                     targets.append(("MissEvan", lambda: me.send_message(me_room_send, other)))
                 else:
                     st.info(t("Only YouTube stamps — not sent to {site}.", site=t("MissEvan")))
-            if not (send_yt and yt_chat) and not (send_bili and bili_room_send) and not (
-                    send_me and me_room_send and me_logged_in):
+            if not (send_yt and yt_chat) and not (send_bili and bili_room_send and bili_monitoring) and not (
+                    send_me and me_room_send and me_logged_in and me_monitoring):
                 st.warning(t("Tick at least one site to send to."))
             for name, send in targets:
                 ok, err = send()
@@ -2655,7 +2683,7 @@ with tab_obs:
             st.number_input(
                 t("Super Chats & gifts shown in OBS overlay"), min_value=0, max_value=overlay_server.MAX_MESSAGES,
                 step=1, key="overlay_sc_count",
-                help=t("Super Chats, gifts and memberships are pinned to the top of the overlay, apart from regular chat, so busy chat never pushes them away. Set to 0 to hide them."),
+                help=t("How many the \"Super Chats & gifts only\" link shows. In the \"All\" link, Super Chats, gifts and memberships appear in the chat in the order they arrived, within its message count. Set to 0 to hide them."),
             )
             st.toggle(t("Show usernames in OBS overlay"), key="overlay_show_username")
             st.selectbox(
@@ -2760,10 +2788,12 @@ with tab_obs:
         if st.session_state["overlay_reading"] != "off":
             _params["ruby"] = st.session_state["overlay_reading"]
         _text = {"text": overlay_text} if st.session_state["overlay_visible"] and overlay_text else {}
-        # n= / sc= are always listed so they're easy to find and edit by hand in OBS. 0 turns a section off,
-        # so Super Chats and chat can go on separate OBS screens, each using the whole Browser Source.
+        # n= is always listed so it's easy to find and edit by hand in OBS. Without sc=, the last n messages
+        # (Super Chats and gifts included) show as one chat; with sc= they're counted separately, and 0 turns
+        # a section off, so Super Chats and chat can go on separate OBS screens.
         _variants = [
-            (t("All (Super Chats & gifts on top, chat below)"), {"n": overlay_count, "sc": overlay_sc_count, **_text}),
+            (t("All (Super Chats, gifts and chat together)"),
+             {"n": overlay_count, **({} if overlay_sc_count else {"sc": 0}), **_text}),
             (t("Super Chats & gifts only"), {"n": 0, "sc": overlay_sc_count or 3}),
             (t("Chat only"), {"n": overlay_count, "sc": 0, **_text}),
         ]
@@ -2790,7 +2820,8 @@ with tab_obs:
                 st.caption(t(
                     "This URL reads the chat by itself, like a logged-out viewer, as long as the overlay server runs — "
                     "you can close the dashboard. Edit the youtube= (@handle, channel or video link), bilibili= and "
-                    "missevan= (room ID or link) values to show any channel. Options: n= chat lines, sc= Super Chats & gifts "
+                    "missevan= (room ID or link) values to show any channel. Options: n= messages (without sc=, Super Chats "
+                    "and gifts are part of the chat), sc= Super Chats & gifts shown separately "
                     "(0 hides that part; the other then uses the whole height), "
                     "names=0 hides usernames, tr=en adds translations, text= custom message, "
                     "ruby=auto (or pinyin / furigana) adds a reading aid. "
@@ -2803,9 +2834,10 @@ with tab_obs:
     def _on_overlay(m: dict) -> bool:
         return not _overlay_sites or m.get("platform") in _overlay_sites
 
+    # Same as the OBS "All" link: the last n messages as one chat, Super Chats and gifts included.
     overlay_paid = [
         m for m in st.session_state["paid_messages"] if m.get("text") and _on_overlay(m)
-    ][-overlay_sc_count:] if overlay_sc_count else []
+    ][-overlay_count:] if overlay_sc_count else []
 
     st.divider()
 
@@ -2815,6 +2847,10 @@ with tab_obs:
         m for m in st.session_state["chat_messages"]
         if m.get("type") in ("textMessageEvent", "danmaku") and m.get("text") and _on_overlay(m)
     ][-overlay_count:]
+    _paid_ids = {id(m) for m in overlay_paid}
+    _mixed = sorted(overlay_paid + recent, key=overlay_server.order_key)[-overlay_count:]
+    overlay_paid = [m for m in _mixed if id(m) in _paid_ids]
+    recent = [m for m in _mixed if id(m) not in _paid_ids]
     if st.session_state["translate_enabled"]:
         tr.prefetch([m["text"] for m in overlay_paid + recent if m.get("type") != "gift"],
                     st.session_state["translate_target"])
@@ -2853,15 +2889,14 @@ with tab_obs:
         )
 
     preview_html = '<div style="background:rgba(0,0,0,0.7);padding:8px;border-radius:8px;width:360px;font-family:sans-serif;">'
-    if overlay_paid:
-        preview_html += '<div style="border-bottom:2px solid rgba(255,215,0,0.6);margin-bottom:8px;padding-bottom:4px;">'
-        sc_style = "background:rgba(120,0,0,0.75);border-left:4px solid #ffd700;border-radius:6px;padding:4px 8px;"
-        gift_style = "background:rgba(80,20,110,0.75);border-left:4px solid #ff8adf;border-radius:6px;padding:4px 8px;"
-        for m in overlay_paid:
-            preview_html += _preview_row(m, gift_style if m.get("type") == "gift" else sc_style)
-        preview_html += "</div>"
-    for m in recent:
-        preview_html += _preview_row(m, "")
+    sc_style = "background:rgba(120,0,0,0.75);border-left:4px solid #ffd700;border-radius:6px;padding:4px 8px;"
+    gift_style = "background:rgba(80,20,110,0.75);border-left:4px solid #ff8adf;border-radius:6px;padding:4px 8px;"
+    # Same as the OBS overlay: Super Chats, gifts and chat together, in the order they arrived.
+    _preview_items = [(m, gift_style if m.get("type") == "gift" else sc_style) for m in overlay_paid]
+    _preview_items += [(m, "") for m in recent]
+    _preview_items.sort(key=lambda item: overlay_server.order_key(item[0]))
+    for m, _style in _preview_items:
+        preview_html += _preview_row(m, _style)
     if st.session_state["overlay_visible"] and overlay_text:
         preview_html += (
             f'<div style="color:#ffd700;font-weight:700;margin-top:8px;border-top:1px solid #555;padding-top:6px;">'
@@ -2963,6 +2998,32 @@ with tab_analytics:
             st.dataframe(top, width="stretch", hide_index=True)
     else:
         st.info(t("Chat stats will appear once messages arrive."))
+
+    # ── Gift leaderboard ──────────────────────────────────────────────────────
+    st.subheader(t("🎁 Gift Leaderboard"))
+    st.caption(t(
+        "Top supporters from gifts, Super Chats and memberships received while this dashboard is open. Amounts in "
+        "different currencies aren't added together: each site is ranked by its most used currency."
+    ))
+    _paid_all = [m for m in st.session_state["paid_messages"] if is_paid(m)]
+    _gift_sites = [s for s in ("bilibili", "youtube", "missevan") if any(m.get("platform") == s for m in _paid_all)]
+    if not _gift_sites:
+        st.info(t("The gift leaderboard will appear once gifts or Super Chats arrive."))
+    else:
+        _site_labels = {"youtube": "YouTube", "bilibili": "Bilibili", "missevan": t("MissEvan")}
+        if st.session_state.get("gift_board_site") not in _gift_sites:
+            st.session_state["gift_board_site"] = _gift_sites[0]
+        _board_site = st.segmented_control(
+            t("Site"), _gift_sites, key="gift_board_site", required=True, label_visibility="collapsed",
+            format_func=_site_labels.get,
+        )
+        _board = gifts.leaderboard(_paid_all, _board_site)
+        st.dataframe(
+            pd.DataFrame([{
+                "#": r["rank"], t("User"): r["author"], t("Gifts"): r["count"], t("Total"): r["total"],
+            } for r in _board]),
+            width="stretch", hide_index=True,
+        )
 
     # ── Hotspots for clipping ─────────────────────────────────────────────────
     st.subheader(t("🔥 Hotspots for clipping"))

@@ -38,6 +38,7 @@ class YouTubeWebChatTests(unittest.TestCase):
         self.assertEqual(message["author_id"], "channel-123")
         self.assertEqual(message["type"], "superStickerEvent")
         self.assertEqual(message["text"], "[Super Sticker $2.00]")
+        self.assertEqual((message["currency"], message["value"]), ("$", 2.0))
         self.assertEqual(message["avatar"], "https://example.com/avatar.jpg")
 
     def test_custom_emoji_stamps_become_inline_images(self):

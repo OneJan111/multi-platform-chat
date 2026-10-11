@@ -7,7 +7,7 @@ from urllib.parse import parse_qs, urlparse
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
-from src import youtube_web
+from src import gifts, youtube_web
 from src.config import YOUTUBE_API_KEY, YOUTUBE_API_SERVICE, YOUTUBE_API_VERSION
 
 
@@ -168,14 +168,18 @@ def get_chat_messages(live_chat_id: str, page_token: str = "") -> tuple[list[dic
             author = item.get("authorDetails", {})
             msg_type = snippet.get("type", "textMessageEvent")
             text = snippet.get("displayMessage", "")
+            extra = {}
             if msg_type == "superChatEvent":
                 sc = snippet.get("superChatDetails", {})
                 # amountDisplayString already includes the currency symbol (e.g. "$5.00", "¥500").
                 text = f"[Super Chat {sc.get('amountDisplayString','')}] {sc.get('userComment','')}"
+                gifts.set_value(extra, *gifts.parse_amount(sc.get("amountDisplayString", "")))
+            elif msg_type == "superStickerEvent":
+                gifts.set_value(extra, *gifts.parse_amount(
+                    snippet.get("superStickerDetails", {}).get("amountDisplayString", "")))
             elif msg_type == "memberMilestoneChatEvent":
                 mm = snippet.get("memberMilestoneChatDetails", {})
                 text = f"[Member] {mm.get('userComment','')}"
-            extra = {}
             if msg_type == "membershipGiftingEvent":
                 gd = snippet.get("membershipGiftingDetails", {})
                 extra["gift_count"] = int(gd.get("giftMembershipsCount") or 1)

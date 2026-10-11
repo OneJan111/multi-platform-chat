@@ -89,6 +89,7 @@ class BilibiliGiftTests(unittest.TestCase):
         })
 
         self.assertEqual(message["text"], "🎁 小花花 ×2 (¥1.6, list ¥2)")
+        self.assertEqual((message["currency"], message["value"]), ("¥", 1.6))
 
     def test_blind_gift_shows_box_price_and_value(self):
         message = DanmakuListener._gift_message({
@@ -113,6 +114,7 @@ class BilibiliGiftTests(unittest.TestCase):
 
         self.assertEqual(len(listener.messages), 1)
         self.assertEqual(listener.messages[0]["text"], "🎁 舰长 ×1月 (¥138, list ¥198)")
+        self.assertEqual(listener.messages[0]["value"], 138.0)
 
     def test_guard_toast_alone_is_recorded(self):
         listener = DanmakuListener.__new__(DanmakuListener)
@@ -136,6 +138,8 @@ class BilibiliGiftTests(unittest.TestCase):
         self.assertEqual(len(listener.messages), 2)
         bought, winners = listener.messages
         self.assertEqual(bought["text"], "🧧 红包 ×1 (¥2) · 内含 打call×2 牛哇×3")
+        self.assertEqual(bought["value"], 2.0)
+        self.assertNotIn("value", winners)
         self.assertFalse(bought["free"])
         self.assertEqual(bought["membership"], "舰长")
         self.assertEqual(winners["author"], "boss")
