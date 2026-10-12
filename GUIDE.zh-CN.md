@@ -22,7 +22,7 @@
 
 ## 第 2 步 — 启动
 
-1. 在 `multi-platform-chat-main` 文件夹里，**双击 `Start Dashboard`**（图标是带齿轮的小窗口；如果显示扩展名，则叫 `Start Dashboard.bat`）。
+1. 在 `multi-platform-chat-main` 文件夹里，**双击 `Start Dashboard`**（图标是带齿轮的小窗口；如果显示扩展名，则叫 `Start_Dashboard.bat`）。
 2. 如果出现蓝色窗口 **“Windows 已保护你的电脑”**，点 **更多信息** → **仍要运行**。
    这是因为文件来自网络。它只是一个文本脚本，可以右键 → **编辑** 查看内容。
 3. 会打开一个 **黑色窗口**，这就是仪表板程序。

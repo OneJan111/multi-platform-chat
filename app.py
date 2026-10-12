@@ -40,6 +40,7 @@ from src import missevan as me
 from src import obs_ctrl as obs
 from src import overlay_server
 from src import reading
+from src import resources
 from src import tts as _tts
 from src import translate as tr
 from src import user_login
@@ -77,6 +78,7 @@ ytw = _fresh(ytw)
 yt = _fresh(yt)
 bili = _fresh(bili)
 reading = _fresh(reading)
+resources = _fresh(resources)
 # Overlay state lives on `sys` and ensure_started() replaces a server from an older copy, so reloading is safe.
 overlay_server = _fresh(overlay_server)
 from src.config import (
@@ -3128,6 +3130,58 @@ with tab_analytics:
                 )
         else:
             st.info(t("No blocked messages."))
+
+    # ── Server resources ──────────────────────────────────────────────────────
+    with st.expander(t("🖥️ Server resources")):
+        _res = resources.sample()
+        st.caption(t(
+            "Measured on the computer or server running this dashboard ({host}), not the one you're browsing "
+            "from. Shared by everyone viewing the dashboard; updates with the page.", host=resources.host(),
+        ))
+        if not _res:
+            st.info(t("Measuring… numbers appear after the next refresh."))
+        else:
+            _r = _res[-1]
+            _fb = resources.format_bytes
+            _rc = st.columns(4)
+            _rc[0].metric(t("App CPU"), f"{_r['app_cpu']:.1f}%",
+                          help=t("Share of all the CPUs this app may use (the container's limit, if any)."))
+            _rc[1].metric(t("App RAM"), _fb(_r["app_ram"]), help=t("{n} threads", n=_r["threads"]))
+            _rc[2].metric(t("Server CPU"), "—" if _r["sys_cpu"] is None else f"{_r['sys_cpu']:.1f}%",
+                          help=t("Whole machine, including other programs. Not available inside a container."))
+            _rc[3].metric(t("Server RAM"), f"{_fb(_r['ram_used'])} / {_fb(_r['ram_total'])}",
+                          help=t("The container's memory limit when it has one."))
+            _tot = resources.totals()
+            _nc = st.columns(2)
+            _nc[0].metric(t("Network ↓"), f"{_fb(_r['recv'])}/s", help=t("Total received: {n}", n=_fb(_tot["recv"])))
+            _nc[1].metric(t("Network ↑"), f"{_fb(_r['sent'])}/s", help=t("Total sent: {n}", n=_fb(_tot["sent"])))
+            st.caption(t(
+                "Network is the whole machine's (or container's) traffic; the operating system doesn't count "
+                "it per program."
+            ))
+            if len(_res) > 1:
+                _df_r = pd.DataFrame(_res)
+                _df_r["time"] = pd.to_datetime(_df_r["time"], unit="s", utc=True).dt.tz_convert(
+                    datetime.now().astimezone().tzinfo)
+                _fig_r = go.Figure()
+                _fig_r.add_trace(go.Scatter(x=_df_r["time"], y=_df_r["app_cpu"], name=t("App CPU")))
+                if _df_r["sys_cpu"].notna().any():
+                    _fig_r.add_trace(go.Scatter(x=_df_r["time"], y=_df_r["sys_cpu"], name=t("Server CPU")))
+                _fig_r.add_trace(go.Scatter(x=_df_r["time"], y=_df_r["app_ram"] / 2**20, name=t("App RAM (MB)"),
+                                            yaxis="y2"))
+                _fig_r.update_layout(
+                    template="plotly_dark", height=260, margin=dict(t=30, b=10),
+                    yaxis=dict(title="CPU %", rangemode="tozero"),
+                    yaxis2=dict(title="MB", overlaying="y", side="right", rangemode="tozero", showgrid=False),
+                    legend=dict(orientation="h", y=1.15),
+                )
+                st.plotly_chart(_fig_r, width="stretch")
+                _fig_n = go.Figure()
+                _fig_n.add_trace(go.Scatter(x=_df_r["time"], y=_df_r["recv"] / 1024, name=t("Network ↓")))
+                _fig_n.add_trace(go.Scatter(x=_df_r["time"], y=_df_r["sent"] / 1024, name=t("Network ↑")))
+                _fig_n.update_layout(template="plotly_dark", height=220, margin=dict(t=30, b=10),
+                                     yaxis=dict(title="KB/s", rangemode="tozero"), legend=dict(orientation="h", y=1.2))
+                st.plotly_chart(_fig_n, width="stretch")
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # TAB: FILTERS

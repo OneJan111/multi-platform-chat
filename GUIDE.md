@@ -22,7 +22,7 @@ This guide is for people who have never installed a program like this before. Yo
 
 ## Step 2 — Start it
 
-1. In the `multi-platform-chat-main` folder, **double-click `Start Dashboard`**. Its icon is a little window with a gear. If Windows shows file extensions, it is called `Start Dashboard.bat`.
+1. In the `multi-platform-chat-main` folder, **double-click `Start Dashboard`**. Its icon is a little window with a gear. If Windows shows file extensions, it is called `Start_Dashboard.bat`.
 2. If a blue box says **"Windows protected your PC"**, click **More info** → **Run anyway**.
    This happens because the file came from the internet. It is a plain text script; you can right-click it → **Edit** to read it.
 3. A **black window** opens. This is the dashboard program.

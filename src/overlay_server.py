@@ -434,15 +434,20 @@ function renderList(id, messages, cls) {
     list.append(row);
   }
 }
+let lastBody = null;
 async function refresh() {
   try {
     const response = await fetch("/overlay/data" + location.search, {cache: "no-store"});
     if (!response.ok) throw new Error(`Overlay HTTP ${response.status}`);
-    const data = await response.json();
+    const body = await response.text();
+    // Unchanged: keep the current rows, so images aren't recreated and animated emotes don't restart.
+    if (body === lastBody) return;
+    const data = JSON.parse(body);
     document.body.className = data.layout || "";
     renderList("paid", data.paid, "message paid-item");
     renderList("messages", data.messages, "message");
     document.getElementById("custom").textContent = data.custom_text;
+    lastBody = body;
   } catch (error) {
     console.error("Could not refresh chat overlay", error);
   }

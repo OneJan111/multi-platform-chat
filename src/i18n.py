@@ -496,6 +496,38 @@ _STRINGS: dict[str, tuple[str, str]] = {
     "Chat stats will appear once messages arrive.": ("收到消息后将显示弹幕统计。", "メッセージが届くとチャット統計が表示されます。"),
     "🛡️ Filtered / blocked messages": ("🛡️ 已过滤 / 屏蔽的消息", "🛡️ フィルター / ブロックされたメッセージ"),
     "No blocked messages.": ("没有被屏蔽的消息。", "ブロックされたメッセージはありません。"),
+    "🖥️ Server resources": ("🖥️ 服务器资源", "🖥️ サーバーリソース"),
+    "Measured on the computer or server running this dashboard ({host}), not the one you're browsing "
+    "from. Shared by everyone viewing the dashboard; updates with the page.": (
+        "在运行此仪表板的电脑或服务器上测量（{host}），而不是你正在浏览的这台设备。所有查看仪表板的人看到的都一样，随页面一起更新。",
+        "このダッシュボードを動かしているパソコン／サーバー（{host}）で計測しています。閲覧中の端末ではありません。"
+        "ダッシュボードを見ている全員で共通で、ページと一緒に更新されます。",
+    ),
+    "Measuring… numbers appear after the next refresh.": ("正在测量……下次刷新后显示数据。", "計測中… 次の更新で数値が表示されます。"),
+    "App CPU": ("应用 CPU", "アプリ CPU"),
+    "App RAM": ("应用内存", "アプリのメモリ"),
+    "App RAM (MB)": ("应用内存 (MB)", "アプリのメモリ (MB)"),
+    "Server CPU": ("服务器 CPU", "サーバー CPU"),
+    "Server RAM": ("服务器内存", "サーバーのメモリ"),
+    "Network ↓": ("网络 ↓", "ネットワーク ↓"),
+    "Network ↑": ("网络 ↑", "ネットワーク ↑"),
+    "{n} threads": ("{n} 个线程", "スレッド {n} 個"),
+    "Share of all the CPUs this app may use (the container's limit, if any).": (
+        "占本应用可用全部 CPU 的比例（如在容器中，按容器的限制计算）。",
+        "このアプリが使える CPU 全体に対する割合（コンテナでは、その上限に対して）。",
+    ),
+    "Whole machine, including other programs. Not available inside a container.": (
+        "整台机器，包括其他程序。在容器中不可用。",
+        "マシン全体（ほかのプログラムを含む）。コンテナ内では表示できません。",
+    ),
+    "The container's memory limit when it has one.": ("如在容器中且有内存限制，则显示该限制。", "コンテナにメモリ上限がある場合はその上限。"),
+    "Total received: {n}": ("累计接收：{n}", "受信合計：{n}"),
+    "Total sent: {n}": ("累计发送：{n}", "送信合計：{n}"),
+    "Network is the whole machine's (or container's) traffic; the operating system doesn't count "
+    "it per program.": (
+        "网络为整台机器（或容器）的流量；操作系统不按程序统计。",
+        "ネットワークはマシン（またはコンテナ）全体の通信量です。OS はプログラムごとには数えません。",
+    ),
     # ── Filters tab ──────────────────────────────────────────────────────────
     "🛡️ Chat Filters": ("🛡️ 弹幕过滤", "🛡️ チャットフィルター"),
     "Keyword / Regex Block Patterns": ("关键词 / 正则屏蔽规则", "キーワード / 正規表現ブロック"),
