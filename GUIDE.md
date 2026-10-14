@@ -57,6 +57,8 @@ Reading chat needs no login.
    - Chrome or Edge says it can't read the cookies? Use **📋 Paste / upload cookies** instead: export the cookies with the *Cookie-Editor* browser extension (**Export → JSON**), then click **📋 Paste from clipboard**. The site is detected for you. Then click **✅ Use these cookies**.
 4. To log out, click **🗑️ Delete** next to the site under **🔑 Your saved logins** (or **🗑️ Delete all logins**).
 
+To send chat or room stickers to MissEvan, the imported account must be allowed to chat in the room; MissEvan's web client requires a bound phone number. Use the MissEvan picker beside the message box to browse room stickers (click one to send it immediately) or click a preset kaomoji to add it to the message box and review or edit it before sending. The picker is enabled only while listening to that room. If sending fails, import fresh MissEvan cookies.
+
 ## Step 5 — Show chat on your stream in OBS
 
 1. In the dashboard, open the **🎬 OBS** tab. At the top is **🖥️ Standalone overlay for OBS** with a link.
@@ -74,6 +76,7 @@ To change it: right-click `.env` → **Open with** → **Notepad**, edit, save, 
 
 - **OBS remote control** (start/stop stream, scenes) — in OBS open **Tools → WebSocket Server Settings**, tick **Enable WebSocket server**, click **Show Connect Info** and copy the password. In `.env`, put it after `OBS_PASSWORD=`. Then turn on **Connect to OBS** in the 🎬 OBS tab.
 - **Default rooms** — `YOUTUBE_CHANNEL=`, `BILIBILI_ROOM_ID=`, `MISSEVAN_ROOM_ID=`.
+- **Chat translation** — the app tries Index-Translate first and falls back to Google. The built-in streaming glossary keeps terms such as *舰长*, *醒目留言*, *上舰* and *弹幕* consistent. To use Google directly, set `INDEX_TRANSLATE_API_BASE=` in `.env`. When translation is enabled, chat text is sent to the translation service.
 
 ## Updating to a new version
 

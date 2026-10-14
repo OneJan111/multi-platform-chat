@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import Mock, patch
 
 from src.youtube_web import _parse_action
 
@@ -80,6 +81,25 @@ class YouTubeWebChatTests(unittest.TestCase):
         self.assertEqual(w.strip_emoji_codes("hi :_wave: :wave: :_other: there", emojis), "hi there")
         self.assertEqual(w.strip_emoji_codes(":_wave:", emojis), "")
         self.assertEqual(w.strip_emoji_codes("time 12:30:45", emojis), "time 12:30:45")
+
+    def test_logged_in_emote_picker_is_fetched_once_per_video(self):
+        from src import youtube_web as w
+
+        response = Mock(text="chat page")
+        session = Mock()
+        session.get.return_value = response
+        w._picker_fetched.discard("cache-vid-1")
+        w._picker_fetched.discard("cache-vid-2")
+        with (patch.object(w, "has_login", return_value=True),
+              patch.object(w, "login_cookies", return_value={}),
+              patch.object(w, "_auth_session", return_value=session),
+              patch.object(w, "_initial_data", return_value={}) as initial_data):
+            w.channel_emojis("cache-vid-1", fetch=True)
+            w.channel_emojis("cache-vid-1", fetch=True)
+            w.channel_emojis("cache-vid-2", fetch=True)
+
+        self.assertEqual(session.get.call_count, 2)
+        self.assertEqual(initial_data.call_count, 2)
 
     def test_super_sticker_keeps_amount_with_image(self):
         from src.emotes import text_to_html

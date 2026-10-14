@@ -126,7 +126,7 @@ def get_room_info(room_id: str = "") -> dict:
         return {
             "room_id": rid,
             "title": room_data.get("title", ""),
-            "cover": room_data.get("cover", ""),
+            "cover": room_data.get("cover") or room_data.get("user_cover", ""),
             "live_status": live_status,  # 1 = live, 0 = offline, 2 = playback
             "online": room_data.get("online", 0),
             "start_time": room_data.get("live_time", ""),
@@ -534,6 +534,10 @@ class DanmakuListener:
             data.get("uname", ""), data.get("uid", ""), data.get("face", ""),
             f"🎁 {gift_name} ×{count}{price}", free=not paid,
         )
+        try:
+            msg["gift_count"] = max(1, int(count))
+        except (TypeError, ValueError):
+            msg["gift_count"] = 1
         msg["membership"] = _guard_name(data.get("guard_level"))
         msg["membership_icon"] = _guard_icon(data.get("guard_level"))
         return _set_coins(msg, price_coins if paid else 0)

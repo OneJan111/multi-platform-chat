@@ -1,7 +1,29 @@
 import base64
 import unittest
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 from src.bilibili import DanmakuListener, _decode_interact_word_v2, _decode_send_gift_v2
+
+
+class BilibiliRoomInfoTests(unittest.TestCase):
+    def test_room_info_falls_back_to_user_cover(self):
+        from src import bilibili as bili
+
+        room = Mock()
+        room.get_room_play_info.return_value = object()
+        room.get_room_info.return_value = object()
+        with patch.object(bili, "BILIBILI_LIB_OK", True), \
+             patch.object(bili, "live", SimpleNamespace(LiveRoom=Mock(return_value=room))), \
+             patch.object(bili, "_credential"), \
+             patch.object(bili, "_run", side_effect=[
+                 {"live_status": 1},
+                 {"room_info": {"title": "Room", "cover": None,
+                                "user_cover": "https://i0.hdslb.com/bfs/live/cover.jpg"}},
+             ]):
+            info = bili.get_room_info("123")
+
+        self.assertEqual(info["cover"], "https://i0.hdslb.com/bfs/live/cover.jpg")
 
 
 def _varint(n: int) -> bytes:
@@ -36,6 +58,7 @@ class BilibiliGiftTests(unittest.TestCase):
 
         self.assertEqual(message["type"], "gift")
         self.assertEqual(message["text"], "🎁 花 ×2 (¥2)")
+        self.assertEqual(message["gift_count"], 2)
         self.assertEqual(message["author"], "viewer")
         self.assertFalse(message["free"])
 
@@ -51,6 +74,7 @@ class BilibiliGiftTests(unittest.TestCase):
 
         self.assertEqual(message["type"], "gift")
         self.assertEqual(message["text"], "🎁 辣条 ×5 (¥5)")
+        self.assertEqual(message["gift_count"], 5)
         self.assertFalse(message["free"])
 
     def test_combo_send_treating_gift_is_paid_without_coin_type(self):

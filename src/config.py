@@ -39,15 +39,15 @@ MISSEVAN_SEND_MESSAGE_URL: str = f"{MISSEVAN_API_ORIGIN}/chatroom/message/send"
 MISSEVAN_ROOM_INFO_URL: str = f"{MISSEVAN_API_ORIGIN}/v2/live/{{room_id}}"
 MISSEVAN_CHATROOM_META_URL: str = f"{MISSEVAN_API_ORIGIN}/v2/chatroom/meta"
 MISSEVAN_CHAT_HISTORY_URL: str = f"{MISSEVAN_API_ORIGIN}/v2/chatroom/history/message"
+MISSEVAN_STICKER_TABS_URL: str = f"{MISSEVAN_API_ORIGIN}/v2/chatroom/sticker/tabs"
+MISSEVAN_STICKER_LIST_URL: str = f"{MISSEVAN_API_ORIGIN}/v2/chatroom/sticker/list"
+MISSEVAN_SEND_STICKER_URL: str = f"{MISSEVAN_API_ORIGIN}/v2/chatroom/sticker/send"
 
 GOOGLE_TRANSLATE_URL: str = "https://clients5.google.com/translate_a/t"
-DEEPL_TRANSLATE_URL: str = os.getenv(
-    "DEEPL_TRANSLATE_URL", "https://api-free.deepl.com/v2/translate"
+INDEX_TRANSLATE_API_BASE: str = os.getenv(
+    "INDEX_TRANSLATE_API_BASE", "https://index-translate.bilibili.com/v1"
 ).strip().rstrip("/")
-DEEPL_API_KEY: str = os.getenv("DEEPL_API_KEY", "").strip()
-TRANSLATION_PROVIDER: str = os.getenv("TRANSLATION_PROVIDER", "google").strip().lower()
-if TRANSLATION_PROVIDER not in {"google", "deepl"}:
-    raise ValueError("TRANSLATION_PROVIDER must be 'google' or 'deepl'.")
+INDEX_TRANSLATE_MODEL: str = os.getenv("INDEX_TRANSLATE_MODEL", "Index-Translate-35B-A3B").strip()
 
 # YouTube
 YOUTUBE_API_KEY: str = os.getenv("YOUTUBE_API_KEY", "")

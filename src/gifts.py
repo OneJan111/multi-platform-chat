@@ -4,6 +4,7 @@ from __future__ import annotations
 import re
 
 _NUMBER_RE = re.compile(r"\d(?:[\d.,\s\u00a0\u202f]*\d)?")
+_SUPER_CHAT_TYPES = {"superChatEvent", "superStickerEvent", "superchat"}
 
 
 def parse_amount(display: str) -> tuple[str, float]:
@@ -48,6 +49,80 @@ def set_value(msg: dict, currency: str, value) -> dict:
 def format_amount(currency: str, value: float) -> str:
     text = f"{value:,.2f}".rstrip("0").rstrip(".")
     return f"{currency}{text}"
+
+
+def amount_totals(messages: list[dict]) -> dict[str, float]:
+    """Sum known gift and Super Chat amounts separately by currency."""
+    totals: dict[str, float] = {}
+    for msg in messages:
+        if msg.get("type") != "gift" and msg.get("type") not in _SUPER_CHAT_TYPES:
+            continue
+        currency, value = msg.get("currency"), msg.get("value")
+        if not currency or not value:
+            continue
+        try:
+            amount = float(value)
+        except (TypeError, ValueError):
+            continue
+        if amount > 0:
+            totals[currency] = totals.get(currency, 0.0) + amount
+    return totals
+
+
+def gift_price_label(message: dict) -> str:
+    """Return the known gift amount unless the message text already displays it."""
+    if message.get("type") != "gift":
+        return ""
+    currency, value = message.get("currency"), message.get("value")
+    if not currency or not value:
+        return ""
+    try:
+        amount = float(value)
+    except (TypeError, ValueError):
+        return ""
+    if amount <= 0:
+        return ""
+    label = format_amount(currency, amount)
+    return "" if label in str(message.get("text") or "") else label
+
+
+def platform_totals(messages: list[dict], platforms: tuple[str, ...]) -> dict[str, dict]:
+    """Summarize gift quantities, Super Chat events, and known revenue per platform."""
+    totals = {
+        platform: {
+            "gift_count": 0,
+            "gift_revenue": {},
+            "superchat_count": 0,
+            "superchat_revenue": {},
+        }
+        for platform in platforms
+    }
+    for msg in messages:
+        summary = totals.get(msg.get("platform", ""))
+        if summary is None:
+            continue
+        if msg.get("type") == "gift":
+            count_key, revenue_key = "gift_count", "gift_revenue"
+            try:
+                count = int(msg.get("gift_count", 1) or 1)
+            except (TypeError, ValueError):
+                count = 1
+            summary[count_key] += max(count, 1)
+        elif msg.get("type") in _SUPER_CHAT_TYPES:
+            count_key, revenue_key = "superchat_count", "superchat_revenue"
+            summary[count_key] += 1
+        else:
+            continue
+        currency, value = msg.get("currency"), msg.get("value")
+        if currency and value:
+            try:
+                amount = float(value)
+            except (TypeError, ValueError):
+                continue
+            if amount > 0:
+                revenue = summary[revenue_key]
+                revenue[currency] = revenue.get(currency, 0.0) + amount
+    return totals
 
 
 def leaderboard(messages: list[dict], platform: str = "", top: int = 20) -> list[dict]:

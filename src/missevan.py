@@ -1,9 +1,13 @@
 """MissEvan (猫耳FM) live rooms: room status, a chat listener (no login needed) and sending chat (login cookies)."""
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
 import json
 import logging
 import re
+import secrets
 import threading
 import time
 import uuid
@@ -12,12 +16,15 @@ from typing import Optional
 
 import requests
 
-from src import gifts, user_login
+from src import emotes, gifts, user_login
 from src.config import (
     MISSEVAN_CHAT_HISTORY_URL,
     MISSEVAN_CHATROOM_META_URL,
     MISSEVAN_ROOM_INFO_URL,
     MISSEVAN_SEND_MESSAGE_URL,
+    MISSEVAN_SEND_STICKER_URL,
+    MISSEVAN_STICKER_LIST_URL,
+    MISSEVAN_STICKER_TABS_URL,
     MISSEVAN_USER_INFO_URL,
     MISSEVAN_WEB_ORIGIN,
     MISSEVAN_WEBSOCKET_URL,
@@ -28,6 +35,196 @@ log = logging.getLogger(__name__)
 _UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36"
 _HEARTBEAT = "\u2764\ufe0f"  # the site's keep-alive frame is literally "❤️"
 _HEARTBEAT_EVERY = 25
+_PRESET_KAOMOJI = (
+    "_(┐「ε:)_",
+    "_(:3 」∠)_ ",
+    "(￣y▽￣)~*",
+    "(ง •̀_•́)ง",
+    " (•̀ᴗ•́)و ̑̑ ",
+    "ヽ(•̀ω•́ )ゝ",
+    "(,,• ₃ •,,)",
+    "(｡˘•ε•˘｡) ",
+    "(=ﾟωﾟ)ﾉ",
+    "(○’ω’○) ",
+    "(´・ω・`)",
+    "ヽ(･ω･｡)ﾉ",
+    "(。-`ω´-)",
+    "(´・ω・`)",
+    "(´・ω・)ﾉ",
+    "(ﾉ･ω･)ﾉﾞ",
+    "(ó㉨ò)",
+    "・㉨・",
+    "( ・◇・)？",
+    "ヽ(*´Д｀*)ﾉ",
+    "(´°̥̥̥̥̥̥̥̥ω°̥̥̥̥̥̥̥̥｀)",
+    "(╭￣3￣)╭♡",
+    "(☆ﾟ∀ﾟ)",
+    "⁄(⁄ ⁄•⁄ω⁄•⁄ ⁄)⁄",
+    "(´-ι_-｀)",
+    "ಠ౪ಠ",
+    "ಥ_ಥ",
+    "(/≥▽≤/)",
+    "ヾ (o ° ω ° O ) ノ゙",
+    "╰(*°▽°*)╯",
+    "o(*≧▽≦)ツ",
+    ">ㅂ<",
+    "ˋ▽ˊ",
+    "✪ε✪",
+    "✪υ✪",
+    "✪ω✪",
+    "눈_눈",
+    ",,Ծ‸Ծ,,",
+    "π__π",
+    "（/TДT)/ ",
+    "(｡☉౪ ⊙｡)",
+    "o(*≧▽≦)ツ┏━┓",
+    "<(▰˘◡˘▰)>",
+    "(｡・`ω´･)",
+    "ʅ(‾◡◝)",
+    "（´∀｀*) ",
+    "（＾∀＾）",
+    " (o^∇^o)ﾉ ",
+    "ヾ(=^▽^=)ノ",
+    "(*￣∇￣*)",
+    "(*´∇｀*)",
+    "(*ﾟ▽ﾟ*)",
+    "(｡･ω･)ﾉﾞ",
+    "(≡ω≡．)",
+    "(｀･ω･´) ",
+    "(´･ω･｀) ",
+    "(●´ω｀●)φ",
+    "(/= _ =)/~┴┴",
+    "(/\"≡ _ ≡)/~┴┴",
+    "(╯‵□′)╯︵┻━┻",
+    "(┙>∧<)┙へ┻┻",
+    "（╯－＿－）╯╧╧",
+    "(╬▔皿▔)",
+    "(╬￣皿￣)凸",
+    "(｀･д･´)",
+    "(ノ｀Д´)ノ",
+    "(ﾟ皿ﾟﾒ)",
+    "(＃｀皿´)",
+    "( -д-)ﾉ",
+    "（°ο°）",
+    "Σ( ° △ °|||)︴",
+    "∑(っ °Д °;)っ",
+    "(°□°；)",
+    "(⊙□⊙)",
+    "( ° ▽、° )",
+    "⊙▂⊙",
+    "ミ ﾟДﾟ彡",
+    "╮(╯▽╰)╭",
+    "╮(╯_╰)╭",
+    "(￣▽￣\")",
+    "（￣工￣lll）",
+    "ᕕ( ᐛ )ᕗ",
+    " ( ＿ ＿)ノ｜",
+    "ㄟ( ▔, ▔ )ㄏ",
+    " (*´Д｀*) ",
+    "_(:з」∠)_",
+    "ヽ(*´Д｀*)ﾉ",
+    "(´ﾟДﾟ`)",
+    "(;´Д`)",
+    "(｀･ω･)",
+    "(=ﾟωﾟ)=",
+    "| ω・´)",
+    "|-` )",
+    "|д` )",
+    "|ー` )",
+    "|∀` )",
+    "(つд⊂)",
+    "(ﾟДﾟ≡ﾟДﾟ)",
+    "(＾o＾)ﾉ",
+    "(|||ﾟДﾟ)",
+    "( ﾟ∀ﾟ)",
+    "( ´∀`)",
+    "(*´∀`)",
+    "(*ﾟ∇ﾟ)",
+    "(*ﾟーﾟ)",
+    "(　ﾟ 3ﾟ)",
+    "(*´д`)",
+    "(・∀・)",
+    "(ゝ∀･)",
+    "(〃∀〃)",
+    "(*ﾟ∀ﾟ*)",
+    "( ﾟ∀。)",
+    "( `д´)",
+    "(`ε´ )",
+    "(`ヮ´ )",
+    "σ`∀´)",
+    "ﾟ∀ﾟ)σ",
+    "ﾟ ∀ﾟ)ノ",
+    "(╬ﾟдﾟ)",
+    "(|||ﾟдﾟ)",
+    "( ﾟдﾟ)",
+    "Σ( ﾟдﾟ)",
+    "( ;ﾟдﾟ)",
+    "( ;´д`)",
+    "( ☉д⊙)",
+    "(((　ﾟдﾟ)))",
+    "( ` ・´)",
+    "( ´д`)",
+    "( -д-)",
+    "( ﾉд`ﾟ)",
+    "( TдT)",
+    "(￣ｰ￣)",
+    "(￣ . ￣)",
+    "(￣皿￣)",
+    "(￣艸￣)",
+    "(￣︿￣)",
+    "(￣︶￣)",
+    "ヾ(´ωﾟ｀)",
+    "(*´ω`*)",
+    "(・ω・)",
+    "( ´・ω)",
+    "(｀・ω)",
+    "(´・ω・`)",
+    "(`・ω・´)",
+    "( `ー´)",
+    "( ´ρ`)",
+    "( ﾟωﾟ)",
+    "(oﾟωﾟo)",
+    "(　^ω^)",
+    "(｡◕∀◕｡)",
+    "/( ◕‿‿◕ )\\",
+    "ヾ(´ε`ヾ)",
+    "(ノﾟ∀ﾟ)ノ",
+    "(σﾟдﾟ)σ",
+    "(σﾟ∀ﾟ)σ",
+    "|дﾟ )\"",
+    "(つﾟд`ﾟ)",
+    "←_←",
+    "→_→",
+    "(|||￢ω￢)",
+    "(￣﹃￣)",
+)
+
+
+def preset_kaomoji() -> tuple[str, ...]:
+    """Preset kaomoji from MissEvan's room chat composer."""
+    return _PRESET_KAOMOJI
+
+
+def _missevan_message_uuid(source: Optional[uuid.UUID] = None) -> str:
+    """Generate the message UUID used by the current MissEvan web client."""
+    if source is None:
+        node = secrets.randbits(48) | (1 << 40)
+        source = uuid.uuid1(node=node, clock_seq=secrets.randbits(14))
+
+    raw = bytearray(source.bytes)
+    checksum_input = raw[:8] + b"\x03\x00" + raw[8:12]
+    digest = hmac.new(
+        b"d6fc3a4a06adbde89223bvefedc24fecde188aaa9161",
+        checksum_input,
+        hashlib.sha1,
+    ).digest()
+    encoded_digest = base64.b64encode(digest).decode("ascii")
+
+    checksum = 0
+    for character in encoded_digest:
+        checksum = ((31 * checksum + ord(character) + 2**31) % 2**32) - 2**31
+    raw[12:16] = (checksum % 2**32).to_bytes(4, "big")
+    return str(uuid.UUID(bytes=bytes(raw)))
 
 
 def parse_room_id(text: str) -> str:
@@ -88,15 +285,111 @@ def send_message(room_id: str, message: str) -> tuple[bool, str]:
         return False, "Not logged in to MissEvan — import cookies in the 🍪 Cookies tab."
     try:
         s = _session(cookies)
-        body = {"room_id": int(room_id), "message": message, "uuid": str(uuid.uuid4())}
-        csrf = s.cookies.get("bili_jct")
-        if csrf:
-            body["csrf"] = csrf
-        r = s.post(MISSEVAN_SEND_MESSAGE_URL, json=body, headers={"Referer": f"{MISSEVAN_WEB_ORIGIN}/live/{room_id}"}, timeout=10)
+        message_id = _missevan_message_uuid()
+        body = {"room_id": int(room_id), "uuid": str(message_id), "message": message}
+        csrf_token = s.cookies.get("bili_jct")
+        if csrf_token:
+            body["csrf"] = csrf_token
+        headers = {
+            "Accept": "application/json, text/plain, */*",
+            "Content-Type": "application/json; charset=UTF-8",
+            "Referer": f"{MISSEVAN_WEB_ORIGIN}/live/{room_id}",
+            "X-Requested-With": "XMLHttpRequest",
+        }
+        r = s.post(
+            MISSEVAN_SEND_MESSAGE_URL,
+            json=body,
+            headers=headers,
+            timeout=10,
+        )
         data = r.json()
-        if data.get("code") == 0:
+        info = data.get("info")
+        message_id = info.get("msg_id") if isinstance(info, dict) else None
+        if (data.get("code") == 0 and isinstance(info, dict)
+                and info.get("ok") == 1 and message_id):
+            user = info.get("user") if isinstance(info.get("user"), dict) else {}
+            user_id = user.get("user_id")
+            details = f" (UID {user_id})" if user_id else ""
+            return True, f"{message_id}{details}"
+        error = info if isinstance(info, str) else (
+            info.get("message") or info.get("error") if isinstance(info, dict) else None
+        )
+        if data.get("code") == 0 and isinstance(info, dict) and info.get("ok") == 1:
+            return False, "MissEvan acknowledged the request without a message ID; delivery could not be verified."
+        return False, str(error or data.get("message") or f"HTTP {r.status_code}")
+    except Exception as exc:
+        return False, str(exc)
+
+
+def get_sticker_tabs(room_id: str) -> tuple[list[dict], str]:
+    """Return the logged-in user's available room-sticker packages."""
+    cookies = login_cookies()
+    if not cookies:
+        return [], "Log in to MissEvan in the 🍪 Cookies tab to load room stickers."
+    try:
+        response = _session(cookies).get(
+            MISSEVAN_STICKER_TABS_URL, params={"room_id": int(room_id)}, timeout=10
+        )
+        data = response.json()
+        info = data.get("info") or {}
+        if data.get("code") != 0:
+            return [], str(info or data.get("message") or f"HTTP {response.status_code}")
+        tabs = info.get("tabs") or []
+        return ([tab for tab in tabs if isinstance(tab, dict)], "")
+    except Exception as exc:
+        return [], str(exc)
+
+
+def get_stickers(room_id: str, package_id: int) -> tuple[list[dict], str]:
+    """Return stickers in a room package."""
+    cookies = login_cookies()
+    if not cookies:
+        return [], "Log in to MissEvan in the 🍪 Cookies tab to load room stickers."
+    try:
+        response = _session(cookies).get(
+            MISSEVAN_STICKER_LIST_URL,
+            params={"room_id": int(room_id), "package_id": int(package_id)},
+            timeout=10,
+        )
+        data = response.json()
+        info = data.get("info") or {}
+        if data.get("code") != 0:
+            return [], str(info or data.get("message") or f"HTTP {response.status_code}")
+        stickers = info.get("stickers") or []
+        return ([sticker for sticker in stickers if isinstance(sticker, dict)], "")
+    except Exception as exc:
+        return [], str(exc)
+
+
+def send_sticker(room_id: str, package_id: int, sticker_id: int) -> tuple[bool, str]:
+    """Send a room sticker using MissEvan's current room-sticker API."""
+    cookies = login_cookies()
+    if not cookies:
+        return False, "Not logged in to MissEvan — import cookies in the 🍪 Cookies tab."
+    try:
+        response = _session(cookies).post(
+            MISSEVAN_SEND_STICKER_URL,
+            json={
+                "room_id": int(room_id),
+                "sticker_id": int(sticker_id),
+                "package_id": int(package_id),
+            },
+            headers={
+                "Accept": "application/json, text/plain, */*",
+                "Content-Type": "application/json; charset=UTF-8",
+                "Referer": f"{MISSEVAN_WEB_ORIGIN}/live/{room_id}",
+                "X-Requested-With": "XMLHttpRequest",
+            },
+            timeout=10,
+        )
+        data = response.json()
+        info = data.get("info")
+        if data.get("code") == 0 and (not isinstance(info, dict) or info.get("ok", 1) == 1):
             return True, ""
-        return False, str(data.get("info") or data.get("message") or f"HTTP {r.status_code}")
+        error = info if isinstance(info, str) else (
+            info.get("message") or info.get("error") if isinstance(info, dict) else None
+        )
+        return False, str(error or data.get("message") or f"HTTP {response.status_code}")
     except Exception as exc:
         return False, str(exc)
 
@@ -121,7 +414,7 @@ def get_room_info(room_id: str) -> dict:
             "live": bool(status.get("open")),
             "online": stats.get("online", 0),
             "followers": stats.get("attention_count", 0),
-            "cover": room.get("cover_url", ""),
+            "cover": room.get("cover_url") or room.get("cover", ""),
             "start_time": datetime.fromtimestamp(open_ms / 1000).strftime("%Y-%m-%d %H:%M:%S") if open_ms and status.get("open") else "",
         }
     except Exception:
@@ -281,7 +574,10 @@ class MissEvanListener:
             d = s.get(MISSEVAN_CHAT_HISTORY_URL, params={"room_id": self.room_id}, timeout=10).json()
             for h in (d.get("info") or {}).get("history") or []:
                 if h.get("type") == "message":
-                    msg = self._chat(h.get("msg_id", ""), h.get("user") or {}, h.get("message", ""), h.get("create_time"))
+                    msg = self._chat(
+                        h.get("msg_id", ""), h.get("user") or {},
+                        h.get("message", ""), h.get("create_time"), h.get("sticker"),
+                    )
                     if msg:
                         msg["history"] = True
                         self.messages.append(msg)
@@ -306,21 +602,37 @@ class MissEvanListener:
             "color": 16777215,
         }
 
-    def _chat(self, mid: str, user: dict, text: str, ts=None) -> Optional[dict]:
+    def _chat(self, mid: str, user: dict, text: str, ts=None, sticker=None) -> Optional[dict]:
         mid = f"me_{mid or time.time_ns()}"
         if mid in self._seen:
             return None
         self._seen.add(mid)
         if len(self._seen) > 4000:
             self._seen = set(list(self._seen)[-2000:])
-        return self._base(mid, user, text, "danmaku", ts)
+        msg = self._base(mid, user, text, "danmaku", ts)
+        if isinstance(sticker, dict):
+            image_url = (
+                sticker.get("image_url") or sticker.get("url")
+                or sticker.get("icon_url") or sticker.get("image")
+            )
+            image_url = emotes.safe_chat_image_url(image_url)
+            if image_url:
+                msg["sticker_url"] = image_url
+        elif isinstance(sticker, str):
+            image_url = emotes.safe_chat_image_url(sticker)
+            if image_url:
+                msg["sticker_url"] = image_url
+        return msg
 
     def _handle(self, m: dict):
         kind, event = m.get("type"), m.get("event")
         if m.get("room_id") not in (None, int(self.room_id)):
             return  # site-wide broadcasts (notify:*) are about other rooms
-        if kind == "message" and event == "new":
-            msg = self._chat(m.get("msg_id", ""), m.get("user") or {}, m.get("message", ""))
+        if kind == "message" and event in ("new", "sticker"):
+            msg = self._chat(
+                m.get("msg_id", ""), m.get("user") or {},
+                m.get("message", ""), sticker=m.get("sticker"),
+            )
             if msg:
                 self.messages.append(msg)
         elif kind == "question" and event == "ask":
@@ -339,7 +651,7 @@ class MissEvanListener:
             self.messages.append(gifts.set_value(self._base(
                 f"me_gift_{oid or time.time_ns()}", m.get("user") or {},
                 f"🎁 {g.get('name', '')} ×{num}", "gift", m.get("time"),
-            ), "💎", value))
+            ), "💎", value) | {"gift_count": num})
         elif kind == "member" and event == "join_queue":
             for u in m.get("queue") or []:
                 if u.get("user_id"):

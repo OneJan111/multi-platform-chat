@@ -6,22 +6,27 @@ A Streamlit dashboard for live streamers and their audience. It merges live chat
 
 The UI is available in **English / 简体中文 / 日本語** and fits PC and tablet screens (landscape and portrait).
 
+## TL;DR
+
+A multilingual dashboard for monitoring **YouTube, Bilibili and MissEvan** live streams in one place. Read and send chat, moderate and translate messages, track gifts and revenue, use text-to-speech, and control OBS or show a chat overlay.
+
 ## Features
 
 | Area | What it does |
 |---|---|
-| 💬 **Chat** | Live chat from YouTube, Bilibili and MissEvan in one feed, with platform badges, membership badges with the site's own icon (the YouTube channel's member badge, Bilibili's 舰长/提督/总督 icons; MissEvan 贵族/超粉 shows 💎), per-site show/hide checkboxes and **A− / A+** text size buttons on each feed. Message times use the server's time zone by default; pick another in the sidebar under **🕒 Chat time zone** (remembered in the URL as `?tz=`). **Site emotes** pickers next to the send box send a site's own emotes to that site only: the YouTube channel's member stamps (collected from chat; with a YouTube login the full set, with 🔒 on stamps you can't use) and the Bilibili room's emote packs (needs a Bilibili login; 🔒 emotes need e.g. the fan medal) plus the streamer's **充电表情** (charging-supporter emotes; listed even without a login, usable once you charge the streamer). Each pack can be collapsed (or use **Expand all / Collapse all**); the streamer's own packs (⭐: 充电表情, 房间专属表情 and their own 装扮 packs) come first and start open. 装扮 packs are named after the 装扮, plus the UP主 it belongs to when the 装扮 shop lists one. Typed YouTube codes such as `:_wave:` become stamps on YouTube and are left out of the copy sent to Bilibili/MissEvan. MissEvan has no emote picker. |
+| 💬 **Chat** | Live chat from YouTube, Bilibili and MissEvan in one feed, with platform badges, membership badges with the site's own icon (the YouTube channel's member badge, Bilibili's 舰长/提督/总督 icons; MissEvan 贵族/超粉 shows 💎), per-site show/hide checkboxes and **A− / A+** text size buttons on each feed. Message times use the server's time zone by default; pick another in the sidebar under **🕒 Chat time zone** (remembered in the URL as `?tz=`). **Site emotes** pickers next to the send box offer YouTube channel stamps, Bilibili room emote packs and MissEvan room stickers plus the site's built-in preset kaomoji. YouTube stamps are collected from chat (with a YouTube login the full set is listed, with 🔒 on stamps you can't use); Bilibili packs need a Bilibili login and 🔒 emotes may require e.g. the fan medal. The streamer's **充电表情** (charging-supporter emotes) are listed even without a login, usable once you charge the streamer. Bilibili and MissEvan pickers are available only while listening to that room. YouTube stamps, Bilibili emotes and MissEvan kaomoji are added to the message box and sent when you press **Send**; selected YouTube/Bilibili emotes are sent only to their own site. Clicking a MissEvan room sticker sends it immediately. Packs are cached for the current YouTube stream / Bilibili room and fetched again when you switch streams or rooms. Each pack can be collapsed (or use **Expand all / Collapse all**); the streamer's own Bilibili packs (⭐: 充电表情, 房间专属表情 and their own 装扮 packs) come first and start open. 装扮 packs are named after the 装扮, plus the UP主 it belongs to when the 装扮 shop lists one. Typed YouTube codes such as `:_wave:` become stamps on YouTube and are left out of the copy sent to Bilibili/MissEvan. |
+| 🐱 **MissEvan room stickers** | The MissEvan picker loads available sticker packages for the selected room after login. Open a package and click a sticker to send it immediately to MissEvan; locked packages are disabled. Received room stickers are displayed as images in chat and the OBS browser overlay when their image is served from MissEvan's trusted CDN. |
 | ✉️ **Send** | Post one message to several sites at once (tick YouTube / Bilibili / MissEvan). |
-| 🎁 **Gifts & Super Chats** | Gifts (including free gifts), Super Chats, Super Stickers, memberships and paid questions appear in their own column. YouTube gift memberships show the gifter's purchase ("Gifted 10 memberships") and each recipient ("received a gift membership by …"). Bilibili 🧧 红包 show the sender, price and contents, then the winners when the draw ends. Recipients and winners are listed but not read aloud. Mark each one 🙏 *thanked* (it is greyed out) or *Mark all thanked*. |
+| 🎁 **Gifts & Super Chats** | Gifts (including free gifts), Super Chats, Super Stickers, memberships and paid questions appear in their own column. Known gift prices appear beside each gift; the received total is shown by currency, without converting or combining currencies. YouTube gift memberships show the gifter's purchase ("Gifted 10 memberships") and each recipient ("received a gift membership by …"). Bilibili 🧧 红包 show the sender, price and contents, then the winners when the draw ends. Recipients and winners are listed but not read aloud. Mark each one 🙏 *thanked* (it is greyed out) or *Mark all thanked*. |
 | 👋 **Joins** | Viewers entering the room are listed in their own feed under the gifts, not mixed into chat (use *🙈 Hide* / *👁️ Show* on the Joins header). |
 | 🛡️ **Moderation** | 🚫 on any message blocks that user. Blocked users, keyword & regex filters and allow-lists are saved to `chat_filters.json` and kept after restarts. |
-| 🌐 **Translation** | Inline translation of chat to Chinese (Simplified/Traditional), English, Japanese or Korean. Uses Google by default; optionally configure DeepL with an API key. Enabled translations send chat text to the selected provider. |
+| 🌐 **Translation** | Inline translation of chat to Chinese (Simplified/Traditional), English, Japanese or Korean. Tries the free Index-Translate service first, then falls back to Google. A built-in streaming glossary overrides machine translations for terms such as *舰长*, *醒目留言*, *上舰* and *弹幕*. Enabled translations send chat text to these providers. |
 | 🔤 **Reading aids** | Pinyin / furigana ruby over Super Chat text, gift names and usernames so the streamer can read them aloud; translations into Japanese get furigana, and Super Chat and gift translations into Chinese get pinyin. |
 | 💾 **Remembered settings** | Your settings (TTS, translation, feed layout, text size, OBS overlay options, language, time zone, …) are saved in this browser and restored next time. Room IDs, stream URLs and chat aren't saved; logins use their own cookie. |
 | 🔊 **Text-to-speech** | Reads chat aloud on this computer (offline `pyttsx3` or online gTTS) or **in the viewer's browser with the device's own voices** (used automatically when the dashboard is opened from another device or Streamlit Cloud). Includes: language filter, emoji skipping, reading the translated text (when the TTS language is Auto-detect or matches *Translate to*), skipping usernames for regular chat, **announcing gifts & Super Chats first**, a 🔊 replay button on every message, and **⏭ Skip / ⏹ Stop TTS** buttons to cut off a sensitive comment instantly. |
 | 📡 **Stream Monitoring** | Per-site controls (stream URL / room ID, start/stop listener, login status) plus live / offline state, title and viewer count for each platform. |
 | 🎬 **OBS** | One streamer-only tab for everything OBS: connect, start/stop stream & recording, switch scenes and sources (OBS WebSocket v5), send chat to an OBS Text source, and the chat-only Browser Source overlay. Off until you turn on *Connect to OBS* in that tab. |
-| 📊 **Analytics** | Viewer count (sampled from Stream Monitoring) and messages-per-minute charts, top chatters, and 🔥 hotspots for clipping (CSV, timestamp list and DaVinci Resolve EDL markers). |
+| 📊 **Analytics** | Viewer count (sampled from Stream Monitoring), messages-per-minute charts, top chatters, per-site gift and Super Chat counts/revenue (totals remain in each site's original currency), and 🔥 hotspots for clipping (CSV, timestamp list and DaVinci Resolve EDL markers). |
 | 🍪 **Cookies** | Import login cookies for Bilibili, MissEvan and YouTube — read from a browser on this computer (Chrome / Edge / Firefox), or paste / upload cookies exported from any browser (for servers). |
 
 ## Requirements
@@ -50,9 +55,8 @@ The template only contains placeholder values (`your-…`, `xxx`). **Replace the
 | `YOUTUBE_CHANNEL` | Default YouTube channel link (or stream URL) in the Stream Monitoring tab; click *Start listening* to watch it | `https://www.youtube.com/@Ya-chan` |
 | `BILIBILI_ROOM_ID` | Default Bilibili live room | — |
 | `MISSEVAN_ROOM_ID` | Default MissEvan live room | `869215180` |
-| `TRANSLATION_PROVIDER` | Translation service: `google` or `deepl` | `google` |
-| `DEEPL_API_KEY` | DeepL API key (required when `TRANSLATION_PROVIDER=deepl`) | — |
-| `DEEPL_TRANSLATE_URL` | DeepL API endpoint; use `https://api-free.deepl.com/v2/translate` for Free or `https://api.deepl.com/v2/translate` for Pro | DeepL API Free |
+| `INDEX_TRANSLATE_API_BASE` | Index-Translate OpenAI-compatible API base; set empty to disable it | `https://index-translate.bilibili.com/v1` |
+| `INDEX_TRANSLATE_MODEL` | Index-Translate model | `Index-Translate-35B-A3B` |
 | `OBS_HOST` | OBS WebSocket host | `localhost` |
 | `OBS_PORT` | OBS WebSocket port | `4455` |
 | `OBS_PASSWORD` | OBS WebSocket password | — |
@@ -65,6 +69,8 @@ The template only contains placeholder values (`your-…`, `xxx`). **Replace the
 
 > ⚠️ `.env` and `.login_secret` contain secrets and are listed in `.gitignore`. Never commit or share them.
 > For Streamlit Community Cloud, set `LOGIN_SECRET = "your-long-random-secret"` in the app's **Secrets** settings. Locally, you can put the same TOML entry in `.streamlit/secrets.toml`. The `.env`/environment value takes precedence; if neither is set, the app generates `.login_secret`.
+>
+> Translation tries Index-Translate first and automatically falls back to Google. Set `INDEX_TRANSLATE_API_BASE=` to disable Index-Translate and use Google directly. The built-in streaming glossary protects known terms from being changed by either translator. Translation sends chat text to the provider; use the translation toggle only if you are comfortable with that.
 
 ## Running
 
@@ -98,6 +104,8 @@ What goes in **Room ID or URL**:
    - **App running on a server / another computer?** The app can only read a browser installed on the machine it runs on (otherwise you get `Could not find Firefox profile directory`), so **🧭 Browser on this computer** is only offered when the dashboard is opened on that machine itself. Choose **📋 Paste / upload cookies** instead and paste cookies exported from your own browser: a `Cookie:` header copied from DevTools (F12 → Network), or an export from an extension such as *Get cookies.txt LOCALLY* (Netscape `cookies.txt`) or *Cookie-Editor* (JSON). Upload the exported file if you prefer.
 3. Tick the sites under **Send to** above the message box and send.
 
+MissEvan sending uses the imported account and requires an account eligible to chat in that room (the site's web client requires a bound phone number). If it still fails after binding, re-import fresh MissEvan cookies.
+
 **Logins are per user.** Everyone who opens the dashboard has their own logins: your cookies are never used or shown for anyone else, and other users can't send chat as you. Your logins are stored only in your own browser as an encrypted cookie (the server keeps only the key, `LOGIN_SECRET` / `.login_secret`), so they survive a page refresh or server restart. Opening the dashboard in another browser or a private window starts logged out. Listeners you start use the login you had when you started them.
 
 The 🔑 line in each **📡 Stream Monitoring** column shows the login state. Sending to MissEvan is disabled when its cookies have expired. Click **🚪 Clear login** under it to forget that site's cookies — they are removed from this session and this browser, and chat keeps working read-only.
@@ -111,14 +119,19 @@ Sending to YouTube with browser cookies is unofficial (it works like youtube.com
 - Each feed (Chat, Gifts & Super Chats, Joins) has **A− / A+** at the top right to resize its text (80–200%).
 - **◫ 2 columns / ☰ 1 column** (right of the site checkboxes) switches between two lists side by side and one stacked column. **▲ ▼** on each feed changes its position and, in two-column mode, **◀ / ▶** moves it to the other column. Default order: Gifts & Super Chats, Chat, Joins.
 - The YouTube / Bilibili / MissEvan checkboxes above the feeds show or hide each site's messages.
-- Chat refreshes every `CHAT_POLL_INTERVAL` seconds (default 5). *Max messages displayed* in the sidebar limits how many chat lines are kept on screen.
+- Only the live Chat feed refreshes every `CHAT_POLL_INTERVAL` seconds (default 5); other tabs and controls are not re-run by the polling timer. *Max messages displayed* in the sidebar limits how many chat lines are kept on screen.
 - *🗑️ Clear chat history* (sidebar) empties Chat and Joins but keeps Gifts & Super Chats, so nobody you still need to thank is lost.
 
 ### Gifts & Super Chats
 
 - New gifts and Super Chats appear in the right-hand column. Click an item after thanking the viewer; it is greyed out with a ✅ *Thanked* badge. Click it again to undo.
 - *Mark all thanked* marks everything currently pending.
+- Each gift shows its known price; the feed header shows the received total, keeping different currencies separate.
 - Thanked status is kept for the current browser session only.
+
+### Translation
+
+Turn on **Translate chat** and choose a target language in the sidebar. The app tries Index-Translate first and uses Google Translate if Index-Translate is unavailable or returns an invalid response. Known streaming terms (for example *舰长*, *醒目留言*, *上舰* and *弹幕*) use the built-in glossary overrides instead of a machine-translated term. Set `INDEX_TRANSLATE_API_BASE=` in `.env` to disable Index-Translate and use Google directly. Chat text is sent to the translation provider.
 
 ### Blocking users
 
@@ -154,6 +167,8 @@ To put Super Chats and chat on **different screens or scenes**, use the *Super C
 ### 🔥 Hotspots for clipping
 
 The 📊 Analytics tab finds moments where chat, gifts and Super Chats spike well above the stream's usual level (score = messages + 5 × gifts/SC per window, compared with the median). Each hotspot lists start/end times counted from the stream start (taken automatically from Stream Monitoring, or the first message, or a clock time you enter), its peak, and the hot phrases. Lead-in (20 s by default) moves clip starts earlier, because chat reacts after the moment happens. Download as:
+
+Analytics also shows gift and Super Chat event counts and known revenue for YouTube, Bilibili and MissEvan separately. Different currencies (for example ¥ and 💎) are never converted or added together.
 
 - **CSV** (opens in Excel), with times, counts and phrases;
 - **Timestamps (.txt)**, `HH:MM:SS` lines you can paste into a video description or note;

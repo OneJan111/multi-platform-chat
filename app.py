@@ -77,6 +77,7 @@ hl = _fresh(hl)
 ytw = _fresh(ytw)
 yt = _fresh(yt)
 bili = _fresh(bili)
+me = _fresh(me)
 reading = _fresh(reading)
 resources = _fresh(resources)
 # Overlay state lives on `sys` and ensure_started() replaces a server from an older copy, so reloading is safe.
@@ -132,6 +133,7 @@ div[class*="st-key-thankbox_"]:hover .chat-bubble { filter: brightness(1.15); }
 .chat-translation.pending { color: color-mix(in srgb, currentColor 50%, transparent); font-style: italic; }
 /* Message text sits on its own line under the badges / time / username */
 .chat-text { margin-top: 2px; }
+.gift-price { color: color-mix(in srgb, #f0b429 80%, currentColor); font-size: 0.9em; font-weight: 700; white-space: nowrap; }
 .chat-reading { line-height: 2.2; }
 .chat-reading rt { font-size: 0.62em; color: color-mix(in srgb, #f08c00 70%, currentColor); letter-spacing: 0; }
 .badge {
@@ -348,6 +350,8 @@ _DEFAULT_FEED_SIDES = {"paid": "left", "chat": "right", "join": "left"}
 def _init_state():
     defaults = {
         "chat_messages": [],          # unified list of all chat messages
+        "chat_message_input": "",
+        "bili_emote_draft": [],
         "yt_page_token": "",
         "bili_listener": None,
         "blocked_msgs": [],
@@ -646,6 +650,17 @@ def _author_html(name: str) -> str:
     return f'<span class="chat-reading">{annotated.replace("<br>", " · ")}</span>'
 
 
+def _render_room_cover(url: str) -> None:
+    """Render trusted room covers in the browser, without Streamlit's server-side image fetch."""
+    safe_url = emotes.safe_chat_image_url(url)
+    if safe_url:
+        st.markdown(
+            f'<img src="{html_lib.escape(safe_url, quote=True)}" alt="Room cover" '
+            'referrerpolicy="no-referrer" style="width:200px;max-width:100%;height:auto;">',
+            unsafe_allow_html=True,
+        )
+
+
 def _message_text_html(msg: dict, text: str) -> str:
     emote_map = msg.get("emotes") or {}
     text_html = emotes.text_to_html(
@@ -694,6 +709,9 @@ def _render_message(msg: dict, key_prefix: str = "", thank: bool = False):
     author = _author_html(msg.get("author", ""))
     text = msg.get("text", "")
     text_html = _message_text_html(msg, text)
+    gift_price = gifts.gift_price_label(msg)
+    if gift_price:
+        text_html += f'<span class="gift-price"> · {html_lib.escape(gift_price)}</span>'
     translation_html = ""
     if st.session_state["translate_enabled"] and text and msg.get("type") != "enter":
         target = st.session_state["translate_target"]
@@ -1964,8 +1982,7 @@ with tab_status:
                 area = info.get("parent_area_name", "")
                 if area:
                     st.caption(t("Category: {area} › {sub}", area=area, sub=info.get("area_name", "")))
-                if info.get("cover"):
-                    st.image(info["cover"], width=200)
+                _render_room_cover(info.get("cover", ""))
                 viewers = info.get("online", 0)
                 bili_viewers_now = viewers
                 st.metric(t("Viewers"), f"{viewers:,}")
@@ -2032,8 +2049,7 @@ with tab_status:
                 st.subheader(info.get("title", ""))
                 if info.get("uname"):
                     st.caption(t("Streamer: {name}", name=info["uname"]))
-                if info.get("cover"):
-                    st.image(info["cover"], width=200)
+                _render_room_cover(info.get("cover", ""))
                 _l = st.session_state["me_listener"]
                 viewers = _l.online if _l and _l.online is not None else info.get("online", 0)
                 if info["live"] and viewers:
@@ -2051,9 +2067,6 @@ with tab_status:
 # ═══════════════════════════════════════════════════════════════════════════════
 # TAB: CHAT
 # ═══════════════════════════════════════════════════════════════════════════════
-
-_EMOTE_TTL = 600
-
 
 def _emote_button(e: dict, key: str, locked_help: str, on_pick=None) -> bool:
     alt = re.sub(r"[\[\]()\\]", "", e["name"])[:24] or "emote"
@@ -2170,28 +2183,58 @@ def _emote_packs(packs: list[dict], key: str, locked_help: str) -> dict | None:
     return picked
 
 
-_YT_STAMP_MAX = 200  # YouTube's chat message length limit
+def _append_message_input(value: str) -> None:
+    draft = st.session_state.get("chat_message_input", "")
+    if draft and not draft[-1].isspace():
+        draft += " "
+    st.session_state["chat_message_input"] = draft + value
 
 
-# The draft lives in its own key: widget state inside a closed popover is discarded.
-def _add_yt_stamp(emote: dict) -> None:
-    draft = st.session_state.get("yt_stamp_draft", "")
-    if len(draft) + len(emote["code"]) <= _YT_STAMP_MAX:
-        st.session_state["yt_stamp_draft"] = draft + emote["code"]
+def _append_youtube_emote_input(emote: dict) -> None:
+    _append_message_input(emote["code"])
 
 
-def _sync_yt_stamp_input() -> None:
-    st.session_state["yt_stamp_draft"] = st.session_state.get("yt_stamp_input", "")
+def _append_bili_emote_input(emote: dict) -> None:
+    token = f"[{emote['name']}]"
+    draft = st.session_state.get("chat_message_input", "")
+    if draft and not draft[-1].isspace():
+        draft += " "
+    st.session_state["chat_message_input"] = draft + token
+    st.session_state.setdefault("bili_emote_draft", []).append(
+        {"token": token, "unique": emote["unique"]}
+    )
 
 
-def _send_yt_stamps(yt_chat: str, yt_vid: str) -> None:
-    draft = st.session_state.get("yt_stamp_draft", "").strip()
-    if not draft:
-        return
-    ok, err = yt.send_chat(yt_chat, yt_vid, draft)
-    st.session_state["yt_stamp_result"] = (ok, err)
-    if ok:
-        st.session_state["yt_stamp_draft"] = ""
+def _split_bili_emote_draft(message: str) -> tuple[list[tuple[str, str]], str]:
+    """Split selected Bilibili emotes from text, preserving their order for send-on-submit."""
+    pending = list(st.session_state.get("bili_emote_draft", []))
+    remaining = message
+    segments: list[tuple[str, str]] = []
+    other_parts: list[str] = []
+    while pending:
+        match = None
+        for index, emote in enumerate(pending):
+            token = emote["token"]
+            position = remaining.find(token)
+            if position >= 0 and (match is None or position < match[0]):
+                match = (position, index, token)
+        if match is None:
+            break
+        position, index, token = match
+        text = remaining[:position].strip()
+        if text:
+            segments.append(("text", text))
+            other_parts.append(text)
+        segments.append(("emote", pending.pop(index)["unique"]))
+        remaining = remaining[position + len(token):]
+    text = remaining.strip()
+    if text:
+        segments.append(("text", text))
+        other_parts.append(text)
+    if not segments and message.strip():
+        segments.append(("text", message.strip()))
+        other_parts.append(message.strip())
+    return segments, " ".join(other_parts)
 
 
 def _report_send(site: str, ok: bool, err: str) -> None:
@@ -2225,9 +2268,10 @@ _EMOTE_IMG_JS = """<script>(() => {
 })();</script>"""
 
 
-def _site_emote_row(yt_chat: str, yt_vid: str, bili_room: str) -> None:
-    """One picker per site, each sending only to its own site. YouTube stamps are collected into a
-    draft (several stamps plus text per message); a Bilibili emote is a danmaku of its own."""
+def _site_emote_row(yt_chat: str, yt_vid: str, bili_room: str, bili_monitoring: bool,
+                    me_room: str = "", me_logged_in: bool = False,
+                    me_monitoring: bool = False) -> None:
+    """One picker per site. YouTube stamps and Bilibili emotes are added to the message draft."""
     st.html(_EMOTE_IMG_JS, unsafe_allow_javascript=True)
     _load_emote_pack_prefs()
     _save_emote_pack_prefs()
@@ -2235,49 +2279,42 @@ def _site_emote_row(yt_chat: str, yt_vid: str, bili_room: str) -> None:
     row.markdown(f"**{t('Site emotes')}:**", width="content")
     yt_pop = row.popover("YouTube", icon="😀", key="emo_pop_yt", on_change="rerun", disabled=not yt_chat,
                          help=None if yt_chat else t("Start the YouTube listener first."))
-    bili_pop = row.popover("Bilibili", icon="😀", key="emo_pop_bili", on_change="rerun", disabled=not bili_room,
-                           help=None if bili_room else t("Enter a Bilibili room ID first."))
+    bili_pop = row.popover(
+        "Bilibili", icon="😀", key="emo_pop_bili", on_change="rerun",
+        disabled=not (bili_room and bili_monitoring),
+        help=None if bili_room and bili_monitoring
+        else t("Enter a Bilibili room ID first.") if not bili_room
+        else t("Start the Bilibili listener first."),
+    )
+    me_pop = row.popover(t("MissEvan"), icon="😀", key="emo_pop_me", on_change="rerun",
+                         disabled=not (me_room and me_logged_in and me_monitoring),
+                         help=None if me_room and me_logged_in and me_monitoring else
+                         t("Log in to MissEvan in the 🍪 Cookies tab first.") if not me_logged_in
+                         else t("Enter a MissEvan room ID first.") if not me_room
+                         else t("Start the MissEvan listener first."))
     row.caption(t("Each site's own emotes, sent only to that site."), width="content")
-
-    result = st.session_state.pop("yt_stamp_result", None)
-    if result:
-        _report_send("YouTube", *result)
 
     if yt_pop.open:
         with yt_pop:
-            refresh = st.button(t("🔄 Refresh"), key="emo_yt_refresh")
-            items = ytw.channel_emojis(yt_vid, fetch=True, refresh=refresh)
-            st.caption(t("Sent only to YouTube. Click stamps to add them (as many as you like), add text if you "
-                         "want, then send. Channel stamps show up here once someone uses them in chat; with a "
+            items = ytw.channel_emojis(yt_vid, fetch=True)
+            st.caption(t("Click stamps to add them to the message box. You can add text, then send to YouTube. "
+                         "Channel stamps show up here once someone uses them in chat; with a "
                          "YouTube login (🍪 Cookies tab) the full set is listed and 🔒 marks member-only stamps "
                          "you can't use."))
             if not items:
                 st.info(t("No channel stamps seen yet."))
-            _emote_buttons(items, "yt", t("Members only"), on_pick=_add_yt_stamp)
-            draft = st.session_state.setdefault("yt_stamp_draft", "")
-            st.session_state["yt_stamp_input"] = draft
-            st.text_input(t("Message"), key="yt_stamp_input", max_chars=_YT_STAMP_MAX, on_change=_sync_yt_stamp_input,
-                          placeholder=t("Click stamps above…"), label_visibility="collapsed")
-            if draft.strip():
-                emote_map = {c: e["url"] for e in items for c in e.get("shortcuts") or [e["code"]]}
-                st.markdown(f'<div class="yt-stamp-preview">{emotes.text_to_html(draft, emote_map)}</div>',
-                            unsafe_allow_html=True)
-            act = st.container(horizontal=True, gap="small")
-            act.button(t("Send to YouTube"), key="emo_yt_send", type="primary", disabled=not draft.strip(),
-                       on_click=_send_yt_stamps, args=(yt_chat, yt_vid))
-            act.button(t("Clear"), key="emo_yt_clear", disabled=not draft,
-                       on_click=lambda: st.session_state.update(yt_stamp_draft=""))
+            _emote_buttons(items, "yt", t("Members only"), on_pick=_append_youtube_emote_input)
 
-    if bili_pop.open:
+    if bili_pop.open and not bili_monitoring:
+        with bili_pop:
+            st.warning(t("Start the Bilibili listener first."))
+    elif bili_pop.open:
         with bili_pop:
             cache = st.session_state.setdefault("bili_emotes", {})
-            refresh = st.button(t("🔄 Refresh"), key="emo_bili_refresh")
-            if refresh or cache.get("room") != bili_room or time.time() - cache.get("ts", 0) > _EMOTE_TTL:
+            if cache.get("room") != bili_room:
                 packs, err = bili.get_emoticons(bili_room)
-                # A Bilibili server hiccup shouldn't stick for the whole TTL: try again after a minute.
-                ts = time.time() - (_EMOTE_TTL - 60 if err == getattr(bili, "_EMOTE_SERVER_ERR", None) else 0)
-                cache.update(room=bili_room, ts=ts, packs=packs, err=err)
-            st.caption(t("Sent only to Bilibili, as a sticker danmaku. 🔒 emotes need e.g. this room's fan medal, "
+                cache.update(room=bili_room, packs=packs, err=err)
+            st.caption(t("Click a Bilibili emote to add it to the message box. 🔒 emotes need e.g. this room's fan medal, "
                          "a guard membership, or charging (充电) the streamer for the 充电表情 tab."))
             if cache.get("err"):
                 st.warning(t(cache["err"]))
@@ -2286,16 +2323,99 @@ def _site_emote_row(yt_chat: str, yt_vid: str, bili_room: str) -> None:
                 # get_emoticons lists the room owner's packs (⭐) first; the sort is a fallback for old caches.
                 packs = sorted(packs, key=lambda p: 0 if p.get("owner") else 1)
                 picked = _emote_packs(packs, "bili", t("Locked"))
-                if picked:
-                    _report_send("Bilibili", *bili.send_emoticon(bili_room, picked["unique"]))
+                if picked and bili_monitoring:
+                    _append_bili_emote_input(picked)
             elif not cache.get("err"):
                 st.info(t("This room has no emotes you can send."))
 
+    if me_pop.open and not me_monitoring:
+        with me_pop:
+            st.warning(t("Start the MissEvan listener first."))
+    elif me_pop.open:
+        with me_pop:
+            cache = st.session_state.setdefault("me_stickers", {})
+            if cache.get("room") != me_room:
+                cache.clear()
+                cache.update(room=me_room, tabs_loaded=False, packs={})
+            if not cache.get("tabs_loaded"):
+                tabs, err = me.get_sticker_tabs(me_room)
+                cache.update(tabs=tabs, tabs_error=err, tabs_loaded=True)
+            st.caption(t("Sent only to MissEvan. Click a room sticker to send it immediately."))
+            if cache.get("tabs_error"):
+                st.warning(t(cache["tabs_error"]))
+            kaomoji = me.preset_kaomoji()
+            with st.expander(t("Preset kaomoji ({n})", n=len(kaomoji)), key="emo_pack_me_kaomoji",
+                             type="compact"):
+                st.caption(t("Click a kaomoji to add it to the message box."))
+                for index in range(0, len(kaomoji), 4):
+                    with st.container(horizontal=True, gap="small",
+                                      key=f"emote_grid_me_kaomoji_{index}"):
+                        for offset, value in enumerate(kaomoji[index:index + 4]):
+                            st.button(
+                                value,
+                                key=f"me_kaomoji_{index + offset}",
+                                on_click=_append_message_input,
+                                args=(value,),
+                            )
+            tabs = cache.get("tabs") or []
+            if not tabs and not cache.get("tabs_error"):
+                st.info(t("This room has no sticker packages."))
+            for index, tab in enumerate(tabs):
+                package_id = tab.get("package_id")
+                if package_id is None:
+                    continue
+                locked = tab.get("locked") is True or tab.get("locked") == 1
+                package_key = f"emo_pack_me_{me_room}_{package_id}"
+                if package_key not in st.session_state:
+                    st.session_state[package_key] = st.session_state.get(
+                        _EMOTE_PACK_PREFS, {}
+                    ).get(package_key, index == 0)
+                label = tab.get("name") or tab.get("package_name") or str(package_id)
+                if locked:
+                    label = f"🔒 {label}"
+                pack_exp = st.expander(
+                    label, key=package_key, type="compact",
+                    on_change=_remember_emote_packs, args=([package_key],),
+                )
+                if not pack_exp.open:
+                    continue
+                with pack_exp:
+                    packs = cache.setdefault("packs", {})
+                    pack = packs.get(str(package_id))
+                    if pack is None:
+                        stickers, err = me.get_stickers(me_room, int(package_id))
+                        pack = {"stickers": stickers, "error": err}
+                        packs[str(package_id)] = pack
+                    if pack.get("error"):
+                        st.warning(t(pack["error"]))
+                        continue
+                    items = []
+                    for sticker in pack.get("stickers") or []:
+                        url = emotes.safe_chat_image_url(
+                            sticker.get("icon_url") or sticker.get("image_url")
+                        )
+                        if not url or sticker.get("sticker_id") is None:
+                            continue
+                        items.append({
+                            "name": sticker.get("name") or str(sticker["sticker_id"]),
+                            "url": url,
+                            "locked": locked,
+                            "hint": tab.get("tips", ""),
+                            "sticker_id": sticker["sticker_id"],
+                            "package_id": package_id,
+                        })
+                    picked = _emote_buttons(items, f"me_{package_id}", t("Locked"))
+                    if picked and me_monitoring:
+                        _report_send(
+                            "MissEvan",
+                            *me.send_sticker(
+                                me_room, int(picked["package_id"]), int(picked["sticker_id"])
+                            ),
+                        )
+                    elif not items:
+                        st.info(t("This package has no stickers."))
 
 with tab_chat:
-    _poll_chat()  # fetch new messages every rerun
-    _sync_obs_chat()
-
     # ── Send message ──────────────────────────────────────────────────────────
     yt_chat = st.session_state.get("selected_chat_id", "")
     bili_room_send = st.session_state["bili_room_id"]
@@ -2306,7 +2426,10 @@ with tab_chat:
         help=None if yt_chat else t("Start the YouTube listener first."),
     )
     bili_listener_send = st.session_state.get("bili_listener")
-    bili_monitoring = bool(bili_listener_send and bili_listener_send._running)
+    bili_monitoring = bool(
+        bili_listener_send and bili_listener_send.running
+        and str(bili_listener_send.room_id) == str(bili_room_send)
+    )
     send_bili = tgt_row.checkbox(
         "Bilibili", key="send_bili", value=True, disabled=not (bili_room_send and bili_monitoring),
         help=None if bili_room_send and bili_monitoring
@@ -2318,7 +2441,10 @@ with tab_chat:
     # A failed check (network error) shouldn't block sending; only a confirmed logout does.
     me_logged_in = bool(_me_send_login and (_me_send_login["is_login"] or _me_send_login.get("error")))
     me_listener_send = st.session_state.get("me_listener")
-    me_monitoring = bool(me_listener_send and me_listener_send.running)
+    me_monitoring = bool(
+        me_listener_send and me_listener_send.running
+        and str(me_listener_send.room_id) == str(me_room_send)
+    )
     send_me = tgt_row.checkbox(
         t("MissEvan"), key="send_me", value=True,
         disabled=not (me_room_send and me_logged_in and me_monitoring),
@@ -2331,22 +2457,43 @@ with tab_chat:
     _emotes_ready = hasattr(ytw, "channel_emojis") and hasattr(bili, "get_emoticons")
     _yt_emojis = ytw.channel_emojis(_yt_emo_vid) if _emotes_ready and _yt_emo_vid else []
     if _emotes_ready:
-        _site_emote_row(yt_chat, _yt_emo_vid, bili_room_send)
+        _site_emote_row(
+            yt_chat, _yt_emo_vid, bili_room_send, bili_monitoring,
+            me_room_send, me_logged_in, me_monitoring,
+        )
     with st.form("send_form", clear_on_submit=True), st.container(key="send_box"):
         send_cols = st.columns([8, 1])
-        outgoing = send_cols[0].text_input(t("Message"), label_visibility="collapsed", placeholder=t("Type a message…"))
+        outgoing = send_cols[0].text_input(
+            t("Message"), key="chat_message_input", label_visibility="collapsed",
+            placeholder=t("Type a message…"),
+        )
         submitted = send_cols[1].form_submit_button(t("Send"))
-        if submitted and outgoing:
+        if submitted:
+            segments, other_outgoing = _split_bili_emote_draft(outgoing or "")
             # YouTube stamp codes (:_name:) only mean something on YouTube; don't spam them elsewhere.
-            other = ytw.strip_emoji_codes(outgoing, _yt_emojis) if _emotes_ready else outgoing
+            other = ytw.strip_emoji_codes(other_outgoing, _yt_emojis) if _emotes_ready else other_outgoing
             targets = []
-            if send_yt and yt_chat:
+            if send_yt and yt_chat and other_outgoing:
                 targets.append(("YouTube", lambda: yt.send_chat(
-                    yt_chat, _yt_video_id(), outgoing)))
+                    yt_chat, _yt_video_id(), other_outgoing)))
             if send_bili and bili_room_send and bili_monitoring:
-                if other:
-                    targets.append(("Bilibili", lambda: (bili.send_danmaku(bili_room_send, other), "")))
-                else:
+                sent_bili_content = False
+                for kind, content in segments:
+                    if kind == "text" and content:
+                        bili_content = (
+                            ytw.strip_emoji_codes(content, _yt_emojis) if _emotes_ready else content
+                        )
+                        if bili_content:
+                            targets.append(("Bilibili", lambda content=bili_content: (
+                                bili.send_danmaku(bili_room_send, content), ""
+                            )))
+                            sent_bili_content = True
+                    elif kind == "emote":
+                        targets.append(("Bilibili", lambda content=content: bili.send_emoticon(
+                            bili_room_send, content
+                        )))
+                        sent_bili_content = True
+                if not sent_bili_content:
                     st.info(t("Only YouTube stamps — not sent to {site}.", site="Bilibili"))
             if send_me and me_room_send and me_logged_in and me_monitoring:
                 if other:
@@ -2364,6 +2511,7 @@ with tab_chat:
                     st.error(t("Failed to send to {site}: {err}", site=name, err=err))
                 else:
                     st.error(t("Failed to send to {site} (check the login cookies).", site=name))
+            st.session_state["bili_emote_draft"] = []
 
     st.divider()
 
@@ -2381,137 +2529,151 @@ with tab_chat:
     if st.session_state["tts_enabled"]:
         _tts_stop_buttons(show_row, "feeds")
 
-    hidden_platforms = {
-        p for p, shown in (("youtube", show_yt), ("bilibili", show_bili), ("missevan", show_me)) if not shown
-    }
-    # All gifts, including free gifts, and other paid events have their own column.
-    msgs = [
-        m for m in st.session_state["chat_messages"]
-        if m.get("platform") not in hidden_platforms and not (is_paid(m) or is_gift(m))
-    ]
-    paid_all = [m for m in st.session_state["paid_messages"] if m.get("platform") not in hidden_platforms]
+    # Only the live feeds poll and re-render on their timer; controls and other tabs stay untouched.
+    @st.fragment(run_every=CHAT_POLL_INTERVAL)
+    def _chat_live():
+        _poll_chat()
+        _sync_obs_chat()
+        hidden_platforms = {
+            p for p, key in (("youtube", "show_yt"), ("bilibili", "show_bili"), ("missevan", "show_me"))
+            if not st.session_state.get(key, True)
+        }
+        # All gifts, including free gifts, and other paid events have their own column.
+        msgs = [
+            m for m in st.session_state["chat_messages"]
+            if m.get("platform") not in hidden_platforms and not (is_paid(m) or is_gift(m))
+        ]
+        paid_all = [m for m in st.session_state["paid_messages"] if m.get("platform") not in hidden_platforms]
 
-    # Show newest first
-    visible = msgs[-st.session_state["max_chat_display"] :]
-    if st.session_state["translate_enabled"]:
-        # One batched request for everything on screen (also covers changing the target language).
-        tr.prefetch(
-            [m.get("text", "") for m in visible + paid_all[-100:] if m.get("type") != "enter"],
-            st.session_state["translate_target"],
-            wait=2.0,
-        )
-
-    scales = st.session_state["text_scale"]
-    _joins_shown = st.session_state["show_enter_events"]
-    feed_order, feed_sides, stacked = _feed_layout_state()
-    if stacked:
-        feed_columns = [feed_order]
-    else:
-        feed_columns = [[f for f in feed_order if feed_sides[f] == side] for side in ("left", "right")]
-        feed_columns = [c for c in feed_columns if c]
-    st.markdown(
-        f"<style>.st-key-chat_feed {{ --chat-scale: {scales['chat'] / 100}; }}"
-        f".st-key-paid_feed {{ --chat-scale: {scales['paid'] / 100}; }}"
-        f"{_feed_height_css(feed_columns, stacked, _joins_shown)}</style>",
-        unsafe_allow_html=True,
-    )
-
-    def _chat_feed():
-        chat_head = st.container(horizontal=True, vertical_alignment="center")
-        chat_head.markdown(f"**💬 {t('Chat')}**", width="content")
-        with chat_head.popover(f"🔤 {t('Chat reading aid')}"):
-            _rd_keys = list(reading.MODES)
-            st.selectbox(
-                t("Chat reading aid"),
-                _rd_keys,
-                index=_rd_keys.index(st.session_state["sc_reading"]),
-                key="sc_reading_pick",
-                format_func=lambda k: t(reading.MODES[k]),
-                help=t("Shows pinyin / furigana above Chinese characters in chat, Super Chats, gifts and all usernames "
-                       "so you can read them aloud. Translations get furigana when Japanese and pinyin when Chinese."),
-                on_change=lambda: st.session_state.update(sc_reading=st.session_state["sc_reading_pick"]),
-            )
-        _feed_tts_button(chat_head, "tts_read_chat")
-        if st.session_state["tts_enabled"]:
-            _tts_option(chat_head, "tts_skip_emoji", t("Ignore emoji"),
-                        t("Skip emoji-only messages and stickers, and don't read emoji inside messages."))
-            _tts_option(chat_head, "tts_skip_name", t("Don't read usernames"),
-                        t("Reads only the message text. Gifts and Super Chats still say who sent them."))
-            _tts_option(chat_head, "tts_translate", t("Read translated chat"), t(
-                "When the TTS language is Auto-detect or matches \"Translate to\" (Translation section), every chat "
-                "message is read translated into that language. Otherwise messages are read in their original language."
-            ))
-        _feed_tools(chat_head, "chat")
-        with st.container(key="chat_feed"):
-            for msg in reversed(visible):
-                _render_message(msg, key_prefix="chat")
-
-    def _paid_feed():
-        thanked_ids: set = st.session_state["thanked_ids"]
-        pending = [m for m in paid_all if m["id"] not in thanked_ids]
-        paid_head = st.container(horizontal=True, vertical_alignment="center")
-        paid_head.markdown(
-            f"**🎁 {t('Gifts & Super Chats')}** · "
-            f"{t('{n} to thank', n=len(pending))} / {t('{n} total', n=len(paid_all))}",
-            width="content",
-        )
-        paid_head.button(
-            t("🙏 Mark all thanked"), key="thank_all", disabled=not pending,
-            on_click=_set_thanked, args=([m["id"] for m in pending], True),
-        )
-        _feed_tts_button(paid_head, "tts_announce_paid")
-        if st.session_state["tts_enabled"]:
-            _tts_option(paid_head, "tts_translate_paid", t("Read translated Super Chats"), t(
-                "When the TTS language is Auto-detect or matches \"Translate to\" (Translation section), Super Chat "
-                "messages are read translated into that language. Gift names are always read as they are."
-            ))
-        _feed_tools(paid_head, "paid")
-        with st.container(key="paid_feed"):
-            if not paid_all:
-                st.caption(t("No gifts or Super Chats yet."))
-            for msg in reversed(paid_all[-200:]):
-                _render_message(msg, key_prefix="paid", thank=True)
-
-    def _join_feed():
-        joins = [m for m in st.session_state["join_messages"] if m.get("platform") not in hidden_platforms]
-        join_head = st.container(horizontal=True, vertical_alignment="center")
-        join_head.markdown(f"**👋 {t('Joins')}** · {t('{n} total', n=len(joins))}", width="content")
-        join_head.button(
-            t("🙈 Hide") if _joins_shown else t("👁️ Show"), key="toggle_joins",
-            help=t("Show or hide viewers entering the room."),
-            on_click=lambda: st.session_state.update(show_enter_events=not st.session_state["show_enter_events"]),
-        )
-        _feed_tts_button(join_head, "tts_read_joins")
-        _feed_tools(join_head, "join", text_size=_joins_shown)
-        if _joins_shown:
-            rows = "".join(
-                f'<div class="join-row"><span class="join-time">{_fmt_time(m.get("timestamp", ""))}</span>'
-                f'{_platform_badge(m)}<b>{_author_html(m.get("author", ""))}</b></div>'
-                for m in reversed(joins[-150:])
-            ) or f'<div class="join-empty">{t("No one has joined yet.")}</div>'
-            st.markdown(
-                f'<div class="join-feed" style="--chat-scale: {scales["join"] / 100}">{rows}</div>',
-                unsafe_allow_html=True,
+        # Show newest first
+        visible = msgs[-st.session_state["max_chat_display"] :]
+        if st.session_state["translate_enabled"]:
+            # One batched request for everything on screen (also covers changing the target language).
+            tr.prefetch(
+                [m.get("text", "") for m in visible + paid_all[-100:] if m.get("type") != "enter"],
+                st.session_state["translate_target"],
+                wait=2.0,
             )
 
-    _feed_renderers = {"chat": _chat_feed, "paid": _paid_feed, "join": _join_feed}
-    feeds_box = st.container(key="chat_paid")
-    if len(feed_columns) == 1:
-        targets = [feeds_box]
-    else:
-        # The column holding the chat gets more room, as chat lines are longer than gift lines.
-        targets = feeds_box.columns([3 if "chat" in c else 2 for c in feed_columns])
-    for target, column in zip(targets, feed_columns):
-        with target:
-            for feed in column:
-                _feed_renderers[feed]()
+        scales = st.session_state["text_scale"]
+        _joins_shown = st.session_state["show_enter_events"]
+        feed_order, feed_sides, stacked = _feed_layout_state()
+        if stacked:
+            feed_columns = [feed_order]
+        else:
+            feed_columns = [[f for f in feed_order if feed_sides[f] == side] for side in ("left", "right")]
+            feed_columns = [c for c in feed_columns if c]
+        st.markdown(
+            f"<style>.st-key-chat_feed {{ --chat-scale: {scales['chat'] / 100}; }}"
+            f".st-key-paid_feed {{ --chat-scale: {scales['paid'] / 100}; }}"
+            f"{_feed_height_css(feed_columns, stacked, _joins_shown)}</style>",
+            unsafe_allow_html=True,
+        )
 
-    # Auto-refresh placeholder
-    st.markdown(
-        f"<p style='color:color-mix(in srgb, currentColor 50%, transparent);font-size:0.75rem'>"
-        f"{t('Auto-refreshes every {s}s · {n} messages shown', s=CHAT_POLL_INTERVAL, n=len(msgs))}</p>",
-        unsafe_allow_html=True,
-    )
+        def _chat_feed():
+            chat_head = st.container(horizontal=True, vertical_alignment="center")
+            chat_head.markdown(f"**💬 {t('Chat')}**", width="content")
+            with chat_head.popover(f"🔤 {t('Chat reading aid')}"):
+                _rd_keys = list(reading.MODES)
+                st.selectbox(
+                    t("Chat reading aid"),
+                    _rd_keys,
+                    index=_rd_keys.index(st.session_state["sc_reading"]),
+                    key="sc_reading_pick",
+                    format_func=lambda k: t(reading.MODES[k]),
+                    help=t("Shows pinyin / furigana above Chinese characters in chat, Super Chats, gifts and all usernames "
+                           "so you can read them aloud. Translations get furigana when Japanese and pinyin when Chinese."),
+                    on_change=lambda: st.session_state.update(sc_reading=st.session_state["sc_reading_pick"]),
+                )
+            _feed_tts_button(chat_head, "tts_read_chat")
+            if st.session_state["tts_enabled"]:
+                _tts_option(chat_head, "tts_skip_emoji", t("Ignore emoji"),
+                            t("Skip emoji-only messages and stickers, and don't read emoji inside messages."))
+                _tts_option(chat_head, "tts_skip_name", t("Don't read usernames"),
+                            t("Reads only the message text. Gifts and Super Chats still say who sent them."))
+                _tts_option(chat_head, "tts_translate", t("Read translated chat"), t(
+                    "When the TTS language is Auto-detect or matches \"Translate to\" (Translation section), every chat "
+                    "message is read translated into that language. Otherwise messages are read in their original language."
+                ))
+            _feed_tools(chat_head, "chat")
+            with st.container(key="chat_feed"):
+                for msg in reversed(visible):
+                    _render_message(msg, key_prefix="chat")
+
+        def _paid_feed():
+            thanked_ids: set = st.session_state["thanked_ids"]
+            pending = [m for m in paid_all if m["id"] not in thanked_ids]
+            _received_amounts = gifts.amount_totals(paid_all)
+            _received_total = " + ".join(
+                gifts.format_amount(currency, amount)
+                for currency, amount in sorted(_received_amounts.items())
+            ) or "—"
+            paid_head = st.container(horizontal=True, vertical_alignment="center")
+            paid_head.markdown(
+                f"**🎁 {t('Gifts & Super Chats')}** · "
+                f"{t('{n} to thank', n=len(pending))} / {t('{n} total', n=len(paid_all))} · "
+                f"{t('Total received: {amount}', amount=_received_total)}",
+                width="content",
+            )
+            paid_head.button(
+                t("🙏 Mark all thanked"), key="thank_all", disabled=not pending,
+                on_click=_set_thanked, args=([m["id"] for m in pending], True),
+            )
+            _feed_tts_button(paid_head, "tts_announce_paid")
+            if st.session_state["tts_enabled"]:
+                _tts_option(paid_head, "tts_translate_paid", t("Read translated Super Chats"), t(
+                    "When the TTS language is Auto-detect or matches \"Translate to\" (Translation section), Super Chat "
+                    "messages are read translated into that language. Gift names are always read as they are."
+                ))
+            _feed_tools(paid_head, "paid")
+            with st.container(key="paid_feed"):
+                if not paid_all:
+                    st.caption(t("No gifts or Super Chats yet."))
+                for msg in reversed(paid_all[-200:]):
+                    _render_message(msg, key_prefix="paid", thank=True)
+
+        def _join_feed():
+            joins = [m for m in st.session_state["join_messages"] if m.get("platform") not in hidden_platforms]
+            join_head = st.container(horizontal=True, vertical_alignment="center")
+            join_head.markdown(f"**👋 {t('Joins')}** · {t('{n} total', n=len(joins))}", width="content")
+            join_head.button(
+                t("🙈 Hide") if _joins_shown else t("👁️ Show"), key="toggle_joins",
+                help=t("Show or hide viewers entering the room."),
+                on_click=lambda: st.session_state.update(show_enter_events=not st.session_state["show_enter_events"]),
+            )
+            _feed_tts_button(join_head, "tts_read_joins")
+            _feed_tools(join_head, "join", text_size=_joins_shown)
+            if _joins_shown:
+                rows = "".join(
+                    f'<div class="join-row"><span class="join-time">{_fmt_time(m.get("timestamp", ""))}</span>'
+                    f'{_platform_badge(m)}<b>{_author_html(m.get("author", ""))}</b></div>'
+                    for m in reversed(joins[-150:])
+                ) or f'<div class="join-empty">{t("No one has joined yet.")}</div>'
+                st.markdown(
+                    f'<div class="join-feed" style="--chat-scale: {scales["join"] / 100}">{rows}</div>',
+                    unsafe_allow_html=True,
+                )
+
+        _feed_renderers = {"chat": _chat_feed, "paid": _paid_feed, "join": _join_feed}
+        feeds_box = st.container(key="chat_paid")
+        if len(feed_columns) == 1:
+            targets = [feeds_box]
+        else:
+            # The column holding the chat gets more room, as chat lines are longer than gift lines.
+            targets = feeds_box.columns([3 if "chat" in c else 2 for c in feed_columns])
+        for target, column in zip(targets, feed_columns):
+            with target:
+                for feed in column:
+                    _feed_renderers[feed]()
+
+        # Auto-refresh placeholder
+        st.markdown(
+            f"<p style='color:color-mix(in srgb, currentColor 50%, transparent);font-size:0.75rem'>"
+            f"{t('Auto-refreshes every {s}s · {n} messages shown', s=CHAT_POLL_INTERVAL, n=len(msgs))}</p>",
+            unsafe_allow_html=True,
+        )
+
+    _chat_live()
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # TAB: OBS
@@ -2818,21 +2980,23 @@ with tab_obs:
                 "Want Super Chats and chat in different places or scenes? Add one Browser Source with the "
                 "\"Super Chats & gifts only\" link and another with the \"Chat only\" link."
             ))
-            with st.expander(t("What can I change in this link?")):
-                st.caption(t(
-                    "This URL reads the chat by itself, like a logged-out viewer, as long as the overlay server runs — "
-                    "you can close the dashboard. Edit the youtube= (@handle, channel or video link), bilibili= and "
-                    "missevan= (room ID or link) values to show any channel. Options: n= messages (without sc=, Super Chats "
-                    "and gifts are part of the chat), sc= Super Chats & gifts shown separately "
-                    "(0 hides that part; the other then uses the whole height), "
-                    "names=0 hides usernames, tr=en adds translations, text= custom message, "
-                    "ruby=auto (or pinyin / furigana) adds a reading aid. "
-                    "Bilibili hides viewer names from logged-out readers, so they appear masked."
-                ))
-                st.caption(t(
-                    "While this dashboard is open and reading the same rooms, the standalone overlay shows exactly the "
-                    "Recent Chat Preview below (your login, filters and blocked users included)."
-                ))
+            with st.expander(t("OBS overlay quick guide")):
+                st.markdown(t("obs_overlay_guide_md"                ))
+                with st.expander(t("What can I change in this link?")):
+                    st.caption(t(
+                        "This URL reads the chat by itself, like a logged-out viewer, as long as the overlay server runs — "
+                        "you can close the dashboard. Edit the youtube= (@handle, channel or video link), bilibili= and "
+                        "missevan= (room ID or link) values to show any channel. Options: n= messages (without sc=, Super Chats "
+                        "and gifts are part of the chat), sc= Super Chats & gifts shown separately "
+                        "(0 hides that part; the other then uses the whole height), "
+                        "names=0 hides usernames, tr=en adds translations, text= custom message, "
+                        "ruby=auto (or pinyin / furigana) adds a reading aid. "
+                        "Bilibili hides viewer names from logged-out readers, so they appear masked."
+                    ))
+                    st.caption(t(
+                        "While this dashboard is open and reading the same rooms, the standalone overlay shows exactly the "
+                        "Recent Chat Preview below (your login, filters and blocked users included)."
+                    ))
     def _on_overlay(m: dict) -> bool:
         return not _overlay_sites or m.get("platform") in _overlay_sites
 
@@ -3001,6 +3165,30 @@ with tab_analytics:
     else:
         st.info(t("Chat stats will appear once messages arrive."))
 
+    # ── Gifts and Super Chats by platform ─────────────────────────────────────
+    st.subheader(t("🎁 Gifts and Super Chats by site"))
+    st.caption(t("Revenue is shown in original currencies; different currencies are not converted or combined."))
+    _platforms = ("youtube", "bilibili", "missevan")
+    _site_labels = {"youtube": "YouTube", "bilibili": "Bilibili", "missevan": t("MissEvan")}
+    _platform_totals = gifts.platform_totals(st.session_state["paid_messages"], _platforms)
+
+    def _currency_total(values):
+        return " + ".join(
+            gifts.format_amount(currency, amount) for currency, amount in sorted(values.items())
+        ) or "—"
+
+    st.dataframe(
+        pd.DataFrame([{
+            t("Site"): _site_labels[site],
+            t("Gift count"): totals["gift_count"],
+            t("Gift revenue"): _currency_total(totals["gift_revenue"]),
+            t("Super Chat count"): totals["superchat_count"],
+            t("Super Chat revenue"): _currency_total(totals["superchat_revenue"]),
+        } for site, totals in _platform_totals.items()]),
+        width="stretch",
+        hide_index=True,
+    )
+
     # ── Gift leaderboard ──────────────────────────────────────────────────────
     st.subheader(t("🎁 Gift Leaderboard"))
     st.caption(t(
@@ -3012,7 +3200,6 @@ with tab_analytics:
     if not _gift_sites:
         st.info(t("The gift leaderboard will appear once gifts or Super Chats arrive."))
     else:
-        _site_labels = {"youtube": "YouTube", "bilibili": "Bilibili", "missevan": t("MissEvan")}
         if st.session_state.get("gift_board_site") not in _gift_sites:
             st.session_state["gift_board_site"] = _gift_sites[0]
         _board_site = st.segmented_control(
@@ -3531,15 +3718,8 @@ _emit_live_alerts()
 _emit_browser_tts()
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Auto-refresh: a browser-side timer reruns the app. Sleeping + st.rerun() on the
-# server would swallow button clicks made while the script was sleeping.
+# Live updates: the Chat tab's _chat_live() fragment (run_every=CHAT_POLL_INTERVAL)
+# polls and re-renders the feeds on its own timer. Only that fragment reruns on each
+# tick, so the rest of the page -- and the other tabs -- are not re-executed every few
+# seconds, and clicks / typing elsewhere are never swallowed by a server-side sleep.
 # ──────────────────────────────────────────────────────────────────────────────
-@st.fragment(run_every=CHAT_POLL_INTERVAL)
-def _auto_refresh():
-    if st.session_state.pop("_full_run", False):
-        return  # part of a normal full run; only the timer ticks should rerun the app
-    st.rerun()
-
-
-st.session_state["_full_run"] = True
-_auto_refresh()

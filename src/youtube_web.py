@@ -98,8 +98,7 @@ def _custom_emotes(obj: dict) -> dict[str, str]:
 
 _emoji_lock = threading.Lock()
 _channel_emojis: dict[str, OrderedDict] = {}  # video_id -> emojiId -> emoji entry (this channel's stamps)
-_picker_fetched: dict[str, float] = {}  # video_id -> when the logged-in emoji picker was last read
-_PICKER_TTL = 600
+_picker_fetched: set[str] = set()  # video_ids whose logged-in picker has been read
 _MAX_EMOJIS = 500
 _YT_CODE_RE = re.compile(r":_[^:\s]+:")
 
@@ -149,21 +148,21 @@ def _remember_emojis(video_id: str, node) -> None:
             known.popitem(last=False)
 
 
-def channel_emojis(video_id: str, fetch: bool = False, refresh: bool = False) -> list[dict]:
+def channel_emojis(video_id: str, fetch: bool = False) -> list[dict]:
     """The stream channel's custom emojis (member stamps) seen so far.
 
     Chat messages reveal the stamps people use; with `fetch` and a login, the chat window's emoji
-    picker adds the full set and marks the ones this account can't use (`locked`).
+    picker adds the full set once per video and marks the ones this account can't use (`locked`).
     """
-    if fetch and video_id and has_login() and (
-            refresh or time.time() - _picker_fetched.get(video_id, 0) > _PICKER_TTL):
-        _picker_fetched[video_id] = time.time()
+    if fetch and video_id and has_login() and video_id not in _picker_fetched:
         try:
             page = _auth_session(login_cookies()).get(
                 YOUTUBE_CHAT_PAGE_URL, params={"is_popout": 1, "v": video_id}, timeout=_TIMEOUT).text
             _remember_emojis(video_id, _initial_data(page, "ytInitialData"))
         except requests.RequestException:
             pass
+        finally:
+            _picker_fetched.add(video_id)
     with _emoji_lock:
         return list(_channel_emojis.get(video_id, {}).values())
 
@@ -657,7 +656,7 @@ def send_message(video_id: str, message: str) -> tuple[bool, str]:
         if '"LOGGED_IN":true' not in page:
             return False, "YouTube says these cookies are signed out — re-import them in the 🍪 Cookies tab."
         _remember_emojis(video_id, _initial_data(page, "ytInitialData"))
-        _picker_fetched[video_id] = time.time()
+        _picker_fetched.add(video_id)
         params = re.search(r'"sendLiveChatMessageEndpoint":\{"params":"([^"]+)"', page)
         if not params:
             data = _initial_data(page, "ytInitialData")

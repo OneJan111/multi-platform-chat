@@ -45,5 +45,53 @@ class LeaderboardTests(unittest.TestCase):
         self.assertEqual(gifts.set_value({}, "¥", "bad"), {})
 
 
+class PlatformTotalsTests(unittest.TestCase):
+    def test_counts_gift_units_and_separates_revenue_currencies(self):
+        messages = [
+            {"platform": "youtube", "type": "gift", "gift_count": 3, "currency": "¥", "value": 60},
+            {"platform": "youtube", "type": "gift", "free": True},
+            {"platform": "youtube", "type": "superChatEvent", "currency": "$", "value": 5},
+            {"platform": "bilibili", "type": "superchat", "currency": "¥", "value": 30},
+            {"platform": "missevan", "type": "gift", "gift_count": 2, "currency": "💎", "value": 20},
+            {"platform": "youtube", "type": "newSponsorEvent", "currency": "$", "value": 10},
+        ]
+
+        totals = gifts.platform_totals(messages, ("youtube", "bilibili", "missevan"))
+
+        self.assertEqual(totals["youtube"], {
+            "gift_count": 4,
+            "gift_revenue": {"¥": 60.0},
+            "superchat_count": 1,
+            "superchat_revenue": {"$": 5.0},
+        })
+        self.assertEqual(totals["bilibili"]["superchat_revenue"], {"¥": 30.0})
+        self.assertEqual(totals["missevan"]["gift_count"], 2)
+
+    def test_amount_totals_sums_gifts_and_super_chats_by_currency(self):
+        messages = [
+            {"type": "gift", "currency": "¥", "value": 10},
+            {"type": "superchat", "currency": "¥", "value": 20},
+            {"type": "superStickerEvent", "currency": "$", "value": 5},
+            {"type": "newSponsorEvent", "currency": "$", "value": 8},
+            {"type": "gift", "currency": "💎", "value": 0},
+        ]
+
+        self.assertEqual(gifts.amount_totals(messages), {"¥": 30.0, "$": 5.0})
+
+    def test_gift_price_label_only_adds_unshown_known_prices(self):
+        self.assertEqual(gifts.gift_price_label({
+            "type": "gift", "currency": "💎", "value": 6, "text": "🎁 花 ×3",
+        }), "💎6")
+        self.assertEqual(gifts.gift_price_label({
+            "type": "gift", "currency": "¥", "value": 2, "text": "🎁 花 ×1 (¥2)",
+        }), "")
+        self.assertEqual(gifts.gift_price_label({
+            "type": "gift", "text": "🎁 免费礼物",
+        }), "")
+        self.assertEqual(gifts.gift_price_label({
+            "type": "superchat", "currency": "¥", "value": 10, "text": "SC ¥10",
+        }), "")
+
+
 if __name__ == "__main__":
     unittest.main()

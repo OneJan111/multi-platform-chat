@@ -275,16 +275,19 @@ if __name__ == "__main__":
 
 class OverlayHtmlTests(unittest.TestCase):
     def test_render_html_escapes_and_inlines_safe_images(self):
+        me_sticker = "https://static.maoercdn.com/stickers/room.png"
         out = overlay_server.render_html({
             "paid": [{"text": "[SC] <b>hi</b>", "author": "A&B", "platform": "youtube", "kind": "gift"}],
             "messages": [{"text": "yo :_wave: [x]", "platform": "bilibili",
-                          "emotes": {":_wave:": "https://yt3.ggpht.com/w", "[x]": "https://evil.example/x"}}],
+                          "emotes": {":_wave:": "https://yt3.ggpht.com/w", "[x]": "https://evil.example/x"}},
+                         {"text": "", "platform": "missevan", "sticker": me_sticker}],
             "custom_text": "<script>",
         })
         self.assertIn("[SC] &lt;b&gt;hi&lt;/b&gt;", out)
         self.assertIn('class="author youtube">A&amp;B<', out)
         self.assertIn('class="message paid-item gift"', out)
         self.assertIn('src="https://yt3.ggpht.com/w"', out)
+        self.assertIn(f'src="{me_sticker}"', out)
         self.assertNotIn("evil.example", out)
         self.assertIn("&lt;script&gt;", out)
 

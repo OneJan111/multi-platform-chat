@@ -24,11 +24,11 @@ def safe_image_url(url) -> str:
     return url
 
 
-_BADGE_HOSTS = ("hdslb.com", "ggpht.com", "googleusercontent.com")
+_BADGE_HOSTS = ("hdslb.com", "ggpht.com", "googleusercontent.com", "maoercdn.com")
 
 
 def safe_badge_url(url) -> str:
-    """https membership-badge images from Bilibili's or YouTube's image CDNs only."""
+    """https badge and avatar images from trusted platform CDNs only."""
     if not isinstance(url, str):
         return ""
     if url.startswith("//"):
@@ -41,7 +41,7 @@ def safe_badge_url(url) -> str:
 
 
 def safe_chat_image_url(url) -> str:
-    """Emote/sticker images from Bilibili's CDN or YouTube's image CDNs."""
+    """Emote/sticker images from Bilibili, YouTube or MissEvan CDNs."""
     return safe_image_url(url) or safe_badge_url(url)
 
 

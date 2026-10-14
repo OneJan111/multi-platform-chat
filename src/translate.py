@@ -1,25 +1,38 @@
-"""Chat translation via Google Translate's public endpoint (no API key).
+"""Chat translation via Index-Translate, with Google as fallback.
 
 Translations run in a background thread pool and are cached, so Streamlit reruns never
 block on the network: `get_translation` returns None until the result is ready.
 """
 from __future__ import annotations
 
+import json
+import logging
+import re
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 
 import requests
 
+from src import slang
 from src.config import (
-    DEEPL_API_KEY,
-    DEEPL_TRANSLATE_URL,
     GOOGLE_TRANSLATE_URL,
-    TRANSLATION_PROVIDER,
+    INDEX_TRANSLATE_API_BASE,
+    INDEX_TRANSLATE_MODEL,
 )
 
+log = logging.getLogger(__name__)
 _RETRY_AFTER = 60.0  # seconds before retrying a failed translation
 _MAX_CACHE = 3000
+_INDEX_TIMEOUT = 30.0
+_INDEX_RETRY_AFTER = 60.0
+_TARGET_NAMES = {
+    "zh-CN": "Simplified Chinese",
+    "zh-TW": "Traditional Chinese",
+    "en": "English",
+    "ja": "Japanese",
+    "ko": "Korean",
+}
 
 LANGUAGES: dict[str, str] = {
     "zh-CN": "Chinese (简体中文)",
@@ -34,54 +47,89 @@ _cache: dict[tuple[str, str], tuple[str, str]] = {}
 _failed: dict[tuple[str, str], float] = {}
 _pending: set[tuple[str, str]] = set()
 _lock = threading.Lock()
+_index_retry_until = 0.0
 _pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="translate")
 _session = requests.Session()  # keep-alive: a cold TLS connection costs ~2s
 _BATCH_ITEMS = 25
 _BATCH_CHARS = 600  # CJK expands ~9x when URL-encoded; keep request URLs well under limits
-_DEEPL_TARGETS = {
-    "zh-CN": "ZH",
-    "zh-TW": "ZH-HANT",
-    "en": "EN",
-    "ja": "JA",
-    "ko": "KO",
-}
+def _index_translate_batch(texts: list[str], target: str, timeout: float) -> list[tuple[str, str]]:
+    try:
+        target_name = _TARGET_NAMES[target]
+    except KeyError as exc:
+        raise ValueError(f"Index-Translate does not support the configured target language: {target}") from exc
+    prompt = (
+        f"Translate each string in the JSON array into {target_name}. "
+        "Return only a JSON array of translated strings in exactly the same order and with exactly the same number "
+        "of items. Preserve names, punctuation, emojis, and formatting. Do not add explanations.\n\n"
+        f"{json.dumps(texts, ensure_ascii=False)}"
+    )
+    response = _session.post(
+        f"{INDEX_TRANSLATE_API_BASE}/chat/completions",
+        json={
+            "model": INDEX_TRANSLATE_MODEL,
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": 0,
+            "max_tokens": 2048,
+            "stream": False,
+            "chat_template_kwargs": {"enable_thinking": False},
+        },
+        headers={"User-Agent": "StreamingDashboard/1.0"},
+        timeout=timeout,
+    )
+    response.raise_for_status()
+    content = response.json()["choices"][0]["message"]["content"]
+    if not isinstance(content, str):
+        raise ValueError("Index-Translate returned a non-text translation response.")
+    content = content.strip()
+    content = re.sub(r"^```(?:json)?\s*|\s*```$", "", content, flags=re.IGNORECASE)
+    if "</think>" in content:
+        content = content.rsplit("</think>", 1)[-1].strip()
+    translations = json.loads(content)
+    if (not isinstance(translations, list) or len(translations) != len(texts)
+            or any(not isinstance(item, str) for item in translations)):
+        raise ValueError(f"Index-Translate returned an invalid result list for {len(texts)} inputs.")
+    return [(translation, "") for translation in translations]
 
 
-def translate_batch(texts: list[str], target: str, timeout: float = 10.0) -> list[tuple[str, str]]:
-    """Blocking translation of several texts in one request. Returns [(translated, source_lang)]."""
-    if TRANSLATION_PROVIDER == "deepl":
-        if not DEEPL_API_KEY:
-            raise RuntimeError("TRANSLATION_PROVIDER is 'deepl' but DEEPL_API_KEY is not set.")
-        try:
-            deepl_target = _DEEPL_TARGETS[target]
-        except KeyError as exc:
-            raise ValueError(f"DeepL does not support the configured target language: {target}") from exc
-        resp = _session.post(
-            DEEPL_TRANSLATE_URL,
-            json={"text": texts, "target_lang": deepl_target},
-            headers={"Authorization": f"DeepL-Auth-Key {DEEPL_API_KEY}"},
-            timeout=timeout,
-        )
-        resp.raise_for_status()
-        translations = resp.json().get("translations", [])
-        if len(translations) != len(texts):
-            raise ValueError(f"expected {len(texts)} results, got {len(translations)}")
-        return [
-            (item["text"], str(item.get("detected_source_language", "")).lower())
-            for item in translations
-        ]
-
+def _fallback_translate_batch(
+    texts: list[str], target: str, timeout: float
+) -> list[tuple[str, str]]:
     params = [("client", "dict-chrome-ex"), ("sl", "auto"), ("tl", target)]
-    params += [("q", t) for t in texts]
+    params += [("q", text) for text in texts]
     resp = _session.get(GOOGLE_TRANSLATE_URL, params=params, timeout=timeout)
     resp.raise_for_status()
     data = resp.json()
     if len(data) != len(texts):
         raise ValueError(f"expected {len(texts)} results, got {len(data)}")
-    # Each item: [translated, detected_source] (or "translated" when sl is fixed)
     return [
         (item[0], item[1] if len(item) > 1 else "") if isinstance(item, list) else (str(item), "")
         for item in data
+    ]
+
+
+def translate_batch(texts: list[str], target: str, timeout: float = 10.0) -> list[tuple[str, str]]:
+    """Blocking translation of several texts in one request. Returns [(translated, source_lang)]."""
+    global _index_retry_until
+    protected = [slang.protect(text, target) for text in texts]
+    request_texts = [text for text, _ in protected]
+    results = None
+    with _lock:
+        try_index = INDEX_TRANSLATE_API_BASE and time.monotonic() >= _index_retry_until
+    if try_index:
+        try:
+            results = _index_translate_batch(request_texts, target, _INDEX_TIMEOUT)
+            with _lock:
+                _index_retry_until = 0.0
+        except (requests.RequestException, ValueError, KeyError, TypeError, IndexError) as exc:
+            with _lock:
+                _index_retry_until = time.monotonic() + _INDEX_RETRY_AFTER
+            log.warning("Index-Translate failed; falling back to Google Translate: %s", exc)
+    if results is None:
+        results = _fallback_translate_batch(request_texts, target, timeout)
+
+    return [
+        (slang.restore(translated, replacements), source)
+        for (translated, source), (_, replacements) in zip(results, protected)
     ]
 
 
@@ -114,6 +162,7 @@ def _worker(keys: list[tuple[str, str]]) -> None:
             now = time.time()
             for key in keys:
                 _failed[key] = now
+        log.exception("Translation failed using Index-Translate and Google Translate.")
     finally:
         with _lock:
             _pending.difference_update(keys)

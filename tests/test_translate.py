@@ -5,36 +5,19 @@ from src import translate
 
 
 class TranslationProviderTests(unittest.TestCase):
-    def test_deepl_batch_uses_auth_and_maps_target_language(self):
-        response = Mock()
-        response.json.return_value = {
-            "translations": [
-                {"text": "你好", "detected_source_language": "EN"},
-                {"text": "世界", "detected_source_language": "EN"},
-            ]
-        }
-        with (
-            patch.object(translate, "TRANSLATION_PROVIDER", "deepl"),
-            patch.object(translate, "DEEPL_API_KEY", "test-key"),
-            patch.object(translate, "DEEPL_TRANSLATE_URL", "https://api-free.deepl.com/v2/translate"),
-            patch.object(translate._session, "post", return_value=response) as post,
-        ):
-            result = translate.translate_batch(["hello", "world"], "zh-TW")
+    def setUp(self):
+        with translate._lock:
+            translate._index_retry_until = 0.0
 
-        self.assertEqual(result, [("你好", "en"), ("世界", "en")])
-        post.assert_called_once_with(
-            "https://api-free.deepl.com/v2/translate",
-            json={"text": ["hello", "world"], "target_lang": "ZH-HANT"},
-            headers={"Authorization": "DeepL-Auth-Key test-key"},
-            timeout=10.0,
-        )
-        response.raise_for_status.assert_called_once_with()
+    def tearDown(self):
+        with translate._lock:
+            translate._index_retry_until = 0.0
 
     def test_google_provider_remains_default_compatible(self):
         response = Mock()
         response.json.return_value = [["你好", "en"]]
         with (
-            patch.object(translate, "TRANSLATION_PROVIDER", "google"),
+            patch.object(translate, "INDEX_TRANSLATE_API_BASE", ""),
             patch.object(translate._session, "get", return_value=response) as get,
         ):
             result = translate.translate_batch(["hello"], "zh-CN")
@@ -43,15 +26,43 @@ class TranslationProviderTests(unittest.TestCase):
         get.assert_called_once()
         response.raise_for_status.assert_called_once_with()
 
-    def test_deepl_requires_api_key_only_when_translation_is_requested(self):
+    def test_index_translate_is_tried_before_fallback(self):
+        response = Mock()
+        response.json.return_value = {
+            "choices": [{"message": {"content": '["翻译结果", "第二条"]'}}],
+        }
         with (
-            patch.object(translate, "TRANSLATION_PROVIDER", "deepl"),
-            patch.object(translate, "DEEPL_API_KEY", ""),
-            patch.object(translate._session, "post") as post,
+            patch.object(translate, "INDEX_TRANSLATE_API_BASE", "https://index.example/v1"),
+            patch.object(translate, "INDEX_TRANSLATE_MODEL", "TestModel"),
+            patch.object(translate._session, "post", return_value=response) as post,
+            patch.object(translate._session, "get") as get,
         ):
-            with self.assertRaisesRegex(RuntimeError, "DEEPL_API_KEY is not set"):
-                translate.translate_batch(["hello"], "en")
-        post.assert_not_called()
+            result = translate.translate_batch(["first", "second"], "zh-CN")
+
+        self.assertEqual(result, [("翻译结果", ""), ("第二条", "")])
+        post.assert_called_once()
+        self.assertEqual(post.call_args.args[0], "https://index.example/v1/chat/completions")
+        self.assertEqual(post.call_args.kwargs["json"]["model"], "TestModel")
+        self.assertEqual(post.call_args.kwargs["timeout"], translate._INDEX_TIMEOUT)
+        get.assert_not_called()
+
+    def test_index_failure_falls_back_to_google(self):
+        import requests
+
+        response = Mock()
+        response.json.return_value = [["翻译结果", "en"]]
+        with (
+            patch.object(translate, "INDEX_TRANSLATE_API_BASE", "https://index.example/v1"),
+            patch.object(translate._session, "post", side_effect=requests.Timeout("slow")) as post,
+            patch.object(translate._session, "get", return_value=response) as get,
+        ):
+            result = translate.translate_batch(["hello"], "zh-CN")
+            again = translate.translate_batch(["another"], "zh-CN")
+
+        self.assertEqual(result, [("翻译结果", "en")])
+        self.assertEqual(again, [("翻译结果", "en")])
+        post.assert_called_once()
+        self.assertEqual(get.call_count, 2)
 
 
 if __name__ == "__main__":

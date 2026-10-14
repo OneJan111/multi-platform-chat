@@ -1,0 +1,385 @@
+================================================================================
+
+CHANGE SUMMARY: Remove unnecessary full-page refresh in multi-platform-chat-main
+
+Target file: app.py   (Streamlit app)
+
+================================================================================
+
+ 
+
+CONTEXT / WHY
+
+--------------------------------------------------------------------------------
+
+This is a Streamlit dashboard. It refreshed the ENTIRE page every
+
+CHAT_POLL_INTERVAL seconds (default 5s) by running st.rerun() from a timer
+
+fragment. That re-executed the whole ~3500-line script on every tick: the big
+
+CSS block, the module reload checks, and ALL SIX tabs (Chat, Stream Monitoring,
+
+OBS, Analytics, Filters, Cookies) -- even though the only thing that needs to
+
+update on a tick is the chat feeds.
+
+ 
+
+The idiomatic Streamlit fix is to NOT call st.rerun() for the whole app, and
+
+instead put only the live content inside its own `@st.fragment(run_every=...)`.
+
+That way only the chat feed re-renders each tick; the rest of the page and the
+
+other tabs are untouched, and button clicks / typing elsewhere are never
+
+swallowed by a server-side sleep.
+
+ 
+
+The overlay page in the same file already used the correct pattern
+
+(`@st.fragment(run_every=2)`), so this change just brings the main dashboard
+
+in line with it.
+
+ 
+
+ 
+
+WHAT CHANGED (3 edits in app.py)
+
+--------------------------------------------------------------------------------
+
+ 
+
+EDIT 1 — Remove the poll calls from the top of the Chat tab.
+
+ 
+
+The Chat tab used to poll at the very top of the `with tab_chat:` block. Those
+
+two calls move INTO the new fragment (see Edit 2). Remove them here.
+
+ 
+
+  BEFORE:
+
+      with tab_chat:
+
+          _poll_chat()  # fetch new messages every rerun
+
+          _sync_obs_chat()
+
+ 
+
+          # -- Send message ----------------------------------------------------
+
+ 
+
+  AFTER:
+
+      with tab_chat:
+
+          # -- Send message ----------------------------------------------------
+
+ 
+
+ 
+
+EDIT 2 — Wrap the live feed (poll + data prep + rendering) in a scoped fragment.
+
+ 
+
+Inside `with tab_chat:`, AFTER the interactive controls (the "Send to" targets
+
+row, the site-emote row, the send form `st.form("send_form")`, the
+
+`st.divider()`, the platform-filter `show_row` with the show_yt/show_bili/
+
+show_me checkboxes and the layout segmented_control), the code that builds the
+
+message lists and renders the feeds must be moved into a fragment.
+
+ 
+
+Key points for whoever re-applies this:
+
+  * The interactive controls STAY OUTSIDE the fragment so they trigger their own
+
+    normal reruns (do not move the send form or the filter/layout controls
+
+    inside).
+
+  * The filter checkboxes use keys "show_yt", "show_bili", "show_me". Inside the
+
+    fragment, read their values from st.session_state (NOT from the local
+
+    variables returned by the checkbox calls, which are out of scope in the
+
+    nested function).
+
+  * Everything from the `hidden_platforms = {...}` computation down through the
+
+    final "Auto-refreshes every ... messages shown" markdown goes inside the
+
+    fragment, indented one extra level.
+
+  * The three inner render functions (_chat_feed, _paid_feed, _join_feed), the
+
+    `_feed_renderers` dict, the `feeds_box` container loop, and the auto-refresh
+
+    note all live inside the fragment too.
+
+  * Call the fragment once at the end: `_chat_live()`.
+
+ 
+
+  Structure AFTER the change (abbreviated — real bodies unchanged, just indented):
+
+ 
+
+      if st.session_state["tts_enabled"]:
+
+          _tts_stop_buttons(show_row, "feeds")
+
+ 
+
+      # The live feeds poll and re-render on their own timer (run_every). Only this fragment
+
+      # reruns on each tick, so the controls above and the other tabs are not re-executed every
+
+      # few seconds -- and button clicks / typing elsewhere are never swallowed by a server sleep.
+
+      @st.fragment(run_every=CHAT_POLL_INTERVAL)
+
+      def _chat_live():
+
+          _poll_chat()  # fetch new messages every tick
+
+          _sync_obs_chat()
+
+ 
+
+          hidden_platforms = {
+
+              p for p, key in (("youtube", "show_yt"), ("bilibili", "show_bili"), ("missevan", "show_me"))
+
+              if not st.session_state.get(key, True)
+
+          }
+
+          # All gifts, including free gifts, and other paid events have their own column.
+
+          msgs = [
+
+              m for m in st.session_state["chat_messages"]
+
+              if m.get("platform") not in hidden_platforms and not (is_paid(m) or is_gift(m))
+
+          ]
+
+          paid_all = [m for m in st.session_state["paid_messages"] if m.get("platform") not in hidden_platforms]
+
+ 
+
+          # Show newest first
+
+          visible = msgs[-st.session_state["max_chat_display"] :]
+
+          if st.session_state["translate_enabled"]:
+
+              tr.prefetch(
+
+                  [m.get("text", "") for m in visible + paid_all[-100:] if m.get("type") != "enter"],
+
+                  st.session_state["translate_target"],
+
+                  wait=2.0,
+
+              )
+
+ 
+
+          scales = st.session_state["text_scale"]
+
+          _joins_shown = st.session_state["show_enter_events"]
+
+          feed_order, feed_sides, stacked = _feed_layout_state()
+
+          if stacked:
+
+              feed_columns = [feed_order]
+
+          else:
+
+              feed_columns = [[f for f in feed_order if feed_sides[f] == side] for side in ("left", "right")]
+
+              feed_columns = [c for c in feed_columns if c]
+
+          st.markdown(
+
+              f"<style>.st-key-chat_feed {{ --chat-scale: {scales['chat'] / 100}; }}"
+
+              f".st-key-paid_feed {{ --chat-scale: {scales['paid'] / 100}; }}"
+
+              f"{_feed_height_css(feed_columns, stacked, _joins_shown)}</style>",
+
+              unsafe_allow_html=True,
+
+          )
+
+ 
+
+          def _chat_feed():
+
+              ...   # body unchanged, indented one level deeper
+
+          def _paid_feed():
+
+              ...   # body unchanged, indented one level deeper
+
+          def _join_feed():
+
+              ...   # body unchanged, indented one level deeper
+
+ 
+
+          _feed_renderers = {"chat": _chat_feed, "paid": _paid_feed, "join": _join_feed}
+
+          feeds_box = st.container(key="chat_paid")
+
+          if len(feed_columns) == 1:
+
+              targets = [feeds_box]
+
+          else:
+
+              targets = feeds_box.columns([3 if "chat" in c else 2 for c in feed_columns])
+
+          for target, column in zip(targets, feed_columns):
+
+              with target:
+
+                  for feed in column:
+
+                      _feed_renderers[feed]()
+
+ 
+
+          # Auto-refresh note
+
+          st.markdown(
+
+              f"<p style='color:color-mix(in srgb, currentColor 50%, transparent);font-size:0.75rem'>"
+
+              f"{t('Auto-refreshes every {s}s * {n} messages shown', s=CHAT_POLL_INTERVAL, n=len(msgs))}</p>",
+
+              unsafe_allow_html=True,
+
+          )
+
+ 
+
+      _chat_live()
+
+ 
+
+ 
+
+EDIT 3 — Delete the whole-app auto-refresh timer at the bottom of app.py.
+
+ 
+
+  REMOVE this entire block:
+
+ 
+
+      # ------------------------------------------------------------------------
+
+      # Auto-refresh: a browser-side timer reruns the app. Sleeping + st.rerun() on the
+
+      # server would swallow button clicks made while the script was sleeping.
+
+      # ------------------------------------------------------------------------
+
+      @st.fragment(run_every=CHAT_POLL_INTERVAL)
+
+      def _auto_refresh():
+
+          if st.session_state.pop("_full_run", False):
+
+              return  # part of a normal full run; only the timer ticks should rerun the app
+
+          st.rerun()
+
+ 
+
+ 
+
+      st.session_state["_full_run"] = True
+
+      _auto_refresh()
+
+ 
+
+  REPLACE with a comment only (no code):
+
+ 
+
+      # ------------------------------------------------------------------------
+
+      # Live updates: the Chat tab's _chat_live() fragment (run_every=CHAT_POLL_INTERVAL)
+
+      # polls and re-renders the feeds on its own timer. Only that fragment reruns on each
+
+      # tick, so the rest of the page -- and the other tabs -- are not re-executed every few
+
+      # seconds, and clicks / typing elsewhere are never swallowed by a server-side sleep.
+
+      # ------------------------------------------------------------------------
+
+ 
+
+ 
+
+VERIFICATION
+
+--------------------------------------------------------------------------------
+
+  * python -m py_compile app.py   -> passes
+
+  * No references to "_full_run" or "_auto_refresh" remain anywhere.
+
+  * App still polls every CHAT_POLL_INTERVAL via _chat_live(); only the Chat
+
+    feed re-renders per tick instead of the whole page.
+
+ 
+
+ 
+
+BEHAVIOR NOTE / FOLLOW-UP
+
+--------------------------------------------------------------------------------
+
+Before this change, the Analytics and Stream Monitoring tabs received fresh
+
+poll data "for free" on every 5s full rerun. After the change, polling lives in
+
+the Chat tab fragment, so those tabs refresh only when you interact with them or
+
+switch to them. For a dashboard this is usually fine. If live ticking is wanted
+
+there too, give those tabs their own `@st.fragment(run_every=...)` wrappers.
+
+ 
+
+The original reason for using a run_every fragment instead of time.sleep()
+
+(avoid swallowing button clicks during a server sleep) is preserved -- the fix
+
+only narrows the rerun scope from the whole app to the chat feed.
+
+================================================================================

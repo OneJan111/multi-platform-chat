@@ -33,6 +33,11 @@ _STRINGS: dict[str, tuple[str, str]] = {
         "オフ：ダッシュボードは OBS に接続しません。オン：接続されると、ここに配信・録画・シーン・テキストソースの操作が表示されます。",
     ),
     "OBS functions are off.": ("OBS 功能已关闭。", "OBS 機能はオフです。"),
+    "OBS controls are only available on the computer running this dashboard. "
+    "The chat overlay below works from anywhere.": (
+        "OBS 控制功能仅在运行此仪表板的电脑上可用。下方的弹幕叠加层可从任何设备使用。",
+        "OBS の操作はこのダッシュボードを実行しているパソコンでのみ利用できます。下のチャットオーバーレイはどこからでも使えます。",
+    ),
     "🖥️ Standalone overlay for OBS": ("🖥️ OBS 独立弹幕层", "🖥️ OBS 用スタンドアロンオーバーレイ"),
     "Enter a YouTube channel, Bilibili room or MissEvan room in the 📡 Stream Monitoring tab "
     "to get your overlay link.": (
@@ -51,6 +56,32 @@ _STRINGS: dict[str, tuple[str, str]] = {
         "下のオーバーレイ設定でこのリンクが変わります。",
     ),
     "What can I change in this link?": ("这个链接可以改什么？", "このリンクで変更できること"),
+    "This URL reads the chat by itself, like a logged-out viewer, as long as the overlay server runs — "
+    "you can close the dashboard. Edit the youtube= (@handle, channel or video link), bilibili= and "
+    "missevan= (room ID or link) values to show any channel. Options: n= messages (without sc=, Super Chats "
+    "and gifts are part of the chat), sc= Super Chats & gifts shown separately "
+    "(0 hides that part; the other then uses the whole height), "
+    "names=0 hides usernames, tr=en adds translations, text= custom message, "
+    "ruby=auto (or pinyin / furigana) adds a reading aid. "
+    "Bilibili hides viewer names from logged-out readers, so they appear masked.": (
+        "只要弹幕层服务器正在运行，这个链接就会像未登录的观众一样独立读取弹幕；你可以关闭仪表板页面。"
+        "修改 `youtube=`（@用户名、频道或直播链接）、`bilibili=` 和 `missevan=`（房间号或链接），即可更换显示的频道或房间。"
+        "参数说明：`n=` 设置弹幕条数（不设置 `sc=` 时，醒目留言和礼物也计入弹幕）；`sc=` 单独设置醒目留言和礼物的显示条数"
+        "（设为 `0` 可隐藏该区域，另一部分会使用全部高度）；`names=0` 隐藏用户名；`tr=en` 添加英文翻译；"
+        "`text=` 设置自定义消息；`ruby=auto`（或 `pinyin` / `furigana`）添加注音。未登录查看 B站时，观众用户名会被隐藏。",
+        "オーバーレイサーバーが動作していれば、このリンクは未ログインの視聴者のようにチャットを直接取得するため、ダッシュボードのページを閉じても使えます。"
+        "`youtube=`（@ハンドル、チャンネルまたは配信リンク）、`bilibili=`、`missevan=`（ルーム ID またはリンク）を変更すると、表示するチャンネルやルームを切り替えられます。"
+        "オプション：`n=` はチャットの表示件数（`sc=` がなければスーパーチャットとギフトも含む）、`sc=` はスーパーチャットとギフトの表示件数"
+        "（`0` でその欄を非表示にし、もう一方が全体の高さを使います）、`names=0` はユーザー名を非表示、`tr=en` は英語訳を追加、"
+        "`text=` はカスタムメッセージ、`ruby=auto`（または `pinyin` / `furigana`）は読み仮名を追加します。Bilibili は未ログインで見るとユーザー名が伏せられます。",
+    ),
+    "While this dashboard is open and reading the same rooms, the standalone overlay shows exactly the "
+    "Recent Chat Preview below (your login, filters and blocked users included).": (
+        "如果仪表板保持打开并正在监听相同的房间，独立弹幕层显示的内容会与下方的“最近弹幕预览”完全一致"
+        "（包括你的登录状态、过滤规则和已屏蔽用户）。",
+        "ダッシュボードを開いたまま同じルームを受信している場合、スタンドアロンオーバーレイには下の「最近のチャットプレビュー」と同じ内容が表示されます"
+        "（ログイン状態、フィルター、ブロックしたユーザーも反映されます）。",
+    ),
     "All (Super Chats, gifts and chat together)": (
         "全部（醒目留言、礼物和弹幕在一起）",
         "すべて（スーパーチャット・ギフト・チャットをまとめて表示）",
@@ -62,6 +93,43 @@ _STRINGS: dict[str, tuple[str, str]] = {
         "想把醒目留言和弹幕放在不同位置或不同场景？用「仅醒目留言和礼物」链接添加一个浏览器源，再用「仅弹幕」链接添加另一个。",
         "スーパーチャットとチャットを別の位置やシーンに置きたい場合は、「スーパーチャットとギフトのみ」のリンクと"
         "「チャットのみ」のリンクでブラウザソースを 1 つずつ追加してください。",
+    ),
+    "OBS overlay quick guide": ("OBS 弹幕层快速指南", "OBS オーバーレイ簡単ガイド"),
+    "obs_overlay_guide_md": (
+        """### Add the overlay to OBS
+1. Start listening to the YouTube channel or live room in **📡 Stream Monitoring**. The room must be live for chat to appear.
+2. Choose the link that matches what you want to show:
+   - **All** — recent chat, Super Chats and gifts together.
+   - **Super Chats & gifts only** — a separate source for paid events.
+   - **Chat only** — regular chat without the paid-events feed.
+3. Copy the link, then in OBS select **Sources → ＋ → Browser**. Paste it into **URL**, set **Width** to `400` and **Height** to `600`, then click **OK**. Resize and position the source in the OBS preview.
+4. Keep the dashboard program running. The standalone overlay continues reading the selected rooms even if you close the dashboard page.
+
+### Customize and update
+- Use **Sites on this overlay** to choose which platforms appear. Use **Messages shown** and **Super Chats & gifts shown** to control how many lines are displayed.
+- Turn off **Show usernames** to hide names. Use **Custom overlay message** to add a persistent on-stream message, and enable its toggle to show it.
+- Choose an **Overlay channel** if multiple dashboard users share the same overlay server.
+- Optional pinyin / furigana is visible to viewers and makes each line taller. Check **Recent Chat Preview** before using it on stream.
+- Changing these settings creates an updated URL. Copy that URL into the OBS Browser Source's **URL** field again to apply it. Use **Open** to preview a link in your browser.
+
+If OBS shows a blank overlay, make sure the dashboard program is still running, the selected room is live, and OBS can reach the overlay URL. If OBS runs on another computer, see the network note above the links.""",
+        """### OBS にオーバーレイを追加
+1. **📡 配信モニタリング** で YouTube チャンネルまたはライブ配信ルームの受信を開始します。チャットを表示するにはルームが配信中である必要があります。
+2. 表示したい内容に合うリンクを選びます。
+   - **すべて** — 最新のチャット、スーパーチャット、ギフトをまとめて表示。
+   - **スーパーチャットとギフトのみ** — 有料イベント専用のソース。
+   - **チャットのみ** — 有料イベントを除いた通常のチャット。
+3. リンクをコピーし、OBS で **ソース → ＋ → ブラウザ** を選択します。**URL** に貼り付け、**幅** を `400`、**高さ** を `600` にして **OK** をクリックします。OBS プレビューでサイズと位置を調整します。
+4. ダッシュボードのプログラムは起動したままにします。ダッシュボードのページを閉じても、選択したルームの受信が続いていればオーバーレイは動作します。
+
+### 表示を調整・更新
+- **このオーバーレイに表示するサイト** でプラットフォームを選択します。**表示するメッセージ数** と **表示するスーパーチャット・ギフト数** で表示件数を調整します。
+- **ユーザー名を表示** をオフにすると名前を隠せます。**カスタムオーバーレイメッセージ** に常時表示する文を入力し、表示スイッチをオンにします。
+- 複数の利用者が同じサーバーを使う場合は、**オーバーレイチャンネル** に別々の名前を設定します。
+- ピンイン／振り仮名は視聴者にも表示され、行の高さが増えます。配信で使う前に **最近のチャットプレビュー** を確認してください。
+- 設定を変えるとリンクも更新されます。反映するには、新しいリンクをコピーして OBS ブラウザソースの **URL** に貼り直してください。**開く** でブラウザ上の表示を確認できます。
+
+OBS に何も表示されない場合は、ダッシュボードのプログラムが起動中か、選択したルームが配信中か、OBS からオーバーレイ URL に接続できるかを確認してください。別の PC で OBS を使う場合は、リンク上のネットワークに関する説明も確認してください。""",
     ),
     "⬆️ The overlay settings are at the top of this tab, under the standalone overlay link.": (
         "⬆️ 弹幕层设置在本标签页顶部的独立弹幕层链接下方。",
@@ -93,25 +161,33 @@ _STRINGS: dict[str, tuple[str, str]] = {
     "Members only": ("仅限会员", "メンバー限定"),
     "Locked": ("未解锁", "ロック中"),
     "No channel stamps seen yet.": ("还没有看到频道表情包。", "チャンネルのスタンプはまだ見つかっていません。"),
-    "Sent only to YouTube. Click stamps to add them (as many as you like), add text if you want, then send. "
+    "Click stamps to add them to the message box. You can add text, then send to YouTube. "
     "Channel stamps show up here once someone uses them in chat; with a YouTube login (🍪 Cookies tab) the "
     "full set is listed and 🔒 marks member-only stamps you can't use.": (
-        "只发到 YouTube。点击表情包加入（可以加多个），也可以再输入文字，然后一次发送。有人在弹幕中使用频道表情包后，"
+        "点击表情包将其加入留言框，可继续输入文字，确认后再发送到 YouTube。有人在弹幕中使用频道表情包后，"
         "它们会出现在这里；登录 YouTube（🍪 Cookies 标签页）后会列出全部表情包，🔒 表示你无法使用的会员专属表情包。",
-        "YouTube にだけ送信されます。スタンプをクリックして追加し（いくつでも）、必要なら文字も入れてまとめて送信します。"
+        "スタンプをクリックするとメッセージ欄に追加されます。文字も入力し、確認してから YouTube に送信できます。"
         "チャットで誰かが使ったチャンネルスタンプがここに表示されます。YouTube にログイン（🍪 Cookies タブ）すると"
         "全スタンプが表示され、🔒 は使えないメンバー限定スタンプです。",
     ),
-    "Click stamps above…": ("点击上方表情包…", "上のスタンプをクリック…"),
-    "Send to YouTube": ("发送到 YouTube", "YouTube に送信"),
-    "Clear": ("清空", "クリア"),
-    "Sent only to Bilibili, as a sticker danmaku. 🔒 emotes need e.g. this room's fan medal, a guard "
+    "Click a Bilibili emote to add it to the message box. 🔒 emotes need e.g. this room's fan medal, a guard "
     "membership, or charging (充电) the streamer for the 充电表情 tab.": (
-        "只发到 B站，作为表情包弹幕。🔒 表情包需要本房间的粉丝勋章、大航海等条件；「充电表情」需要为主播充电。",
-        "Bilibili にだけスタンプ弾幕として送信されます。🔒 のスタンプにはこの部屋のファンメダルや大航海などが必要です。"
+        "点击 B站表情包将其加入留言框，确认后再发送。🔒 表情包需要本房间的粉丝勋章、大航海等条件；「充电表情」需要为主播充电。",
+        "Bilibili のスタンプをクリックするとメッセージ欄に追加され、確認後に送信できます。🔒 のスタンプにはこの部屋のファンメダルや大航海などが必要です。"
         "「充电表情」は配信者への充電（充电）が必要です。",
     ),
     "This room has no emotes you can send.": ("这个房间没有你可以发送的表情包。", "この部屋で送信できるスタンプはありません。"),
+    "Sent only to MissEvan. Click a room sticker to send it immediately.": (
+        "只发送到猫耳FM。点击房间表情即可立即发送。",
+        "MissEvan にだけ送信されます。ルームスタンプをクリックするとすぐに送信します。",
+    ),
+    "This room has no sticker packages.": ("这个房间没有表情包。", "このルームにスタンプパッケージはありません。"),
+    "This package has no stickers.": ("这个表情包没有表情。", "このパッケージにスタンプはありません。"),
+    "Preset kaomoji ({n})": ("预设颜文字（{n}）", "顔文字プリセット（{n}）"),
+    "Click a kaomoji to add it to the message box.": (
+        "点击颜文字可将其添加到留言框，确认后再发送。",
+        "顔文字をクリックするとメッセージ欄に追加され、確認後に送信できます。",
+    ),
     "Bilibili's emote server returned an error. Try 🔄 Refresh in a moment.": (
         "B站表情包接口返回服务器错误，请稍后点击 🔄 刷新重试。",
         "Bilibili のスタンプ API がサーバーエラーを返しました。少し待ってから 🔄 更新してください。"),
@@ -346,7 +422,21 @@ _STRINGS: dict[str, tuple[str, str]] = {
     "Send to": ("发送到", "送信先"),
     "Both": ("两者", "両方"),
     "Start the YouTube listener first.": ("请先启动 YouTube 监听。", "先に YouTube 受信を開始してください。"),
+    "Start the Bilibili listener first.": ("请先启动 B站监听。", "先に Bilibili のリスナーを開始してください。"),
+    "Start the MissEvan listener first.": ("请先启动猫耳FM监听。", "先に MissEvan のリスナーを開始してください。"),
     "Enter a Bilibili room ID first.": ("请先输入 B站房间号。", "先に Bilibili のルームIDを入力してください。"),
+    "Enter a MissEvan room ID first.": ("请先输入猫耳FM 房间号。", "先に MissEvan のルームIDを入力してください。"),
+    "Notify me when a stream goes live": ("开播时通知我", "配信開始時に通知"),
+    "While this dashboard is open, show a pop-up (and a desktop notification, if allowed) "
+    "when the YouTube channel/stream, Bilibili room or MissEvan room below goes live.": (
+        "保持此仪表板打开时，如果下方的 YouTube 频道/直播、B站房间或猫耳FM 房间开播，则显示弹窗（如已授权，也发送桌面通知）。",
+        "このダッシュボードを開いている間、下記の YouTube チャンネル／配信、Bilibili ルーム、MissEvan ルームが配信を開始するとポップアップで通知します"
+        "（許可されている場合はデスクトップ通知も表示）。",
+    ),
+    "🔔 Allow desktop notifications": ("🔔 允许桌面通知", "🔔 デスクトップ通知を許可"),
+    "🔔 Desktop notifications on": ("🔔 桌面通知已开启", "🔔 デスクトップ通知オン"),
+    "{site} is live": ("{site} 开播了", "{site} が配信を開始しました"),
+    "{site} is live: {title}": ("{site} 开播了：{title}", "{site} が配信を開始しました: {title}"),
     "Tick at least one site to send to.": ("请至少勾选一个发送平台。", "送信先を1つ以上選択してください。"),
     "Sent to {site} ✓": ("已发送到 {site} ✓", "{site} に送信しました ✓"),
     "Message": ("消息", "メッセージ"),
@@ -354,6 +444,7 @@ _STRINGS: dict[str, tuple[str, str]] = {
     "Send": ("发送", "送信"),
     "Chat": ("弹幕", "チャット"),
     "Gifts & Super Chats": ("礼物和醒目留言", "ギフトとスーパーチャット"),
+    "Total received: {amount}": ("累计收到：{amount}", "受取合計：{amount}"),
     "{n} to thank": ("{n} 条待感谢", "未お礼 {n} 件"),
     "{n} total": ("共 {n} 条", "合計 {n} 件"),
     "🙏 Mark all thanked": ("🙏 全部标为已感谢", "🙏 すべてお礼済みにする"),
@@ -482,6 +573,15 @@ _STRINGS: dict[str, tuple[str, str]] = {
     "Message Rate (per minute)": ("消息速率（每分钟）", "メッセージ数（毎分）"),
     "Messages per Minute": ("每分钟消息数", "1分あたりのメッセージ数"),
     "Top Chatters": ("发言排行", "発言ランキング"),
+    "🎁 Gifts and Super Chats by site": ("🎁 各平台礼物和醒目留言", "🎁 サイト別ギフト・スーパーチャット"),
+    "Revenue is shown in original currencies; different currencies are not converted or combined.": (
+        "收益按平台原始币种显示，不同币种不会换算或合并。",
+        "収益は各サイトの通貨で表示し、異なる通貨は換算・合算しません。",
+    ),
+    "Gift count": ("礼物数量", "ギフト数"),
+    "Gift revenue": ("礼物收益", "ギフト収益"),
+    "Super Chat count": ("醒目留言数量", "スーパーチャット数"),
+    "Super Chat revenue": ("醒目留言收益", "スーパーチャット収益"),
     "🎁 Gift Leaderboard": ("🎁 礼物榜", "🎁 ギフトランキング"),
     "Top supporters from gifts, Super Chats and memberships received while this dashboard is open. Amounts in "
     "different currencies aren't added together: each site is ranked by its most used currency.": (
