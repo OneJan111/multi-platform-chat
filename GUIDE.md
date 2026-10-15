@@ -59,6 +59,8 @@ Use the page buttons across the top, beside Deploy, to switch pages. On narrow s
 
 Chat follows the latest messages automatically. Scrolling back pauses following; return to the latest position or press the arrow to resume. Click a gift's content area to toggle its thanked state, or use **Unthanked** to show only outstanding gifts.
 
+The message display limit excludes gifts and Super Chats. **☰ → Clear chat history** removes ordinary chat, joins, and thanked gifts/Super Chats, while keeping unthanked items.
+
 ### Translation and reading aloud
 
 For a lighter dashboard, open **☰ → Feed display** and turn off **Render emoji and gift images**. Emoji codes and gift text/counts/amounts remain visible. Standalone OBS overlays and the sending sticker picker are unchanged. `RENDER_CHAT_IMAGES=true` sets the default; use `false` and restart for a lightweight default. Saved browser preferences take priority.

@@ -2070,6 +2070,17 @@ def _save_settings() -> None:
 _apply_saved_settings()
 
 
+def _clear_chat_history() -> None:
+    st.session_state["chat_messages"] = []
+    st.session_state["join_messages"] = []
+    thanked = st.session_state["thanked_ids"]
+    st.session_state["paid_messages"] = [
+        message for message in st.session_state["paid_messages"]
+        if message["id"] not in thanked
+    ]
+    st.session_state["thanked_ids"] = set()
+
+
 def _render_chat_filters() -> None:
     filt: ChatFilter = st.session_state["filter"]
     st.markdown("#### " + t("Keyword / Regex Block Patterns"))
@@ -2287,8 +2298,7 @@ with st.sidebar:
     )
 
     if st.button(t("🗑️ Clear chat history")):
-        st.session_state["chat_messages"] = []
-        st.session_state["join_messages"] = []
+        _clear_chat_history()
         st.rerun()
 
 
