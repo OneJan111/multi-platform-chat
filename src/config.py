@@ -74,4 +74,11 @@ OVERLAY_PUBLIC_URL: str = os.getenv("OVERLAY_PUBLIC_URL", "").strip().rstrip("/"
 # App
 TRANSCRIPTION_ENABLED: bool = os.getenv("TRANSCRIPTION_ENABLED", "false").strip().lower() == "true"
 TTS_USE_GTTS: bool = os.getenv("TTS_USE_GTTS", "false").lower() == "true"
+RENDER_CHAT_IMAGES: bool = os.getenv("RENDER_CHAT_IMAGES", "true").strip().lower() == "true"
 CHAT_POLL_INTERVAL: int = int(os.getenv("CHAT_POLL_INTERVAL", "5"))
+ROOM_STATUS_POLL_INTERVAL: int = int(os.getenv("ROOM_STATUS_POLL_INTERVAL", "60"))
+if ROOM_STATUS_POLL_INTERVAL < 1:
+    raise ValueError("ROOM_STATUS_POLL_INTERVAL must be at least 1 second")
+MAX_CHAT_DISPLAY: int = int(os.getenv("MAX_CHAT_DISPLAY", "50"))
+if not 10 <= MAX_CHAT_DISPLAY <= 200:
+    raise ValueError("MAX_CHAT_DISPLAY must be between 10 and 200")

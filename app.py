@@ -85,8 +85,8 @@ transcribe = _fresh(transcribe)
 # Overlay state lives on `sys` and ensure_started() replaces a server from an older copy, so reloading is safe.
 overlay_server = _fresh(overlay_server)
 from src.config import (
-    BILIBILI_ROOM_ID, CHAT_POLL_INTERVAL, MISSEVAN_ROOM_ID, OBS_HOST, OBS_PORT, OVERLAY_HOST,
-    OVERLAY_PUBLIC_URL, YOUTUBE_CHANNEL,
+    BILIBILI_ROOM_ID, CHAT_POLL_INTERVAL, MAX_CHAT_DISPLAY, MISSEVAN_ROOM_ID, OBS_HOST, OBS_PORT, OVERLAY_HOST,
+    OVERLAY_PUBLIC_URL, RENDER_CHAT_IMAGES, ROOM_STATUS_POLL_INTERVAL, YOUTUBE_CHANNEL,
 )
 from src.filters import ChatFilter, make_default_filter
 from src.tts import (
@@ -191,6 +191,10 @@ body { --send-composer-left: 16px; }
     border-radius: 0.75rem;
     background: color-mix(in srgb, var(--background-color) 94%, transparent);
     backdrop-filter: blur(12px);
+}
+.st-key-send_box {
+    width: min(100%, calc(30ic + 4rem)) !important;
+    max-width: min(100%, calc(30ic + 4rem)) !important;
 }
 .st-key-send_targets {
     position: static;
@@ -779,7 +783,8 @@ def _init_state():
         "obs_chat_last": None,
         "obs_chat_last_at": 0.0,
         "text_scale": 100,           # shared text size in % for all chat feeds
-        "max_chat_display": 200,
+        "max_chat_display": MAX_CHAT_DISPLAY,
+        "render_chat_images": RENDER_CHAT_IMAGES,
         "feed_order": "newest_first",
         "selected_chat_id": "",
         "yt_chat_input": YOUTUBE_CHANNEL.strip(),
@@ -821,6 +826,7 @@ def _init_state():
     for k, v in defaults.items():
         if k not in st.session_state:
             st.session_state[k] = v
+    st.session_state["max_chat_display"] = max(10, min(200, st.session_state["max_chat_display"]))
     if isinstance(st.session_state["text_scale"], dict):  # migrate older per-feed sizes
         st.session_state["text_scale"] = st.session_state["text_scale"].get("chat", 100)
     if st.session_state["text_scale"] not in _TEXT_SIZES:
@@ -1069,6 +1075,8 @@ def _render_room_cover(url: str) -> None:
 
 
 def _message_text_html(msg: dict, text: str) -> str:
+    if not st.session_state["render_chat_images"]:
+        return html_lib.escape(text)
     emote_map = msg.get("emotes") or {}
     text_html = emotes.text_to_html(
         text, emote_map, msg.get("sticker_url", ""), msg.get("sticker_caption", False)
@@ -1586,13 +1594,13 @@ def _record_viewer_snapshot(yt_viewers: int, bili_viewers: int, me_viewers: int 
         st.session_state["viewer_history"] = st.session_state["viewer_history"][-60:]
 
 
-@st.cache_data(ttl=60, show_spinner=False)
+@st.cache_data(ttl=ROOM_STATUS_POLL_INTERVAL, show_spinner=False)
 def _cached_video_status(video_id: str) -> dict:
     # Cached because the app reruns every few seconds and each lookup costs API quota.
     return yt.get_video_live_status(video_id)
 
 
-YT_WATCH_INTERVAL = 60  # seconds between checks of a watched channel
+YT_WATCH_INTERVAL = ROOM_STATUS_POLL_INTERVAL
 
 
 def _yt_video_id() -> str:
@@ -1763,12 +1771,12 @@ def _check_watched_channel(force: bool = False):
             st.toast(msg)
 
 
-@st.cache_data(ttl=30, show_spinner=False)
+@st.cache_data(ttl=ROOM_STATUS_POLL_INTERVAL, show_spinner=False)
 def _cached_room_info(room_id: str) -> dict:
     return bili.get_room_info(room_id)
 
 
-@st.cache_data(ttl=30, show_spinner=False)
+@st.cache_data(ttl=ROOM_STATUS_POLL_INTERVAL, show_spinner=False)
 def _cached_me_room_info(room_id: str) -> dict:
     return me.get_room_info(room_id)
 
@@ -1967,6 +1975,7 @@ _PREFS = {
         "tts_enabled", "tts_translate", "tts_translate_paid", "tts_skip_name", "tts_announce_paid", "tts_read_chat", "tts_read_joins",
         "tts_skip_emoji", "translate_enabled", "show_enter_events", "obs_enabled", "obs_chat_enabled",
         "overlay_visible", "overlay_show_username", "live_notify", "show_yt", "show_bili", "show_me",
+        "render_chat_images",
     )},
     "tts_rate": _pref_num(80, 300),
     "tts_volume": _pref_num(0.0, 1.0, float),
@@ -1974,7 +1983,7 @@ _PREFS = {
     "tts_output": _pref_pick(("server", "browser")),
     "translate_target": _pref_pick(tr.LANGUAGES),
     "show_reading_aids": _pref_flag,
-    "max_chat_display": _pref_num(50, 1000),
+    "max_chat_display": _pref_num(10, 200),
     "feed_order": _pref_pick(_FEED_ORDERS),
     "text_scale": _pref_text_scale,
     "overlay_count": _pref_num(1, overlay_server.MAX_MESSAGES),
@@ -2206,6 +2215,10 @@ with st.sidebar:
     st.toggle(t("Show pinyin / furigana"), key="show_reading_aids")
     st.divider()
     st.subheader(t("💬 Feed display"))
+    st.toggle(
+        t("Render emoji and gift images"), key="render_chat_images",
+        help=t("Turn off for a lighter dashboard. Keeps emoji codes and gift text; standalone OBS overlays are unchanged."),
+    )
     st.select_slider(
         t("Chat text size"),
         options=_TEXT_SIZES,
@@ -2270,7 +2283,7 @@ with st.sidebar:
 
     st.divider()
     st.session_state["max_chat_display"] = st.number_input(
-        t("Max messages displayed"), 50, 1000, st.session_state["max_chat_display"]
+        t("Max messages displayed"), 10, 200, st.session_state["max_chat_display"]
     )
 
     if st.button(t("🗑️ Clear chat history")):
@@ -2291,7 +2304,7 @@ def _render_transcription_results(session) -> None:
         "Transcription target language: {language}",
         language=t(tr.LANGUAGES[session.target_language]),
     ))
-    for item in _display_order(snapshot["segments"][-50:]):
+    for item in _display_order(snapshot["segments"][-st.session_state["max_chat_display"]:]):
         st.markdown(f"**{item['time']}**")
         if item.get("transcription_error"):
             st.error(t("Could not transcribe this audio segment: {error}",
@@ -2472,13 +2485,10 @@ if page_transcription is not None:
 # TAB: STREAM STATUS
 # ═══════════════════════════════════════════════════════════════════════════════
 
-with page_status:
-    @st.fragment(run_every=CHAT_POLL_INTERVAL)
-    def _listening_chat_hint():
-        if _has_active_chat_listener():
-            st.info(t("A room is being monitored. Switch to 💬 Chat in the top bar to view live messages."))
-
-    _listening_chat_hint()
+@st.fragment(run_every=ROOM_STATUS_POLL_INTERVAL)
+def _stream_status():
+    if _has_active_chat_listener():
+        st.info(t("A room is being monitored. Switch to 💬 Chat in the top bar to view live messages."))
     st.toggle(
         t("Notify me when a stream goes live"), key="live_notify",
         help=t("While this dashboard is open, show a pop-up (and a desktop notification, if allowed) "
@@ -2774,6 +2784,11 @@ with page_status:
 
     if yt_viewers_now or bili_viewers_now or me_viewers_now:
         _record_viewer_snapshot(yt_viewers_now, bili_viewers_now, me_viewers_now)
+    _emit_live_alerts()
+
+
+with page_status:
+    _stream_status()
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # TAB: CHAT
@@ -3330,6 +3345,8 @@ with page_chat:
         topbar.checkbox("YouTube", key="show_yt")
         topbar.checkbox("Bilibili", key="show_bili")
         topbar.checkbox(t("MissEvan"), key="show_me")
+        if len(hidden_platforms) == 3:
+            st.info(t("All sites are hidden. Select a site above to display its chat and gifts."))
         topbar.space("stretch")
         received_amounts = gifts.amount_totals(paid_all)
         received_total = " + ".join(
@@ -3855,7 +3872,10 @@ with page_obs:
             if st.session_state["translate_enabled"] and m.get("type") != "gift" else ""
         )
         _ov_rd = st.session_state["overlay_reading"]
-        text_html = emotes.text_to_html(m["text"], m.get("emotes"), m.get("sticker_url", ""), m.get("sticker_caption", False))
+        text_html = (
+            emotes.text_to_html(m["text"], m.get("emotes"), m.get("sticker_url", ""), m.get("sticker_caption", False))
+            if st.session_state["render_chat_images"] else html_lib.escape(m["text"])
+        )
         if _ov_rd != "off" and not m.get("emotes") and not m.get("sticker_url"):
             annotated = reading.annotate_html(m["text"], _ov_rd)
             if annotated:

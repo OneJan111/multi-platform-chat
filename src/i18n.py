@@ -13,6 +13,15 @@ UI_LANGUAGES: dict[str, str] = {
 
 # English -> (Chinese, Japanese)
 _STRINGS: dict[str, tuple[str, str]] = {
+    "All sites are hidden. Select a site above to display its chat and gifts.": (
+        "所有网站都已隐藏。请勾选上方的网站以显示其弹幕和礼物。",
+        "すべてのサイトが非表示です。上のサイトを選択するとチャットとギフトが表示されます。",
+    ),
+    "Render emoji and gift images": ("显示表情和礼物图片", "絵文字・ギフト画像を表示"),
+    "Turn off for a lighter dashboard. Keeps emoji codes and gift text; standalone OBS overlays are unchanged.": (
+        "关闭可减轻仪表板负担。保留表情代码和礼物文字；不影响 OBS 独立弹幕层。",
+        "オフにすると表示負荷を軽減します。絵文字コードとギフトの文字情報は残り、OBS 独立オーバーレイには影響しません。",
+    ),
     # ── Sidebar ──────────────────────────────────────────────────────────────
     "⚙️ Global settings": ("⚙️ 全局设定", "⚙️ グローバル設定"),
     "🎙 Transcription": ("🎙 转录", "🎙 文字起こし"),
