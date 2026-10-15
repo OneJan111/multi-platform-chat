@@ -1849,6 +1849,18 @@ def _render_login(state: Optional[dict], name: str, detail: str = "",
         )
 
 
+def _has_active_chat_listener() -> bool:
+    if st.session_state.get("selected_chat_id"):
+        return True
+    return any(
+        listener and listener.running
+        for listener in (
+            st.session_state.get("bili_listener"),
+            st.session_state.get("me_listener"),
+        )
+    )
+
+
 def _render_listener(site: str, running: bool, level: str, msg: str, detail: str = "",
                      can_start: bool = True) -> Optional[str]:
     """Listener line plus Start/Stop button shared by every site. Returns "start"/"stop" when clicked."""
@@ -2461,6 +2473,12 @@ if page_transcription is not None:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 with page_status:
+    @st.fragment(run_every=CHAT_POLL_INTERVAL)
+    def _listening_chat_hint():
+        if _has_active_chat_listener():
+            st.info(t("A room is being monitored. Switch to 💬 Chat in the top bar to view live messages."))
+
+    _listening_chat_hint()
     st.toggle(
         t("Notify me when a stream goes live"), key="live_notify",
         help=t("While this dashboard is open, show a pop-up (and a desktop notification, if allowed) "

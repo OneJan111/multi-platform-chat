@@ -86,6 +86,8 @@ Then open <http://localhost:8501>. To use it from a tablet on the same network, 
 
 ### Reading chat (no login needed)
 
+When a room is being monitored, Stream Monitoring shows a reminder to switch to **💬 Chat** in the top bar to view messages. The reminder disappears when all chat listeners stop.
+
 Each site has a column on the **📡 Stream Monitoring** tab, and every column has the same layout:
 
 1. **🔑 Login** — who you're logged in as (re-checked every 5 minutes), *Login expired*, or *Not logged in — chat is read-only*.

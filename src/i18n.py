@@ -455,6 +455,10 @@ OBS に何も表示されない場合は、ダッシュボードのプログラ�
     "📊 Analytics": ("📊 数据分析", "📊 分析"),
     "🛡️ Filters": ("🛡️ 过滤", "🛡️ フィルター"),
     "Navigation": ("页面导航", "ナビゲーション"),
+    "A room is being monitored. Switch to 💬 Chat in the top bar to view live messages.": (
+        "已有直播间正在监听，请切换到顶栏的 💬 弹幕 页面观看实时弹幕。",
+        "配信ルームを受信中です。上部バーの 💬 チャット に切り替えると、リアルタイムのメッセージを確認できます。",
+    ),
     "Scroll to latest": ("滚动到最新消息", "最新メッセージへスクロール"),
     "Page": ("页面", "ページ"),
     "🍪 Cookies": ("🍪 Cookies", "🍪 Cookie"),

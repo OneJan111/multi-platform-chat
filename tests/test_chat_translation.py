@@ -131,5 +131,24 @@ class ChatTranslationTests(unittest.TestCase):
         self.deliver.assert_not_called()
 
 
+class ListeningHintTests(unittest.TestCase):
+    def test_hint_requires_an_active_listener(self):
+        tree = ast.parse((Path(__file__).resolve().parents[1] / "app.py").read_text(encoding="utf-8"))
+        node = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "_has_active_chat_listener")
+        for state, expected in (
+            ({}, False),
+            ({"selected_chat_id": "live-chat"}, True),
+            ({"yt_watch_channel": "channel"}, False),
+            ({"bili_listener": SimpleNamespace(running=True)}, True),
+            ({"me_listener": SimpleNamespace(running=True)}, True),
+            ({"bili_listener": SimpleNamespace(running=False)}, False),
+            ({"me_listener": SimpleNamespace(running=False)}, False),
+        ):
+            with self.subTest(state=state):
+                namespace = {"st": SimpleNamespace(session_state=state)}
+                exec(compile(ast.Module(body=[node], type_ignores=[]), "app.py", "exec"), namespace)
+                self.assertEqual(namespace["_has_active_chat_listener"](), expected)
+
+
 if __name__ == "__main__":
     unittest.main()
