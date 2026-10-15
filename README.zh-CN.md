@@ -67,11 +67,14 @@ pip install -r requirements.txt
 | `OVERLAY_PUBLIC_URL` | 在 🎬 OBS 标签页中显示的叠加层地址（例如 `http://203.0.113.5:8502` 或反向代理地址） | 自动 |
 | `TTS_USE_GTTS` | `true` = 在线 gTTS，`false` = 离线 pyttsx3 | `false` |
 | `CHAT_POLL_INTERVAL` | 弹幕刷新间隔（秒） | `5` |
+| `CHAT_TRANSLATION_DISPLAY_MODE` | 翻译显示方式：`immediate` 立即显示弹幕，译文就绪后补上；`wait` 等译文就绪后再显示弹幕 | `immediate` |
 | `LOGIN_SECRET` | 加密每个用户保存在浏览器中的登录信息的密钥。更改后所有人都会被登出 | 随机生成，保存在 `.login_secret` |
 
 > ⚠️ `.env` 和 `.login_secret` 包含机密信息，已列入 `.gitignore`。切勿提交或分享。
 >
 > 翻译优先使用 Index-Translate，不可用或返回无效结果时会回退到 Google。在 `.env` 中设置 `INDEX_TRANSLATE_API_BASE=` 可禁用 Index-Translate。启用翻译会把弹幕文本发送给翻译服务。
+>
+> `CHAT_TRANSLATION_DISPLAY_MODE` 可设为 `immediate` 或 `wait`，修改 `.env` 后重启 Web app 生效。`wait` 模式下，翻译失败或目标语言改变时会显示原文，不会丢弃弹幕。
 
 ## 运行
 

@@ -85,8 +85,9 @@ transcribe = _fresh(transcribe)
 # Overlay state lives on `sys` and ensure_started() replaces a server from an older copy, so reloading is safe.
 overlay_server = _fresh(overlay_server)
 from src.config import (
-    BILIBILI_ROOM_ID, CHAT_POLL_INTERVAL, MAX_CHAT_DISPLAY, MISSEVAN_ROOM_ID, OBS_HOST, OBS_PORT, OVERLAY_HOST,
-    OVERLAY_PUBLIC_URL, RENDER_CHAT_IMAGES, ROOM_STATUS_POLL_INTERVAL, YOUTUBE_CHANNEL,
+    BILIBILI_ROOM_ID, CHAT_POLL_INTERVAL, CHAT_TRANSLATION_DISPLAY_MODE, MAX_CHAT_DISPLAY, MISSEVAN_ROOM_ID,
+    OBS_HOST, OBS_PORT, OVERLAY_HOST, OVERLAY_PUBLIC_URL, RENDER_CHAT_IMAGES, ROOM_STATUS_POLL_INTERVAL,
+    YOUTUBE_CHANNEL,
 )
 from src.filters import ChatFilter, make_default_filter
 from src.tts import (
@@ -812,6 +813,7 @@ def _init_state():
         "_tts_browser": [],           # lines waiting to be sent to the browser speech player
         "_tts_browser_cmd": "",       # "skip" / "stop" for the browser speech player
         "last_poll": 0.0,
+        "_chat_translation_pending": [],
         "viewer_history": [],         # list of {time, yt, bili}
         "activity_log": [],           # compact record of every message this session, for 🔥 hotspots
         "stream_starts": {},          # site -> epoch seconds the current stream went live
@@ -1453,9 +1455,46 @@ def _replay_message(msg: dict):
     _queue_message_speech(msg, text, lang, is_paid(msg), manual=True)
 
 
+def _append_chat_message(msg: dict) -> None:
+    if is_paid(msg) or is_gift(msg):
+        st.session_state["paid_messages"].append(msg)
+    if msg.get("type") == "enter":
+        st.session_state["join_messages"].append(msg)
+    else:
+        st.session_state["chat_messages"].append(msg)
+
+
+def _cap_chat_history() -> None:
+    st.session_state["paid_messages"].sort(key=lambda msg: msg.get("_arrived", 0))
+    st.session_state["join_messages"].sort(key=lambda msg: msg.get("_arrived", 0))
+    st.session_state["chat_messages"].sort(key=lambda msg: msg.get("_arrived", 0))
+    if len(st.session_state["paid_messages"]) > 1000:
+        st.session_state["paid_messages"] = st.session_state["paid_messages"][-1000:]
+    if len(st.session_state["join_messages"]) > 500:
+        st.session_state["join_messages"] = st.session_state["join_messages"][-300:]
+    max_disp = st.session_state["max_chat_display"]
+    if len(st.session_state["chat_messages"]) > max_disp * 2:
+        st.session_state["chat_messages"] = st.session_state["chat_messages"][-max_disp:]
+
+
+def _flush_chat_translation_pending() -> None:
+    pending = st.session_state.get("_chat_translation_pending", [])
+    waiting = []
+    for item in pending:
+        msg, target = item["msg"], item["target"]
+        if st.session_state["translate_enabled"] and target == st.session_state["translate_target"]:
+            if tr.get_translation(msg["text"], target) is None:
+                waiting.append(item)
+                continue
+        _append_chat_message(msg)
+    st.session_state["_chat_translation_pending"] = waiting
+    _cap_chat_history()
+
+
 def _poll_chat():
     """Pull new messages from both platforms and append to session state."""
     _flush_translated_speech()
+    _flush_chat_translation_pending()
     now = time.time()
     if now - st.session_state["last_poll"] < CHAT_POLL_INTERVAL:
         return
@@ -1540,31 +1579,30 @@ def _poll_chat():
     _now = time.time()
     _now_ns = time.time_ns()
     _log = st.session_state["activity_log"]
+    translation_target = st.session_state["translate_target"]
+    wait_for_translation = (
+        CHAT_TRANSLATION_DISPLAY_MODE == "wait" and st.session_state["translate_enabled"]
+    )
+    pending_translations = []
     for _i, m in enumerate(allowed):
         # Arrival order, so the overlay and preview can interleave Super Chats / gifts with chat.
         m.setdefault("_arrived", _now_ns + _i)
         if m.get("type") != "enter":
             _log.append(hl.log_entry(m, is_paid(m) or is_gift(m), _now))
-        if is_paid(m) or is_gift(m):
-            st.session_state["paid_messages"].append(m)
-        if m.get("type") == "enter":
-            st.session_state["join_messages"].append(m)
+        if wait_for_translation and m.get("text") and m.get("type") not in ("enter", "gift"):
+            pending_translations.append(m)
+            st.session_state["_chat_translation_pending"].append({
+                "msg": m, "target": translation_target,
+            })
             continue
-        st.session_state["chat_messages"].append(m)
-    if len(st.session_state["paid_messages"]) > 1000:
-        st.session_state["paid_messages"] = st.session_state["paid_messages"][-1000:]
-    if len(st.session_state["join_messages"]) > 500:
-        st.session_state["join_messages"] = st.session_state["join_messages"][-300:]
+        _append_chat_message(m)
+    if pending_translations:
+        tr.prefetch([m["text"] for m in pending_translations], translation_target)
+    _cap_chat_history()
     if len(_log) > hl.MAX_LOG:
         st.session_state["activity_log"] = _log[-hl.MAX_LOG:]
 
     st.session_state["blocked_msgs"].extend(blocked)
-
-    # Cap history
-    max_disp = st.session_state["max_chat_display"]
-    if len(st.session_state["chat_messages"]) > max_disp * 2:
-        st.session_state["chat_messages"] = st.session_state["chat_messages"][-max_disp:]
-
 
 def _note_stream_start(site: str, value: str, zone: str = "") -> None:
     """Remember when `site`'s stream went live (hotspot clip times are measured from it).

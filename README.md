@@ -67,6 +67,7 @@ The template only contains placeholder values (`your-…`, `xxx`). **Replace the
 | `OVERLAY_PUBLIC_URL` | Overlay address shown in the 🎬 OBS tab (e.g. `http://203.0.113.5:8502` or a reverse-proxy URL) | auto |
 | `TTS_USE_GTTS` | `true` = online gTTS, `false` = offline pyttsx3 | `false` |
 | `CHAT_POLL_INTERVAL` | Chat refresh interval in seconds | `5` |
+| `CHAT_TRANSLATION_DISPLAY_MODE` | `immediate` shows chat right away and adds translations when ready; `wait` shows each message when its translation is ready | `immediate` |
 | `LOGIN_SECRET` | Key that encrypts each user's logins in their browser. Changing it logs everyone out | random, in `.login_secret` |
 
 > ⚠️ `.env` and `.login_secret` contain secrets and are listed in `.gitignore`. Never commit or share them.

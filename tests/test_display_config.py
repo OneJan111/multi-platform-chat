@@ -25,6 +25,21 @@ class DisplayConfigTests(unittest.TestCase):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 self.load_config(value)
 
+    def test_translation_display_mode_defaults_and_overrides(self):
+        config_path = str(Path(__file__).resolve().parents[1] / "src" / "config.py")
+        for value, expected in ((None, "immediate"), ("immediate", "immediate"), ("wait", "wait")):
+            env = {} if value is None else {"CHAT_TRANSLATION_DISPLAY_MODE": value}
+            with self.subTest(value=value), patch.dict(os.environ, env, clear=True), patch("dotenv.load_dotenv"):
+                self.assertEqual(runpy.run_path(config_path)["CHAT_TRANSLATION_DISPLAY_MODE"], expected)
+
+    def test_invalid_translation_display_mode_raises(self):
+        config_path = str(Path(__file__).resolve().parents[1] / "src" / "config.py")
+        for value in ("", "yes", "parallel"):
+            with self.subTest(value=value), patch.dict(
+                os.environ, {"CHAT_TRANSLATION_DISPLAY_MODE": value}, clear=True
+            ), patch("dotenv.load_dotenv"), self.assertRaises(ValueError):
+                runpy.run_path(config_path)
+
     def test_transcription_uses_shared_display_limit(self):
         source = (Path(__file__).resolve().parents[1] / "app.py").read_text(encoding="utf-8")
         function = next(

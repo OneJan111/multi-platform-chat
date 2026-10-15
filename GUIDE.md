@@ -157,6 +157,7 @@ To change it: right-click `.env` → **Open with** → **Notepad**, edit, save, 
 - **Default rooms** — `YOUTUBE_CHANNEL=`, `BILIBILI_ROOM_ID=`, `MISSEVAN_ROOM_ID=`.
 - **Room status refresh** — `ROOM_STATUS_POLL_INTERVAL=60` (seconds, minimum 1) independently refreshes room status, titles and viewer counts, and sets the YouTube channel-watch interval. Restart after changing it. It does not automatically start chat listeners; go-live alerts may be delayed by one interval plus request time.
 - **Chat translation** — the app tries Index-Translate first and falls back to Google. The built-in streaming glossary keeps terms such as *舰长*, *醒目留言*, *上舰* and *弹幕* consistent. To use Google directly, set `INDEX_TRANSLATE_API_BASE=` in `.env`. When translation is enabled, chat text is sent to the translation service.
+- **Translation display timing** — set `CHAT_TRANSLATION_DISPLAY_MODE=immediate` to show chat at once and add translations when ready, or `wait` to show each message after its translation is ready. Restart the web app after changing `.env`; failed translations and target-language changes fall back to the original message.
 
 ## Updating to a new version
 

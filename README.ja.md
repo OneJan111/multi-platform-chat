@@ -69,6 +69,7 @@ pip install -r requirements.txt
 | `OVERLAY_PUBLIC_URL` | 🎬 OBS タブに表示するオーバーレイのアドレス（例：`http://203.0.113.5:8502` やリバースプロキシの URL） | 自動 |
 | `TTS_USE_GTTS` | `true` = オンラインの gTTS、`false` = オフラインの pyttsx3 | `false` |
 | `CHAT_POLL_INTERVAL` | チャットの更新間隔（秒） | `5` |
+| `CHAT_TRANSLATION_DISPLAY_MODE` | `immediate` = チャットをすぐ表示し、翻訳完了後に訳文を追加；`wait` = 翻訳完了後にメッセージを表示 | `immediate` |
 | `LOGIN_SECRET` | 各ユーザーのブラウザに保存されるログイン情報を暗号化するキー。変更すると全員がログアウトされます | ランダム、`.login_secret` に保存 |
 
 > ⚠️ `.env` と `.login_secret` には秘密情報が含まれ、`.gitignore` に登録されています。コミットや共有は絶対にしないでください。

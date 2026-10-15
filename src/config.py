@@ -75,6 +75,11 @@ OVERLAY_PUBLIC_URL: str = os.getenv("OVERLAY_PUBLIC_URL", "").strip().rstrip("/"
 TRANSCRIPTION_ENABLED: bool = os.getenv("TRANSCRIPTION_ENABLED", "false").strip().lower() == "true"
 TTS_USE_GTTS: bool = os.getenv("TTS_USE_GTTS", "false").lower() == "true"
 RENDER_CHAT_IMAGES: bool = os.getenv("RENDER_CHAT_IMAGES", "true").strip().lower() == "true"
+CHAT_TRANSLATION_DISPLAY_MODE: str = os.getenv(
+    "CHAT_TRANSLATION_DISPLAY_MODE", "immediate"
+).strip().lower()
+if CHAT_TRANSLATION_DISPLAY_MODE not in ("immediate", "wait"):
+    raise ValueError("CHAT_TRANSLATION_DISPLAY_MODE must be 'immediate' or 'wait'")
 CHAT_POLL_INTERVAL: int = int(os.getenv("CHAT_POLL_INTERVAL", "5"))
 ROOM_STATUS_POLL_INTERVAL: int = int(os.getenv("ROOM_STATUS_POLL_INTERVAL", "60"))
 if ROOM_STATUS_POLL_INTERVAL < 1:

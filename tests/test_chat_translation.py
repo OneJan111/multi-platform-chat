@@ -24,7 +24,10 @@ class ChatTranslationTests(unittest.TestCase):
             "_reads_translated": lambda msg: msg.get("type") != "gift",
             "_deliver_message_speech": self.deliver,
         }
-        names = {"_queue_message_speech", "_flush_translated_speech"}
+        names = {
+            "_append_chat_message", "_cap_chat_history", "_flush_chat_translation_pending",
+            "_queue_message_speech", "_flush_translated_speech",
+        }
         module = ast.Module(
             body=[node for node in self.tree.body if isinstance(node, ast.FunctionDef) and node.name in names],
             type_ignores=[],
@@ -102,9 +105,17 @@ class ChatTranslationTests(unittest.TestCase):
         })
         self.namespace.update({
             "time": time, "CHAT_POLL_INTERVAL": 5, "_check_watched_channel": Mock(),
+            "CHAT_TRANSLATION_DISPLAY_MODE": "immediate",
             "_tts_translating": lambda: True, "is_paid": lambda message: False,
             "is_gift": lambda message: False, "_TTS_MAX_JOINS": 3,
             "hl": SimpleNamespace(MAX_LOG=1000, log_entry=lambda *args: {}),
+            "_append_chat_message": lambda message: (
+                self.state["paid_messages"].append(message) if message.get("type") in ("paid", "gift")
+                else self.state["join_messages"].append(message) if message.get("type") == "enter"
+                else self.state["chat_messages"].append(message)
+            ),
+            "_cap_chat_history": lambda: None,
+            "_flush_chat_translation_pending": lambda: None,
         })
         self.namespace["tr"].prefetch = Mock()
         node = next(n for n in self.tree.body if isinstance(n, ast.FunctionDef) and n.name == "_poll_chat")
@@ -117,6 +128,41 @@ class ChatTranslationTests(unittest.TestCase):
         # Ready speech is processed even when no new chat poll is due.
         self.namespace["_poll_chat"]()
         self.deliver.assert_called_once_with(self.message, "你好", "zh", False, False)
+        self.assertEqual(listener.pop_messages.call_count, 1)
+
+    def test_wait_mode_hides_chat_until_translation_is_ready(self):
+        self.message["platform"] = "bilibili"
+        listener = SimpleNamespace(pop_messages=Mock(return_value=[self.message]))
+        self.state.update({
+            "last_poll": 0, "selected_chat_id": "", "bili_listener": listener,
+            "tts_skip_emoji": False, "tts_lang": "auto", "translate_enabled": True,
+            "filter": SimpleNamespace(filter_messages=lambda messages: (messages, [])),
+            "activity_log": [], "chat_messages": [], "paid_messages": [],
+            "join_messages": [], "blocked_msgs": [], "max_chat_display": 200,
+            "_chat_translation_pending": [],
+        })
+        self.namespace.update({
+            "time": time, "CHAT_POLL_INTERVAL": 5, "CHAT_TRANSLATION_DISPLAY_MODE": "wait",
+            "_check_watched_channel": Mock(), "_tts_translating": lambda: True,
+            "is_paid": lambda message: False, "is_gift": lambda message: False,
+            "_TTS_MAX_JOINS": 3, "hl": SimpleNamespace(MAX_LOG=1000, log_entry=lambda *args: {}),
+        })
+        self.namespace["tr"].prefetch = Mock()
+        node = next(n for n in self.tree.body if isinstance(n, ast.FunctionDef) and n.name == "_poll_chat")
+        helpers = [
+            n for n in self.tree.body if isinstance(n, ast.FunctionDef)
+            and n.name in {"_append_chat_message", "_cap_chat_history", "_flush_chat_translation_pending"}
+        ]
+        exec(compile(ast.Module(body=[*helpers, node], type_ignores=[]), "app.py", "exec"), self.namespace)
+
+        self.namespace["_poll_chat"]()
+
+        self.assertEqual(self.state["chat_messages"], [])
+        self.assertEqual(len(self.state["_chat_translation_pending"]), 1)
+        self.namespace["tr"].get_translation.return_value = "你好"
+        self.namespace["_poll_chat"]()
+        self.assertEqual(self.state["chat_messages"], [self.message])
+        self.assertEqual(self.state["_chat_translation_pending"], [])
         self.assertEqual(listener.pop_messages.call_count, 1)
 
     def test_stop_clears_pending_translated_speech(self):
