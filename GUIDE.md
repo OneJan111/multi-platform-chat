@@ -49,6 +49,14 @@ This guide is for people who have never installed a program like this before. Yo
 
 Reading chat needs no login.
 
+## Optional — Transcribe and translate live audio
+
+1. Start listening to a live stream in **📡 Stream Monitoring**.
+2. Install FFmpeg and add it to Windows `PATH` if it is not already available.
+3. Open **🎙 Transcription**, choose one active platform and a Whisper model, then click **▶ Start transcription + translation**.
+
+Audio recognition runs locally. The selected Whisper model is downloaded the first time you use it, so that first start needs an internet connection and may take a while. In the sidebar, choose **Translate to** and turn on **Start translation** to translate both chat and transcription when their detected language differs from the selected target. Transcription stops when you stop or switch the selected platform's listener.
+
 ## Step 4 — Log in so you can send chat (optional)
 
 1. Log in to YouTube / Bilibili / MissEvan in your usual browser (Chrome, Edge or Firefox).

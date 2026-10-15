@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import re
+import threading
 import time
 from collections import deque
 from typing import Optional
@@ -93,6 +95,44 @@ def _credential(values: Optional[tuple[str, str, str, str]] = None) -> "Credenti
     )
 
 
+_BILI_SEND_INTERVAL = 1.5
+_BILI_RATE_LIMIT_COOLDOWN = 3.0
+_bili_send_lock = threading.Lock()
+_bili_next_send_at: dict[tuple[str, str], float] = {}
+
+
+def _wait_for_bili_send_slot(room_id: str) -> tuple[str, str]:
+    """Space consecutive sends for the same user and room to avoid server throttling."""
+    sessdata, _, _, dedeuserid = _cookie_values()
+    identity = dedeuserid or (
+        hashlib.sha256(sessdata.encode("utf-8")).hexdigest() if sessdata else "anonymous"
+    )
+    key = (identity, str(room_id))
+    with _bili_send_lock:
+        now = time.monotonic()
+        send_at = _bili_next_send_at.get(key, now)
+        _bili_next_send_at[key] = max(now, send_at) + _BILI_SEND_INTERVAL
+    delay = send_at - now
+    if delay > 0:
+        time.sleep(delay)
+    return key
+
+
+def _record_bili_rate_limit(key: tuple[str, str]) -> None:
+    with _bili_send_lock:
+        _bili_next_send_at[key] = max(
+            _bili_next_send_at.get(key, 0.0),
+            time.monotonic() + _BILI_RATE_LIMIT_COOLDOWN,
+        )
+
+
+def _bili_send_error(exc: Exception, key: tuple[str, str]) -> str:
+    if getattr(exc, "code", None) == 10031 or "10031" in str(exc):
+        _record_bili_rate_limit(key)
+        return "Bilibili is limiting message frequency. Wait a few seconds and try again."
+    return str(getattr(exc, "msg", "") or exc) or type(exc).__name__
+
+
 def _run(coro):
     """Run an async coroutine synchronously."""
     try:
@@ -137,6 +177,29 @@ def get_room_info(room_id: str = "") -> dict:
         }
     except Exception:
         return _get_room_info_http(rid)
+
+
+def get_live_audio_url(room_id: str, login_cookies: Optional[dict[str, str]] = None) -> str:
+    """Return a signed live audio/video stream URL for FFmpeg."""
+    if not BILIBILI_LIB_OK:
+        raise RuntimeError("Bilibili audio transcription requires bilibili-api-python.")
+    if not room_id.isdigit():
+        raise ValueError("A numeric Bilibili room ID is required.")
+    values = None
+    if login_cookies is not None:
+        values = tuple(login_cookies.get(name, "") for name in ("SESSDATA", "bili_jct", "buvid3", "DedeUserID"))
+    room = live.LiveRoom(room_display_id=int(room_id), credential=_credential(values))
+    play_info = _run(room.get_room_play_info())
+    if play_info.get("live_status") != 1:
+        raise RuntimeError("The Bilibili room is not live.")
+    play_url = _run(room.get_room_play_url())
+    return _extract_live_audio_url(play_info, play_url)
+
+
+def _extract_live_audio_url(play_info: dict, play_url: Optional[dict] = None) -> str:
+    from src.transcription import extract_bilibili_audio_url
+
+    return extract_bilibili_audio_url(play_info, play_url)
 
 
 def _get_room_info_http(room_id: str) -> dict:
@@ -683,16 +746,17 @@ class DanmakuListener:
 
 # ── Send danmaku ───────────────────────────────────────────────────────────────
 
-def send_danmaku(room_id: str, message: str) -> bool:
-    """Send a danmaku message to the live room."""
+def send_danmaku(room_id: str, message: str) -> tuple[bool, str]:
+    """Send a danmaku message to the live room. Returns (ok, error)."""
     if not BILIBILI_LIB_OK:
-        return False
+        return False, "bilibili-api-python is not installed."
+    send_key = _wait_for_bili_send_slot(room_id)
     try:
         room = live.LiveRoom(room_display_id=int(room_id), credential=_credential())
         _run(room.send_danmaku(live.Danmaku(text=message)))
-        return True
-    except Exception:
-        return False
+        return True, ""
+    except Exception as exc:
+        return False, _bili_send_error(exc, send_key)
 
 
 _EMOTE_SERVER_ERR = "Bilibili's emote server returned an error. Try 🔄 Refresh in a moment."
@@ -998,12 +1062,13 @@ def send_emoticon(room_id: str, unique: str) -> tuple[bool, str]:
     """Send one emote (sticker danmaku) from get_emoticons. Returns (ok, error)."""
     if not BILIBILI_LIB_OK:
         return False, "bilibili-api-python is not installed."
+    send_key = _wait_for_bili_send_slot(room_id)
     try:
         room = live.LiveRoom(room_display_id=int(room_id), credential=_credential())
         _run(room.send_emoticon(live.Danmaku(text=unique)))
         return True, ""
     except Exception as exc:
-        return False, str(exc) or type(exc).__name__
+        return False, _bili_send_error(exc, send_key)
 
 def block_user(room_id: str, uid: int, hours: int = -1) -> tuple[bool, str]:
     """Mute a user in the live room. hours: -1 = permanent, 0 = until this stream ends, else 1–720.

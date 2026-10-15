@@ -26,7 +26,7 @@ st.set_page_config(
     page_title="Streaming Dashboard",
     page_icon="🎙️",
     layout="wide",
-    initial_sidebar_state="auto",
+    initial_sidebar_state="collapsed",
 )
 
 from src import bilibili as bili
@@ -43,6 +43,7 @@ from src import reading
 from src import resources
 from src import tts as _tts
 from src import translate as tr
+from src import transcription as transcribe
 from src import user_login
 from src import youtube as yt
 from src import youtube_web as ytw
@@ -80,6 +81,7 @@ bili = _fresh(bili)
 me = _fresh(me)
 reading = _fresh(reading)
 resources = _fresh(resources)
+transcribe = _fresh(transcribe)
 # Overlay state lives on `sys` and ensure_started() replaces a server from an older copy, so reloading is safe.
 overlay_server = _fresh(overlay_server)
 from src.config import (
@@ -98,35 +100,264 @@ from src.tts import (
 st.markdown(
     """
 <style>
-/* Chat bubbles (--chat-scale is set by the sidebar "Text size" option) */
+/* Chat rows (--chat-scale is set by the sidebar "Text size" option) */
 .chat-bubble {
-    padding: 6px 10px;
-    border-radius: 8px;
-    margin-bottom: 4px;
+    box-sizing: border-box;
+    width: 100%;
+    padding: 6px 4px;
+    border: 0;
+    border-radius: 0;
+    margin-bottom: 2px;
     font-size: calc(0.88rem * var(--chat-scale, 1));
     line-height: 1.4;
     word-break: break-word;
 }
-/* Translucent tints and currentColor mixes so the chat reads well in both light and dark themes */
-.chat-yt   { background: rgba(128,128,160,0.13); border-left: 3px solid #ff0000; }
-.chat-bili { background: rgba(128,128,160,0.13); border-left: 3px solid #23ade5; }
-.chat-me   { background: rgba(128,128,160,0.13); border-left: 3px solid #ff7a45; }
-.chat-gift { background: rgba(156,39,176,0.16) !important; }
+body { --send-composer-left: 16px; }
+/* Float the native sidebar without reserving space in the main layout. */
+[data-testid="stSidebar"] {
+    position: fixed !important;
+    top: 0;
+    left: 0;
+    height: 100dvh !important;
+    width: min(300px, 85vw) !important;
+    min-width: 0 !important;
+    margin-left: 0 !important;
+    transition: transform 200ms ease !important;
+    box-shadow: 4px 0 20px rgba(0, 0, 0, 0.2);
+}
+[data-testid="stSidebar"][aria-expanded="false"] {
+    transform: translateX(-100%) !important;
+    visibility: hidden;
+    transition: transform 200ms ease, visibility 0s 200ms !important;
+}
+[data-testid="stSidebar"][aria-expanded="true"] {
+    transform: translateX(0) !important;
+    visibility: visible;
+}
+@media (prefers-reduced-motion: reduce) {
+    [data-testid="stSidebar"] { transition: none !important; }
+}
+.st-key-active_page {
+    position: fixed;
+    top: 0.5rem;
+    left: 4.5rem;
+    right: 9rem;
+    width: auto !important;
+    z-index: 999991;
+    background: var(--background-color, #0e1117);
+}
+.st-key-active_page [data-testid="stRadioGroup"] {
+    flex-wrap: nowrap !important;
+    overflow-x: auto;
+    gap: 0.25rem;
+    padding: 2px;
+}
+.st-key-active_page [data-testid="stRadioOption"] {
+    flex: 0 0 auto;
+    width: auto;
+    min-height: 2.5rem;
+    padding: 0.4rem 0.5rem;
+    border-radius: 0.5rem;
+}
+.st-key-active_page [data-testid="stMarkdownContainer"] p { white-space: nowrap; }
+/* Hide only the visual radio indicator; keep the input for keyboard navigation. */
+.st-key-active_page [data-testid="stRadioOption"] div:has(> [data-testid="stMarkdownContainer"])
+    > div:not([data-testid="stMarkdownContainer"]) {
+    display: none;
+}
+.st-key-active_page [data-testid="stRadioOption"]:hover {
+    background: color-mix(in srgb, currentColor 8%, transparent);
+}
+.st-key-active_page [data-testid="stRadioOption"]:has(input:checked) {
+    background: color-mix(in srgb, var(--primary-color, #ff4b4b) 18%, transparent);
+    font-weight: 600;
+}
+.st-key-active_page [data-testid="stRadioOption"]:focus-within {
+    outline: 2px solid var(--primary-color, #ff4b4b);
+    outline-offset: 2px;
+}
+.st-key-send_controls_expander {
+    position: fixed;
+    left: var(--send-composer-left);
+    right: 1rem;
+    width: auto !important;
+    max-height: 70dvh;
+    overflow-y: auto;
+    gap: 4px !important;
+    bottom: 0.75rem;
+    z-index: 9;
+    padding: 0.3rem 0.55rem;
+    border: 1px solid color-mix(in srgb, currentColor 16%, transparent);
+    border-radius: 0.75rem;
+    background: color-mix(in srgb, var(--background-color) 94%, transparent);
+    backdrop-filter: blur(12px);
+}
+.st-key-send_targets {
+    position: static;
+    width: auto !important;
+    padding: 0;
+    background: transparent;
+}
+#mpc-allow-notify {
+    position: fixed;
+    top: 3.75rem;
+    right: 1rem;
+    z-index: 999990;
+    max-width: calc(100vw - 13rem);
+    background: var(--background-color, #0e1117) !important;
+}
+@media (max-width: 640px) {
+    #mpc-allow-notify { font-size: 0.8rem !important; }
+}
+.st-key-paid_unthanked_only_btn button,
+.st-key-tts_translate_btn button,
+.st-key-tts_translate_paid_btn button {
+    border-color: #16a34a;
+    color: #16a34a;
+}
+.st-key-paid_unthanked_only_btn button[kind="primary"],
+.st-key-tts_translate_btn button[kind="primary"],
+.st-key-tts_translate_paid_btn button[kind="primary"] {
+    background: #15803d;
+    border-color: #15803d;
+    color: #ffffff;
+}
+.st-key-paid_unthanked_only_btn button:hover,
+.st-key-tts_translate_btn button:hover,
+.st-key-tts_translate_paid_btn button:hover {
+    background: #166534;
+    border-color: #166534;
+    color: #ffffff;
+}
+.st-key-emote_row {
+    position: static;
+    width: auto !important;
+    max-height: min(24dvh, 12rem);
+    overflow: auto;
+    padding: 0.2rem 0;
+}
+.st-key-send_box [data-testid="stForm"] {
+    position: static !important;
+    width: auto !important;
+    height: auto !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    overflow: visible;
+    background: transparent;
+}
+.st-key-send_box {
+    position: static;
+    width: auto !important;
+    padding: 0;
+    background: transparent;
+}
+.transcription-preview-panel {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    overflow-x: hidden;
+    overscroll-behavior: contain;
+    margin: 0;
+    padding: 0.15rem 0.55rem 0.3rem;
+    font-size: calc(0.88rem * var(--chat-scale, 1));
+}
+.transcription-preview-sticky {
+    position: sticky;
+    top: 0;
+    z-index: 4;
+    display: flex;
+    flex-direction: column;
+    height: 10em;
+    margin-bottom: 0.35rem;
+    overflow: hidden;
+    background: color-mix(in srgb, var(--background-color) 78%, transparent);
+    border: 1px solid rgba(128,128,160,0.18);
+    border-radius: 0.5rem;
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+}
+.transcription-preview-heading { flex: 0 0 auto; font-weight: 600; padding: 0.25rem 0.55rem 0; }
+.transcription-preview-line {
+    min-width: 0;
+    overflow-wrap: anywhere;
+    line-height: 1.5;
+    white-space: normal;
+    padding-bottom: 0.2rem;
+}
+.transcription-preview-line .chat-reading { line-height: 1.5; }
+.transcription-preview-time {
+    color: color-mix(in srgb, currentColor 55%, transparent);
+    font-size: 0.82em;
+    margin-right: 0.45rem;
+}
+.transcription-preview-translation {
+    display: block;
+    color: color-mix(in srgb, #2f8fe0 72%, currentColor);
+}
+.st-key-chat_feed .chat-author {
+    color: color-mix(in srgb, currentColor 58%, transparent);
+    font-size: 0.82em;
+}
+.st-key-chat_feed > [data-testid="stElementContainer"]:has(.chat-feed-bottom-spacer) {
+    flex: 1 0 0 !important;
+    min-height: 0 !important;
+}
+.st-key-chat_feed .chat-text { font-size: 1.08em; font-weight: 500; }
+.st-key-chat_feed .badge-member {
+    padding: 0;
+    background: transparent;
+}
+.st-key-chat_feed .badge-member-label { display: none; }
+.st-key-show_row { padding: 0.15rem 0; border-bottom: 1px solid rgba(128,128,128,0.14); }
+@media (max-width: 700px) {
+    body { --send-composer-left: 16px; }
+}
+.st-key-send_targets [data-testid="stPopover"] button { width: 100%; min-height: 2.4rem; padding: 0.15rem; }
+.st-key-paid_feed .chat-bubble {
+    padding: 0.8rem 0.9rem;
+    margin: 0.4rem 0 0.75rem;
+    border-radius: 0.75rem;
+    background: color-mix(in srgb, #f0a030 10%, var(--background-color)) !important;
+    box-shadow: 0 3px 14px rgba(0,0,0,0.08);
+}
+/* Full-width transparent rows; platform and paid-event badges carry the visual distinction. */
+.chat-yt, .chat-bili, .chat-me { background: transparent; }
+.chat-gift { background: rgba(156,39,176,0.08) !important; }
 .chat-thanked { opacity: 0.45; }
 /* Gifts / Super Chats: clicking the bubble toggles thanked (see _render_message) */
 div[class*="st-key-thankbox_"] { position: relative; }
-div[class*="st-key-thankbox_"] div[class*="st-key-thank_"] { position: absolute; inset: 0; z-index: 2; margin: 0; width: 100% !important; height: 100% !important; }
-div[class*="st-key-thankbox_"] div[class*="st-key-thank_"] div,
-div[class*="st-key-thankbox_"] div[class*="st-key-thank_"] button { width: 100% !important; height: 100% !important; max-width: none !important; }
-div[class*="st-key-thankbox_"] div[class*="st-key-thank_"] button { opacity: 0; cursor: pointer; }
+div[class*="st-key-thankbox_"] > [data-testid="stLayoutWrapper"]:has([class*="st-key-thank_"]),
+div[class*="st-key-thankbox_"] > [data-testid="stElementContainer"][class*="st-key-thank_"] {
+    position: absolute;
+    inset: 0;
+    z-index: 2;
+    margin: 0;
+    width: 100% !important;
+    height: 100% !important;
+}
+div[class*="st-key-thankbox_"] [class*="st-key-thank_"],
+div[class*="st-key-thankbox_"] [data-testid="stButton"],
+div[class*="st-key-thankbox_"] button {
+    width: 100% !important;
+    height: 100% !important;
+    max-width: none !important;
+}
+div[class*="st-key-thankbox_"] button {
+    background: transparent !important;
+    border: 0 !important;
+    color: transparent !important;
+    cursor: pointer;
+}
+div[class*="st-key-thankbox_"] button:focus-visible {
+    outline: 2px solid var(--primary-color, #ff4b4b);
+    outline-offset: -2px;
+}
 div[class*="st-key-thankbox_"]:hover .chat-bubble { filter: brightness(1.15); }
-.chat-mod  { border-left-color: #ffd700 !important; }
-.chat-sc   { background: rgba(255,120,0,0.17) !important; border-left-color: #ff6600 !important; }
-.chat-superchat { background: rgba(230,0,0,0.16) !important; border-left-color: #ff0000 !important; }
+.chat-sc   { background: rgba(255,120,0,0.08) !important; }
+.chat-superchat { background: rgba(230,0,0,0.08) !important; }
 .chat-translation {
     margin-top: 3px;
-    padding-top: 3px;
-    border-top: 1px dashed rgba(128,128,128,0.45);
+    padding-left: 2px;
     color: color-mix(in srgb, #2f8fe0 65%, currentColor);
     font-size: 0.95em;
 }
@@ -160,6 +391,10 @@ h3 .site-icon { margin-right: 0.15em; position: relative; top: -0.08em; }
 [class*="st-key-emote_grid_"] [data-testid="stElementContainer"] { width: auto !important; }
 [class*="st-key-emote_grid_"] button { padding: 1px 2px; min-height: 0; }
 [class*="st-key-emote_grid_"] button img { height: 32px !important; max-height: 32px !important; width: auto; }
+[class*="st-key-emo_pack_bili_"] details[open] > summary [data-testid="stIconMaterial"] {
+    display: inline-block;
+    transform: rotate(180deg);
+}
 @media (hover: hover) and (pointer: fine) {
     .chat-text img,
     [class*="st-key-emote_grid_"] button img {
@@ -200,15 +435,46 @@ h3 .site-icon { margin-right: 0.15em; position: relative; top: -0.08em; }
     padding: 4.25rem 1.5rem 1rem;
     max-width: 100%;
 }
-/* Send-to, site-emote and chat-filter rows always stay on one line (scroll sideways if the screen is too narrow) */
-.st-key-send_targets, .st-key-emote_row, .st-key-show_row {
+.st-key-page_chat {
+    height: calc(100dvh - 170px);
+    overflow: hidden;
+    min-height: 0;
+    gap: 4px !important;
+}
+.st-key-chat_paid {
+    height: calc(100dvh - 297px) !important;
+    min-height: 0 !important;
+    overflow: hidden !important;
+}
+.st-key-chat_paid > [data-testid="stLayoutWrapper"] {
+    flex: 1 1 0% !important;
+    min-height: 0 !important;
+}
+.st-key-chat_paid > [data-testid="stLayoutWrapper"] > [data-testid="stHorizontalBlock"] {
+    flex: 1 1 0% !important;
+    min-height: 0 !important;
+    flex-wrap: nowrap !important;
+}
+/* Send-to and chat-filter rows stay on one line (scroll sideways on narrow screens). */
+.st-key-send_targets, .st-key-show_row {
     flex-wrap: nowrap !important;
     overflow-x: auto;
     overflow-y: hidden;
     scrollbar-width: none;
 }
-.st-key-send_targets > *, .st-key-emote_row > *, .st-key-show_row > * { flex-shrink: 0 !important; }
-.st-key-send_targets label, .st-key-emote_row p, .st-key-show_row label { white-space: nowrap; }
+.st-key-paid_header {
+    flex-wrap: nowrap !important;
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: none;
+}
+.st-key-paid_header > [data-testid="stElementContainer"] {
+    flex-shrink: 0 !important;
+}
+.st-key-send_targets > *, .st-key-show_row > * { flex-shrink: 0 !important; }
+.st-key-send_targets label, .st-key-show_row label { white-space: nowrap; }
+.st-key-emote_row { flex-wrap: nowrap !important; overflow-x: auto !important; }
+.st-key-emote_row > * { flex-shrink: 0 !important; }
 /* The emote hint shrinks first, cut off with "…" */
 .st-key-emote_row > [data-testid="stElementContainer"]:has([data-testid="stCaptionContainer"]) {
     flex: 1 1 0 !important;
@@ -220,38 +486,90 @@ h3 .site-icon { margin-right: 0.15em; position: relative; top: -0.08em; }
 /* Chat / gift feeds scroll inside a box that fits the screen height */
 .st-key-chat_feed, .st-key-paid_feed {
     flex: none !important;
-    height: calc(100dvh - 370px) !important;
-    max-height: calc(100dvh - 370px) !important;
+    height: calc(100dvh - 470px) !important;
+    max-height: calc(100dvh - 470px) !important;
     min-height: 260px;
     overflow-y: auto !important;
     overflow-x: hidden;
     padding-right: 4px;
+}
+.mpc-scroll-bottom {
+    position: fixed;
+    z-index: 10;
+    display: none;
+    width: 2.5rem;
+    height: 2.5rem;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid rgba(128,128,128,0.4);
+    border-radius: 50%;
+    background: var(--secondary-background-color);
+    color: var(--text-color);
+    font-size: 1.25rem;
+    cursor: pointer;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+}
+.mpc-scroll-bottom.is-visible { display: flex; }
+@media (hover: none) {
+    .mpc-scroll-bottom.is-visible { display: flex; }
 }
 .join-feed {
     height: 130px;
     overflow-y: auto;
     font-size: calc(0.82rem * var(--chat-scale, 1));
     color: color-mix(in srgb, currentColor 70%, transparent);
-    border: 1px solid rgba(128,128,128,0.25);
-    border-radius: 6px;
-    padding: 4px 8px;
+    border: 0;
+    padding: 4px 2px;
 }
+.join-latest {
+    display: none;
+    padding: 0.2rem 0.45rem;
+    color: color-mix(in srgb, currentColor 70%, transparent);
+    font-size: calc(0.82rem * var(--chat-scale, 1));
+    line-height: 1.4;
+}
+.st-key-chat_feed [data-testid="stElementContainer"]:has(.join-latest) { display: none; }
 .join-row { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; line-height: 1.6; }
 .join-row b { color: color-mix(in srgb, currentColor 85%, transparent); font-weight: 500; margin-left: 4px; }
 .join-time { color: color-mix(in srgb, currentColor 55%, transparent); margin-right: 6px; font-size: 0.9em; }
 .join-empty { color: color-mix(in srgb, currentColor 55%, transparent); font-style: italic; }
-/* Portrait tablets: stack chat above gifts (must precede the row rules below) */
+/* Keep the chat / transcription and gift feeds side by side at every viewport width. */
 @media (max-width: 900px) {
-    .st-key-chat_paid [data-testid="stHorizontalBlock"] { flex-wrap: wrap !important; }
-    .st-key-chat_paid [data-testid="stColumn"] {
+    .st-key-chat_paid > [data-testid="stLayoutWrapper"] > [data-testid="stHorizontalBlock"] {
+        flex-wrap: wrap !important;
+        align-content: stretch !important;
+        gap: 0.35rem !important;
+    }
+    .st-key-chat_paid .st-key-paid_header {
+        flex-wrap: nowrap !important;
+        overflow-x: auto;
+        overflow-y: hidden;
+    }
+    .st-key-chat_paid > [data-testid="stLayoutWrapper"] > [data-testid="stHorizontalBlock"]
+        > [data-testid="stColumn"] {
         flex: 1 1 100% !important;
         width: 100% !important;
-        min-width: 100% !important;
+        min-width: 0 !important;
     }
-    .st-key-chat_feed { height: 50dvh !important; max-height: 50dvh !important; }
-    .st-key-paid_feed { height: 35dvh !important; max-height: 35dvh !important; }
-    /* Feeds always stack here, so the 2-column / 1-column switch and its spacer do nothing */
-    .st-key-feed_layout, .st-key-show_row > [data-testid="stElementContainer"]:has([data-testid="stSpace"]) { display: none !important; }
+    .st-key-chat_paid > [data-testid="stLayoutWrapper"] > [data-testid="stHorizontalBlock"]
+        > [data-testid="stColumn"]:first-child { order: 2; }
+    .st-key-chat_paid > [data-testid="stLayoutWrapper"] > [data-testid="stHorizontalBlock"]
+        > [data-testid="stColumn"]:nth-child(2) { order: 1; }
+    .st-key-join_section { display: none !important; }
+    .st-key-chat_feed [data-testid="stElementContainer"]:has(.join-latest) { display: block; }
+    .join-latest { display: block; }
+    .st-key-chat_feed, .st-key-paid_feed {
+        height: max(0px, calc((100dvh - 624px) / 2)) !important;
+        max-height: max(0px, calc((100dvh - 624px) / 2)) !important;
+        min-height: 0 !important;
+    }
+    .st-key-chat_paid:has([data-testid="stExpander"] details:not([open])) .st-key-chat_feed {
+        height: max(0px, calc(100dvh - 624px)) !important;
+        max-height: max(0px, calc(100dvh - 624px)) !important;
+    }
+    .join-feed { height: clamp(32px, 8dvh, 65px) !important; max-height: 65px !important; }
+    /* The platform-filter spacer is unnecessary on narrow screens. */
+    .st-key-show_row > [data-testid="stElementContainer"]:has([data-testid="stSpace"]) { display: none !important; }
 }
 /* Message rows and the send box: keep text + buttons on one line at any width */
 .st-key-chat_feed [data-testid="stHorizontalBlock"],
@@ -276,6 +594,24 @@ h3 .site-icon { margin-right: 0.15em; position: relative; top: -0.08em; }
     padding: 0.15rem 0.45rem;
     min-height: 2.2rem;
 }
+/* Keep per-message actions out of the way until a desktop pointer hovers the message row. */
+@media (hover: hover) and (pointer: fine) {
+    .st-key-chat_feed [data-testid="stHorizontalBlock"]:has([class*="st-key-tts_"], [class*="st-key-ban_"]) [class*="st-key-tts_"],
+    .st-key-chat_feed [data-testid="stHorizontalBlock"]:has([class*="st-key-tts_"], [class*="st-key-ban_"]) [class*="st-key-ban_"],
+    .st-key-paid_feed [data-testid="stHorizontalBlock"]:has([class*="st-key-tts_"], [class*="st-key-ban_"]) [class*="st-key-tts_"],
+    .st-key-paid_feed [data-testid="stHorizontalBlock"]:has([class*="st-key-tts_"], [class*="st-key-ban_"]) [class*="st-key-ban_"] {
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity 120ms ease;
+    }
+    .st-key-chat_feed [data-testid="stHorizontalBlock"]:has([class*="st-key-tts_"], [class*="st-key-ban_"]):hover [class*="st-key-tts_"],
+    .st-key-chat_feed [data-testid="stHorizontalBlock"]:has([class*="st-key-tts_"], [class*="st-key-ban_"]):hover [class*="st-key-ban_"],
+    .st-key-paid_feed [data-testid="stHorizontalBlock"]:has([class*="st-key-tts_"], [class*="st-key-ban_"]):hover [class*="st-key-tts_"],
+    .st-key-paid_feed [data-testid="stHorizontalBlock"]:has([class*="st-key-tts_"], [class*="st-key-ban_"]):hover [class*="st-key-ban_"] {
+        opacity: 1;
+        pointer-events: auto;
+    }
+}
 @media (max-width: 1100px) {
     [data-testid="stMainBlockContainer"] { padding: 4.25rem 0.75rem 1rem; }
     .st-key-show_row { column-gap: 1rem !important; }
@@ -295,7 +631,7 @@ h3 .site-icon { margin-right: 0.15em; position: relative; top: -0.08em; }
     .st-key-send_targets p { font-size: 0.9rem; }
     .st-key-emote_row { column-gap: 0.4rem !important; }
     .st-key-emote_row [data-testid="stPopover"] button { padding: 0.25rem 0.5rem; }
-    /* Feeds always stack on phones, so ◀ ▶ do nothing */
+    /* The two columns keep their fixed order, so in-feed move controls are unnecessary on phones. */
     [class*="st-key-move_"][class*="_side"] { display: none !important; }
     .st-key-emote_row [data-testid="stElementContainer"]:has([data-testid="stCaptionContainer"]) { display: none !important; }
     /* Feed headers: compact buttons so they take fewer lines */
@@ -308,10 +644,18 @@ h3 .site-icon { margin-right: 0.15em; position: relative; top: -0.08em; }
     .st-key-chat_feed [data-testid="stHorizontalBlock"],
     .st-key-paid_feed [data-testid="stHorizontalBlock"] { gap: 2px !important; }
     .chat-bubble { padding: 4px 7px; }
-    /* Feeds grow with their messages up to these heights, so an empty list doesn't take half the screen */
-    .st-key-chat_feed { height: auto !important; min-height: 0; max-height: 60dvh !important; padding-bottom: 1rem; }
-    .st-key-paid_feed { height: auto !important; min-height: 0; max-height: 40dvh !important; padding-bottom: 1rem; }
-    .join-feed { height: auto; max-height: 110px; margin-bottom: 1rem; }
+    /* Keep the stacked feeds inside the chat page; each list scrolls independently. */
+    .st-key-chat_feed, .st-key-paid_feed {
+        height: max(0px, calc((100dvh - 624px) / 2)) !important;
+        max-height: max(0px, calc((100dvh - 624px) / 2)) !important;
+        min-height: 0 !important;
+        padding-bottom: 0;
+    }
+    .st-key-chat_paid:has([data-testid="stExpander"] details:not([open])) .st-key-chat_feed {
+        height: max(0px, calc(100dvh - 624px)) !important;
+        max-height: max(0px, calc(100dvh - 624px)) !important;
+    }
+    .join-feed { height: clamp(32px, 8dvh, 65px) !important; max-height: 65px !important; margin-bottom: 0; }
 }
 /* Small phones: drop the hover-only "?" hints so the send-to row fits */
 @media (max-width: 360px) {
@@ -324,6 +668,58 @@ h3 .site-icon { margin-right: 0.15em; position: relative; top: -0.08em; }
     padding: 8px 12px;
     border-radius: 6px;
     font-family: monospace;
+}
+/* Keep Streamlit's native sidebar toggle behavior but use the familiar hamburger glyph. */
+[data-testid="stSidebarCollapseButton"] {
+    position: absolute !important;
+    top: 0.5rem !important;
+    left: 1rem !important;
+    right: auto !important;
+    visibility: visible !important;
+}
+[data-testid="stExpandSidebarButton"],
+[data-testid="stSidebarCollapseButton"] button {
+    position: fixed !important;
+    top: 0.625rem !important;
+    left: 2rem !important;
+}
+[data-testid="stSidebar"][aria-expanded="false"] [data-testid="stSidebarCollapseButton"] button {
+    visibility: hidden !important;
+    pointer-events: none;
+}
+[data-testid="stSidebarCollapsedControl"] button,
+[data-testid="stExpandSidebarButton"],
+[data-testid="stHeader"] button[data-testid="stBaseButton-headerNoPadding"],
+[data-testid="stSidebar"] button[data-testid="stBaseButton-headerNoPadding"] {
+    position: relative;
+    width: 2.5rem;
+    min-width: 2.5rem;
+    min-height: 2.5rem;
+    visibility: visible !important;
+}
+[data-testid="stSidebarCollapsedControl"] button svg,
+[data-testid="stSidebarCollapsedControl"] button [data-testid="stIconMaterial"],
+[data-testid="stExpandSidebarButton"] svg,
+[data-testid="stExpandSidebarButton"] [data-testid="stIconMaterial"],
+[data-testid="stHeader"] button[data-testid="stBaseButton-headerNoPadding"] svg,
+[data-testid="stHeader"] button[data-testid="stBaseButton-headerNoPadding"] [data-testid="stIconMaterial"],
+[data-testid="stSidebar"] button[data-testid="stBaseButton-headerNoPadding"] svg,
+[data-testid="stSidebar"] button[data-testid="stBaseButton-headerNoPadding"] [data-testid="stIconMaterial"] {
+    visibility: hidden;
+}
+[data-testid="stSidebarCollapsedControl"] button::after,
+[data-testid="stExpandSidebarButton"]::after,
+[data-testid="stHeader"] button[data-testid="stBaseButton-headerNoPadding"]::after,
+[data-testid="stSidebar"] button[data-testid="stBaseButton-headerNoPadding"]::after {
+    content: "☰";
+    position: absolute;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    font-size: 1.25rem;
+    color: currentColor;
+    visibility: visible !important;
+    z-index: 1;
 }
 </style>
 """,
@@ -344,20 +740,22 @@ _TIMEZONES = sorted(tz for tz in available_timezones() if "/" in tz and not tz.s
 
 
 _FEEDS = ("paid", "chat", "join")  # chat-tab feeds in their default top-to-bottom / left-to-right order
-_DEFAULT_FEED_SIDES = {"paid": "left", "chat": "right", "join": "left"}
+_TEXT_SIZES = [80, 90, 100, 115, 130, 150, 175, 200]
+_FEED_ORDERS = ("newest_first", "newest_last")
 
 
 def _init_state():
     defaults = {
         "chat_messages": [],          # unified list of all chat messages
         "chat_message_input": "",
-        "bili_emote_draft": [],
         "yt_page_token": "",
         "bili_listener": None,
         "blocked_msgs": [],
         "paid_messages": [],          # gifts / Super Chats, kept apart so chat trimming can't drop them
         "join_messages": [],          # "entered the room" events, shown in their own feed
         "thanked_ids": set(),
+        "paid_unthanked_only": False,
+        "show_all_joins": False,
         "tts_enabled": False,
         "tts_rate": 150,
         "tts_volume": 1.0,
@@ -371,18 +769,18 @@ def _init_state():
         "tts_skip_emoji": True,
         "translate_enabled": False,
         "translate_target": "en",
-        "sc_reading": "auto",
+        "transcription_session": None,
+        "transcription_model": "base",
+        "show_reading_aids": True,
         "show_enter_events": True,
         "obs_enabled": False,         # never contact OBS unless the streamer turns this on
         "obs_chat_enabled": False,
         "obs_chat_source": "",
         "obs_chat_last": None,
         "obs_chat_last_at": 0.0,
-        "text_scale": {"chat": 100, "paid": 100, "join": 100},  # text size in % per feed
+        "text_scale": 100,           # shared text size in % for all chat feeds
         "max_chat_display": 200,
-        "feed_layout": "columns",     # "columns" = two side by side, "stack" = one column
-        "feed_order": list(_FEEDS),
-        "feed_sides": dict(_DEFAULT_FEED_SIDES),
+        "feed_order": "newest_first",
         "selected_chat_id": "",
         "yt_chat_input": YOUTUBE_CHANNEL.strip(),
         "yt_watch_channel": "",       # channel URL being watched for its next live stream
@@ -423,8 +821,10 @@ def _init_state():
     for k, v in defaults.items():
         if k not in st.session_state:
             st.session_state[k] = v
-    if not isinstance(st.session_state["text_scale"], dict):  # older session stored one number
-        st.session_state["text_scale"] = dict(defaults["text_scale"])
+    if isinstance(st.session_state["text_scale"], dict):  # migrate older per-feed sizes
+        st.session_state["text_scale"] = st.session_state["text_scale"].get("chat", 100)
+    if st.session_state["text_scale"] not in _TEXT_SIZES:
+        st.session_state["text_scale"] = 100
     filt = _shared_filter()
     if not hasattr(filt, "is_blocked_user"):  # stale object from before a code reload
         _shared_filter.clear()
@@ -584,7 +984,10 @@ def _role_badges(msg: dict) -> str:
             f'<img class="badge-member-icon" src="{html_lib.escape(icon, quote=True)}" alt="" referrerpolicy="no-referrer">'
             if icon else "💎"
         )
-        parts.append(f'<span class="badge badge-member">{mark} {html_lib.escape(msg["membership"])}</span>')
+        parts.append(
+            f'<span class="badge badge-member"><span class="badge-member-mark">{mark}</span> '
+            f'<span class="badge-member-label">{html_lib.escape(msg["membership"])}</span></span>'
+        )
     return "".join(parts)
 
 
@@ -644,10 +1047,14 @@ def _set_thanked(msg_ids: list[str], thanked: bool):
 
 def _author_html(name: str) -> str:
     """The escaped username with pinyin / furigana over its Chinese characters (the 注音 setting)."""
-    annotated = reading.annotate_html(name or "", st.session_state["sc_reading"])
+    annotated = reading.annotate_html(name or "", _chat_reading_mode())
     if not annotated:
         return html_lib.escape(name or "")
     return f'<span class="chat-reading">{annotated.replace("<br>", " · ")}</span>'
+
+
+def _chat_reading_mode() -> str:
+    return "auto" if st.session_state.get("show_reading_aids", True) else "off"
 
 
 def _render_room_cover(url: str) -> None:
@@ -666,7 +1073,7 @@ def _message_text_html(msg: dict, text: str) -> str:
     text_html = emotes.text_to_html(
         text, emote_map, msg.get("sticker_url", ""), msg.get("sticker_caption", False)
     )
-    mode = st.session_state["sc_reading"]
+    mode = _chat_reading_mode()
     if msg.get("sticker_url"):
         annotated = reading.annotate_html(text, mode)
         if not msg.get("sticker_caption"):
@@ -719,20 +1126,20 @@ def _render_message(msg: dict, key_prefix: str = "", thank: bool = False):
         if translated is None:
             translation_html = f'<div class="chat-translation pending">🌐 {t("translating…")}</div>'
         elif translated:
-            rd_mode = ""
-            if st.session_state["sc_reading"] != "off":
-                if target.startswith("ja"):
-                    rd_mode = "hiragana"
-                elif target.startswith("zh"):
-                    rd_mode = "pinyin"
+            rd_mode = (
+                "hiragana" if target.startswith("ja") and st.session_state["show_reading_aids"]
+                else "pinyin" if target.startswith("zh") and st.session_state["show_reading_aids"]
+                else ""
+            )
             annotated = reading.annotate_html(translated, rd_mode) if rd_mode else ""
             body = f'<span class="chat-reading">{annotated}</span>' if annotated else html_lib.escape(translated)
             translation_html = f'<div class="chat-translation">🌐 {body}</div>'
     html = (
         f'<div class="chat-bubble {bubble}">'
         f'{badges}'
-        f'<span style="color:color-mix(in srgb, currentColor 60%, transparent);font-size:0.85em;">[{ts}]</span> '
-        f'<strong>{author}</strong>'
+        f'<span class="chat-time" style="color:color-mix(in srgb, currentColor 60%, transparent);'
+        f'font-size:0.85em;">[{ts}]</span> '
+        f'<strong class="chat-author">{author}</strong>'
         f'<div class="chat-text">{text_html}</div>'
         f"{translation_html}"
         f"</div>"
@@ -744,8 +1151,8 @@ def _render_message(msg: dict, key_prefix: str = "", thank: bool = False):
             with st.container(key=f"thankbox_{wkey}"):
                 st.markdown(html, unsafe_allow_html=True)
                 st.button(
-                    "↩️" if thanked else "🙏", key=f"thank_{wkey}",
-                    help=t("Undo: mark as not thanked yet") if thanked else t("Mark as thanked"),
+                    t("Undo: mark as not thanked yet") if thanked else t("Mark as thanked"),
+                    key=f"thank_{wkey}",
                     on_click=_set_thanked, args=([msg["id"]], not thanked),
                 )
     else:
@@ -779,7 +1186,7 @@ def _block_user(msg: dict):
             m for m in st.session_state[key]
             if not (filt.is_blocked_user(m) or m.get("author", "").lower() in names)
         ]
-    st.toast(t("Blocked {author} — see the 🛡️ Filters tab to unblock", author=author))
+    st.toast(t("Blocked {author} — select 🛡️ Filters in the sidebar to unblock", author=author))
 
 
 _PLATFORM_NAMES = {"youtube": "YouTube", "bilibili": "Bilibili", "missevan": "MissEvan"}
@@ -826,6 +1233,8 @@ def _play_tts(text: str, lang: str):
 
 def _stop_tts(clear: bool):
     """Cut off the message being read (e.g. a sensitive comment); clear=True also drops the queue."""
+    if clear:
+        st.session_state["_tts_translation_pending"] = []
     if _browser_tts():
         st.session_state["_tts_browser"] = []
         st.session_state["_tts_browser_cmd"] = "stop" if clear else "skip"
@@ -839,109 +1248,48 @@ def _stop_tts(clear: bool):
         st.toast(t("⏭ Skipped the current message"))
 
 
-_TEXT_SIZES = [80, 90, 100, 115, 130, 150, 175, 200]
-
-
-def _change_text_size(feed: str, step: int):
-    scales = st.session_state["text_scale"]
-    i = _TEXT_SIZES.index(scales[feed]) if scales[feed] in _TEXT_SIZES else _TEXT_SIZES.index(100)
-    scales[feed] = _TEXT_SIZES[max(0, min(len(_TEXT_SIZES) - 1, i + step))]
-
-
-def _text_size_buttons(container, feed: str):
-    """A− / A+ for a feed's header tools."""
-    size = st.session_state["text_scale"][feed]
-    container.button(
-        "A−", key=f"size_{feed}_dec", type="tertiary", disabled=size <= _TEXT_SIZES[0],
-        on_click=_change_text_size, args=(feed, -1), help=t("Smaller text ({p}%)", p=size),
-    )
-    container.button(
-        "A+", key=f"size_{feed}_inc", type="tertiary", disabled=size >= _TEXT_SIZES[-1],
-        on_click=_change_text_size, args=(feed, 1), help=t("Bigger text ({p}%)", p=size),
-    )
-
-
-_FEEDS = ("paid", "chat", "join")
-
-
-def _feed_layout_state() -> tuple[list[str], dict[str, str], bool]:
-    """(feed order, left/right column per feed, one-column mode), repaired if session state is stale."""
-    order = st.session_state.get("feed_order")
-    if not isinstance(order, list) or sorted(order) != sorted(_FEEDS):
-        order = st.session_state["feed_order"] = list(_FEEDS)
-    sides = st.session_state.get("feed_sides")
-    if not isinstance(sides, dict) or any(sides.get(f) not in ("left", "right") for f in _FEEDS):
-        sides = st.session_state["feed_sides"] = dict(_DEFAULT_FEED_SIDES)
-    return order, sides, st.session_state.get("feed_layout") == "stack"
-
-
-def _feed_column(feed: str) -> list[str]:
-    """Feeds shown in the same column as `feed`, top to bottom."""
-    order, sides, stacked = _feed_layout_state()
-    return order if stacked else [f for f in order if sides[f] == sides[feed]]
-
-
-def _move_feed(feed: str, step: int):
-    """Swap a feed with its neighbour above (-1) or below (+1) in the same column."""
-    column = _feed_column(feed)
-    i = column.index(feed) + step
-    if 0 <= i < len(column):
-        order = st.session_state["feed_order"]
-        a, b = order.index(feed), order.index(column[i])
-        order[a], order[b] = order[b], order[a]
-
-
-def _switch_feed_side(feed: str):
-    sides = st.session_state["feed_sides"]
-    sides[feed] = "right" if sides[feed] == "left" else "left"
-
-
-def _feed_move_buttons(container, feed: str):
-    """▲ ▼ to reorder within a column, ◀ / ▶ to move to the other column (two-column layout only)."""
-    _, sides, stacked = _feed_layout_state()
-    column = _feed_column(feed)
-    i = column.index(feed)
-    container.button("▲", key=f"move_{feed}_up", type="tertiary", disabled=i == 0,
-                     on_click=_move_feed, args=(feed, -1), help=t("Move up"))
-    container.button("▼", key=f"move_{feed}_down", type="tertiary", disabled=i == len(column) - 1,
-                     on_click=_move_feed, args=(feed, 1), help=t("Move down"))
-    if not stacked:
-        left = sides[feed] == "left"
-        container.button("▶" if left else "◀", key=f"move_{feed}_side", type="tertiary",
-                         on_click=_switch_feed_side, args=(feed,),
-                         help=t("Move to the right column") if left else t("Move to the left column"))
-
-
-def _feed_tools(head, feed: str, text_size: bool = True):
-    """Right end of a feed's header: A− / A+ and the position buttons, kept together if the header wraps."""
-    head.space("stretch")
-    tools = head.container(horizontal=True, vertical_alignment="center", width="content", gap="small")
-    if text_size:
-        _text_size_buttons(tools, feed)
-    _feed_move_buttons(tools, feed)
-
-
-def _feed_height_css(columns: list[list[str]], stacked: bool, joins_shown: bool) -> str:
+def _feed_height_css(columns: list[list[str]], joins_shown: bool, transcription_shown: bool) -> str:
     """Fit the scrolling chat / gift boxes to the screen height, sharing it with the other feeds in their column."""
-    if stacked:  # narrower screens use the main stylesheet's heights
-        return ("@media (min-width: 641px) {"
-                ".st-key-chat_feed { height: 50dvh !important; max-height: 50dvh !important; }"
-                ".st-key-paid_feed { height: 35dvh !important; max-height: 35dvh !important; }}")
+    config_space = 48 if st.session_state.get("tts_enabled") else 0
+    hidden_join_space = 0 if joins_shown else 65
+    transcription_space = 168 if transcription_shown else 0
+    narrow_feed_height = 624 + config_space + transcription_space - hidden_join_space
+    container_height = 337 + config_space + transcription_space
+    container_rule = (
+        ".st-key-chat_paid { "
+        f"height: max(0px, calc(100dvh - {container_height}px)) !important; "
+        f"flex: 0 0 max(0px, calc(100dvh - {container_height}px)) !important; }}"
+    )
+    narrow_rules = (
+        "@media (max-width: 900px) {"
+        ".st-key-chat_feed, .st-key-paid_feed { "
+        f"height: max(0px, calc((100dvh - {narrow_feed_height}px) / 2)) !important; "
+        f"max-height: max(0px, calc((100dvh - {narrow_feed_height}px) / 2)) !important; "
+        "min-height: 0 !important; }}"
+    )
     rules = []
     for column in columns:
         big = [f for f in column if f != "join"]
         if not big:
             continue
-        reserved = 370 + 60 * (len(big) - 1)
+        reserved = 385 + config_space + transcription_space + 60 * (len(big) - 1)
         if "paid" in column:
-            reserved += 50  # gifts header + "Mark all" button may wrap to two lines
+            reserved += 90  # expander heading plus the gift controls may wrap to two lines
         if "join" in column:
-            reserved += 190 if joins_shown else 50
+            reserved += 136 if joins_shown else 50
         height = f"calc((100dvh - {reserved}px) / {len(big)})"
         rules += [f".st-key-{f}_feed {{ height: {height} !important; max-height: {height} !important; "
-                  f"min-height: 180px; }}" for f in big]
-    # Narrow screens stack the columns; the fixed heights in the main stylesheet apply there.
-    return "@media (min-width: 901px) {" + "".join(rules) + "}"
+                  f"min-height: 0 !important; }}" for f in big]
+    # Narrow screens keep the two columns side by side and use a shared compact feed allocation.
+    return (
+        container_rule
+        + "@media (min-width: 901px) {" + "".join(rules) + "}"
+        + narrow_rules
+    )
+
+
+def _display_order(items):
+    return reversed(items) if st.session_state["feed_order"] == "newest_first" else iter(items)
 
 
 def _sync_obs_chat():
@@ -988,12 +1336,13 @@ _TTS_MAX_JOINS = 3  # joins read per poll
 
 
 def _feed_tts_button(container, state_key: str) -> None:
-    """🔊/🔇 on a feed header: whether text-to-speech reads that feed (shown while TTS is on)."""
+    """Mute/unmute a feed while text-to-speech is enabled."""
     if not st.session_state["tts_enabled"]:
         return
     on = st.session_state[state_key]
     container.button(
-        t("🔊 Read aloud") if on else t("🔇 Muted"), key=f"{state_key}_btn",
+        "", key=f"{state_key}_btn",
+        icon=":material/volume_up:" if on else ":material/volume_off:",
         type="secondary" if on else "tertiary",
         help=t("Text-to-speech reads this list. Click to mute it.") if on
         else t("Text-to-speech doesn't read this list. Click to read it aloud."),
@@ -1002,12 +1351,13 @@ def _feed_tts_button(container, state_key: str) -> None:
 
 
 def _tts_option(container, state_key: str, label: str, help_text: str) -> None:
-    """Checkbox-style on/off button for a TTS option, kept in session_state[state_key]."""
+    """On/off button for a TTS option, kept in session_state[state_key]."""
     on = st.session_state[state_key]
     container.button(
         label, key=f"{state_key}_btn",
-        icon=":material/check_box:" if on else ":material/check_box_outline_blank:",
-        type="secondary" if on else "tertiary",
+        icon=(":material/volume_off:" if on else ":material/volume_up:")
+        if state_key in ("tts_skip_emoji", "tts_skip_name") else None,
+        type="primary" if on else "secondary",
         help=help_text,
         on_click=lambda: st.session_state.update({state_key: not st.session_state[state_key]}),
     )
@@ -1029,23 +1379,59 @@ def _reads_translated(msg: dict) -> bool:
     return msg.get("type") != "gift" and _tts_translating(is_paid(msg))
 
 
-def _speech_for(text: str, src_lang: str, translate: bool) -> tuple[str, str]:
-    """(text to speak, voice language). With `translate`, speak the translation."""
-    if not translate:
-        return text, src_lang
-    translated = tr.get_translation(text, st.session_state["translate_target"])
-    if translated:
-        # Auto-detect: use the "Translate to" language's voice for the translated text.
-        return translated, st.session_state["translate_target"].split("-")[0]
-    # Already in the target language, or the translation failed / isn't ready: read the original.
-    return text, "auto"
-
-
 def _chat_line(author: str, text: str, lang: str) -> str:
     """Spoken line for a regular chat message, with or without the username."""
     if st.session_state["tts_skip_name"]:
         return text
     return format_message(author, text, lang)
+
+
+def _deliver_message_speech(msg: dict, text: str, lang: str, paid: bool, manual: bool) -> None:
+    line = (
+        format_announcement(msg.get("type", ""), msg.get("author", ""), text, lang) if paid
+        else _chat_line(msg.get("author", ""), text, lang)
+    )
+    if manual:
+        _play_tts(line, lang)
+    else:
+        _tts_say(line, lang=lang, priority=paid)
+
+
+def _queue_message_speech(msg: dict, text: str, lang: str, paid: bool, manual: bool = False) -> None:
+    if _reads_translated(msg):
+        target = st.session_state["translate_target"]
+        translated = tr.get_translation(text, target)
+        if translated is None:
+            st.session_state.setdefault("_tts_translation_pending", []).append({
+                "msg": msg, "text": text, "target": target, "paid": paid, "manual": manual,
+            })
+            return
+        text, lang = (translated, target.split("-")[0]) if translated else (text, "auto")
+    elif msg.get("type") == "gift":
+        lang = "auto"
+    _deliver_message_speech(msg, text, lang, paid, manual)
+
+
+def _flush_translated_speech() -> None:
+    pending = st.session_state.get("_tts_translation_pending", [])
+    waiting = []
+    for item in sorted(pending, key=lambda item: not item["paid"]):
+        msg = item["msg"]
+        if item["target"] != st.session_state["translate_target"]:
+            continue
+        if not item["manual"]:
+            feed_enabled = st.session_state["tts_announce_paid" if item["paid"] else "tts_read_chat"]
+            if not st.session_state["tts_enabled"] or not feed_enabled or not _reads_translated(msg):
+                continue
+        translated = tr.get_translation(item["text"], item["target"])
+        if translated is None:
+            waiting.append(item)
+            continue
+        text, lang = (
+            (translated, item["target"].split("-")[0]) if translated else (item["text"], "auto")
+        )
+        _deliver_message_speech(msg, text, lang, item["paid"], item["manual"])
+    st.session_state["_tts_translation_pending"] = waiting
 
 
 def _replay_message(msg: dict):
@@ -1056,19 +1442,12 @@ def _replay_message(msg: dict):
     translate = _reads_translated(msg)
     if not matches_language(text, lang) and not translate:
         lang = "auto"  # manual replay reads any message, in its own language
-    if translate:
-        tr.prefetch([text], st.session_state["translate_target"], wait=3.0)
-        text, lang = _speech_for(text, lang, True)
-    elif msg.get("type") == "gift":
-        lang = "auto"
-    if is_paid(msg):
-        _play_tts(format_announcement(msg.get("type", ""), msg.get("author", ""), text, lang), lang)
-    else:
-        _play_tts(_chat_line(msg.get("author", ""), text, lang), lang)
+    _queue_message_speech(msg, text, lang, is_paid(msg), manual=True)
 
 
 def _poll_chat():
     """Pull new messages from both platforms and append to session state."""
+    _flush_translated_speech()
     now = time.time()
     if now - st.session_state["last_poll"] < CHAT_POLL_INTERVAL:
         return
@@ -1136,21 +1515,12 @@ def _poll_chat():
                 to_speak.append((m, text))
         to_translate = [text for m, text in to_speak if _reads_translated(m)]
         if to_translate:
-            tr.prefetch(to_translate, st.session_state["translate_target"], wait=3.0)
+            tr.prefetch(to_translate, st.session_state["translate_target"])
         # Paid events first, so a burst of chat in the same poll can't delay them.
         to_speak.sort(key=lambda item: not (announce_paid and is_paid(item[0])))
         for m, text in to_speak:
             paid = announce_paid and is_paid(m)
-            if m.get("type") == "gift":
-                lang = "auto"  # gift names are product names; translating them gives nonsense
-            else:
-                text, lang = _speech_for(text, st.session_state["tts_lang"], _reads_translated(m))
-            _tts_say(
-                format_announcement(m["type"], m["author"], text, lang) if paid
-                else _chat_line(m["author"], text, lang),
-                lang=lang,
-                priority=paid,
-            )
+            _queue_message_speech(m, text, st.session_state["tts_lang"], paid)
         # Joins come last; a busy room can have many per poll, so only the newest few are read.
         tts_lang = st.session_state["tts_lang"]
         for m in joins[-_TTS_MAX_JOINS:]:
@@ -1233,9 +1603,47 @@ def _yt_video_id() -> str:
 
 
 def _stop_yt_listener():
+    _stop_transcription_for("youtube")
     st.session_state["selected_chat_id"] = ""
     st.session_state["yt_page_token"] = ""
     st.session_state["yt_live_video"] = ""
+
+
+def _stop_transcription_for(platform: str) -> None:
+    session = st.session_state.get("transcription_session")
+    if session and (not platform or session.platform == platform):
+        session.stop()
+
+
+def _active_transcription_sources() -> dict[str, dict]:
+    sources = {}
+    video_id = _yt_video_id()
+    if st.session_state.get("selected_chat_id") and video_id:
+        sources["youtube"] = {
+            "id": video_id,
+            "resolve": lambda video_id=video_id: transcribe.resolve_youtube_audio_source(
+                f"https://www.youtube.com/watch?v={video_id}"
+            ),
+        }
+
+    bili_listener = st.session_state.get("bili_listener")
+    room_id = st.session_state.get("bili_room_id", "")
+    if bili_listener and bili_listener._running and str(bili_listener.room_id) == str(room_id):
+        bili_cookies = user_login.get("bilibili")
+        sources["bilibili"] = {
+            "id": str(room_id),
+            "resolve": lambda room_id=str(room_id), cookies=bili_cookies:
+                bili.get_live_audio_url(room_id, cookies),
+        }
+
+    me_listener = st.session_state.get("me_listener")
+    me_room_id = st.session_state.get("me_room_id", "")
+    if me_listener and me_listener.running and str(me_listener.room_id) == str(me_room_id):
+        sources["missevan"] = {
+            "id": str(me_room_id),
+            "resolve": lambda room_id=str(me_room_id): me.get_live_audio_url(room_id),
+        }
+    return sources
 
 
 def _alert_live(msg: str) -> None:
@@ -1528,22 +1936,12 @@ def _pref_text(limit):
     return parse
 
 
-def _pref_scales(v):
-    if not isinstance(v, dict) or any(v.get(f) not in _TEXT_SIZES for f in _FEEDS):
+def _pref_text_scale(v):
+    if isinstance(v, dict):  # migrate saved per-feed text sizes to the former chat size
+        v = v.get("chat", 100)
+    if isinstance(v, bool) or not isinstance(v, (int, float)) or int(v) not in _TEXT_SIZES:
         raise ValueError
-    return {f: int(v[f]) for f in _FEEDS}
-
-
-def _pref_order(v):
-    if not isinstance(v, list) or sorted(v) != sorted(_FEEDS):
-        raise ValueError
-    return list(v)
-
-
-def _pref_sides(v):
-    if not isinstance(v, dict) or any(v.get(f) not in ("left", "right") for f in _FEEDS):
-        raise ValueError
-    return {f: v[f] for f in _FEEDS}
+    return int(v)
 
 
 def _pref_sites(v):
@@ -1563,12 +1961,10 @@ _PREFS = {
     "tts_lang": _pref_pick(TTS_LANGUAGES),
     "tts_output": _pref_pick(("server", "browser")),
     "translate_target": _pref_pick(tr.LANGUAGES),
-    "sc_reading": _pref_pick(reading.MODES),
+    "show_reading_aids": _pref_flag,
     "max_chat_display": _pref_num(50, 1000),
-    "feed_layout": _pref_pick(("columns", "stack")),
-    "feed_order": _pref_order,
-    "feed_sides": _pref_sides,
-    "text_scale": _pref_scales,
+    "feed_order": _pref_pick(_FEED_ORDERS),
+    "text_scale": _pref_text_scale,
     "overlay_count": _pref_num(1, overlay_server.MAX_MESSAGES),
     "overlay_sc_count": _pref_num(0, overlay_server.MAX_MESSAGES),
     "overlay_reading": _pref_pick(reading.OVERLAY_MODES),
@@ -1582,7 +1978,7 @@ _PREFS = {
 # These are also in the URL (?lang= / ?tz= / ?overlay=); a link that sets them wins over the browser copy.
 _PREF_URL_PARAMS = {"ui_lang": "lang", "chat_tz": "tz", "overlay_channel": "overlay"}
 # Keyed widgets that copy their value from a setting; dropped so they redraw with the restored one.
-_PREF_MIRRORS = {"ui_lang": "ui_lang_select", "chat_tz": "chat_tz_select", "sc_reading": "sc_reading_pick"}
+_PREF_MIRRORS = {"ui_lang": "ui_lang_select", "chat_tz": "chat_tz_select"}
 
 
 @st.cache_resource
@@ -1609,6 +2005,12 @@ def _apply_saved_settings() -> None:
             continue
         if key in _PREF_MIRRORS:
             st.session_state.pop(_PREF_MIRRORS[key], None)
+    if "show_reading_aids" not in saved and (
+        "show_pinyin" in saved or "show_furigana" in saved
+    ):
+        st.session_state["show_reading_aids"] = (
+            saved.get("show_pinyin") is True or saved.get("show_furigana") is True
+        )
     if "lang" not in st.query_params and st.session_state["ui_lang"] != "en":
         st.query_params["lang"] = st.session_state["ui_lang"]
     if "tz" not in st.query_params and st.session_state["chat_tz"]:
@@ -1647,9 +2049,98 @@ def _save_settings() -> None:
 _apply_saved_settings()
 
 
+def _render_chat_filters() -> None:
+    filt: ChatFilter = st.session_state["filter"]
+    st.markdown("#### " + t("Keyword / Regex Block Patterns"))
+    st.caption(t("Each pattern is a Python regex (case-insensitive by default)."))
+    patterns = filt.block_patterns
+    if patterns:
+        for pat in patterns:
+            c1, c2 = st.columns([8, 1])
+            c1.code(pat)
+            if c2.button("✕", key=f"del_pat_{pat}"):
+                filt.remove_block_pattern(pat)
+                st.rerun()
+    else:
+        st.info(t("No keyword filters."))
+
+    with st.form("add_pattern", clear_on_submit=True):
+        new_pat = st.text_input(t("New pattern (regex)"))
+        if st.form_submit_button(t("Add")) and new_pat:
+            filt.add_block_pattern(new_pat)
+            st.rerun()
+
+    st.markdown("#### " + t("Allow Patterns (override block)"))
+    for pat in filt.allow_patterns:
+        c1, c2 = st.columns([8, 1])
+        c1.code(pat)
+        if c2.button("✕", key=f"del_allow_{pat}"):
+            filt.remove_allow_pattern(pat)
+            st.rerun()
+    with st.form("add_allow_pattern", clear_on_submit=True):
+        new_allow = st.text_input(t("New allow pattern"))
+        if st.form_submit_button(t("Add allow pattern")) and new_allow:
+            filt.add_allow_pattern(new_allow)
+            st.rerun()
+
+    st.markdown("#### " + t("Blocked Users"))
+    st.caption(t("Saved to chat_filters.json and kept after restarting the app."))
+    blocked = filt.blocked_users
+    blocked_names = filt.blocked_names
+    if blocked or blocked_names:
+        for key, name in sorted(blocked.items(), key=lambda kv: (kv[1] or kv[0]).lower()):
+            platform, _, uid = key.rpartition(":")
+            site = _PLATFORM_NAMES.get(platform, t("Any platform"))
+            c1, c2 = st.columns([8, 1], vertical_alignment="center")
+            c1.markdown(f"**{html_lib.escape(name) or '—'}** · {site} · `{uid}`")
+            if c2.button("✕", key=f"del_uid_{key}", help=t("Unblock")):
+                filt.unblock_user(key)
+                st.rerun()
+        for name in blocked_names:
+            c1, c2 = st.columns([8, 1], vertical_alignment="center")
+            c1.markdown(f"**{html_lib.escape(name)}** · {t('by name')}")
+            if c2.button("✕", key=f"del_name_{name}", help=t("Unblock")):
+                filt.unblock_name(name)
+                st.rerun()
+    else:
+        st.info(t("No blocked users."))
+
+    with st.form("block_user_form", clear_on_submit=True):
+        new_uid = st.text_input(t("Block by user ID / channel ID"))
+        if st.form_submit_button(t("Block")) and new_uid:
+            filt.block_user(new_uid)
+            st.rerun()
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Sidebar
 # ──────────────────────────────────────────────────────────────────────────────
+
+_pages = {
+    "status": "📡 Stream Monitoring",
+    "chat": "💬 Chat",
+    "transcription": "🎙 Transcription",
+    "obs": "🎬 OBS",
+    "analytics": "📊 Analytics",
+    "filters": "🛡️ Filters",
+    "cookies": "🍪 Cookies",
+}
+if not app_config.TRANSCRIPTION_ENABLED:
+    _pages.pop("transcription")
+    session = st.session_state.get("transcription_session")
+    if session:
+        session.stop()
+        st.session_state["transcription_session"] = None
+if st.session_state.get("active_page") not in _pages:
+    st.session_state["active_page"] = "status"
+selected_page = st.radio(
+    t("Navigation"),
+    list(_pages),
+    format_func=lambda page: t(_pages[page]),
+    key="active_page",
+    label_visibility="collapsed",
+    horizontal=True,
+)
 
 with st.sidebar:
     _ui_keys = list(i18n.UI_LANGUAGES)
@@ -1684,14 +2175,14 @@ with st.sidebar:
         else:
             st.query_params.pop("tz", None)
 
-    st.title(t("🎙️ Streaming Dashboard"))
+    st.title(t("⚙️ Global settings"))
     st.divider()
 
     # ── Translation ───────────────────────────────────────────────────────────
     st.subheader(t("🌐 Translation"))
     st.session_state["translate_enabled"] = st.toggle(
-        t("Translate chat"), value=st.session_state["translate_enabled"],
-        help=t("Shows a translation under each chat message."),
+        t("Start translation"), value=st.session_state["translate_enabled"],
+        help=t("When started, translates chat and transcription into the selected language when the source language differs."),
     )
     _tr_keys = list(tr.LANGUAGES)
     st.session_state["translate_target"] = st.selectbox(
@@ -1699,6 +2190,23 @@ with st.sidebar:
         _tr_keys,
         index=_tr_keys.index(st.session_state["translate_target"]),
         format_func=lambda k: t(tr.LANGUAGES[k]),
+    )
+    st.toggle(t("Show pinyin / furigana"), key="show_reading_aids")
+    st.divider()
+    st.subheader(t("💬 Feed display"))
+    st.select_slider(
+        t("Chat text size"),
+        options=_TEXT_SIZES,
+        format_func=lambda size: f"{size}%",
+        key="text_scale",
+    )
+    st.selectbox(
+        t("Message order"),
+        _FEED_ORDERS,
+        format_func=lambda order: t(
+            "Newest at top" if order == "newest_first" else "Newest at bottom"
+        ),
+        key="feed_order",
     )
 
     st.divider()
@@ -1758,27 +2266,208 @@ with st.sidebar:
         st.session_state["join_messages"] = []
         st.rerun()
 
+
+def _render_transcription_results(session) -> None:
+    snapshot = session.snapshot()
+    if snapshot["status"] == "failed":
+        st.error(t("Transcription failed: {error}", error=snapshot["error"]))
+    elif snapshot["status"] == "ended":
+        st.info(t("The live stream ended; transcription stopped."))
+    elif snapshot["status"] == "stopped":
+        st.info(t("Transcription stopped."))
+    st.caption(t(
+        "Transcription target language: {language}",
+        language=t(tr.LANGUAGES[session.target_language]),
+    ))
+    for item in _display_order(snapshot["segments"][-50:]):
+        st.markdown(f"**{item['time']}**")
+        if item.get("transcription_error"):
+            st.error(t("Could not transcribe this audio segment: {error}",
+                       error=item["transcription_error"]))
+            continue
+        st.write(item["original"])
+        if item["translated"]:
+            st.write(f"🌐 {item['translated']}")
+        if item["translation_error"]:
+            st.warning(t("Translation failed: {error}", error=item["translation_error"]))
+        st.divider()
+
+
+def _render_transcription_panel() -> None:
+    @st.fragment(run_every=1)
+    def _panel() -> None:
+        sources = _active_transcription_sources()
+        session = st.session_state.get("transcription_session")
+        if session and session.is_running:
+            current = sources.get(session.platform)
+            if not current or current["id"] != session.source_id:
+                session.stop()
+
+        st.caption(t(
+            "Audio recognition runs locally. When translation is started, text in another language is translated into the selected target language."
+        ))
+        if not sources:
+            st.info(t("Start listening to a live YouTube, Bilibili, or MissEvan room to enable transcription."))
+            if session:
+                _render_transcription_results(session)
+            return
+
+        options = list(sources)
+        if st.session_state.get("transcription_platform_pick") not in options:
+            st.session_state["transcription_platform_pick"] = options[0]
+        running = bool(session and session.is_running)
+        if session:
+            session.configure_translation(
+                st.session_state["translate_enabled"],
+                st.session_state["translate_target"],
+            )
+        platform = st.selectbox(
+            t("Platform"),
+            options,
+            key="transcription_platform_pick",
+            format_func=lambda key: t({
+                "youtube": "YouTube",
+                "bilibili": "Bilibili",
+                "missevan": "MissEvan",
+            }[key]),
+            disabled=running,
+        )
+        st.selectbox(
+            t("Local Whisper model"),
+            transcribe.MODEL_SIZES,
+            key="transcription_model",
+            format_func=lambda size: t({
+                "tiny": "Tiny — fastest, lower accuracy",
+                "base": "Base — balanced",
+                "small": "Small — slower, more accurate",
+            }[size]),
+            disabled=running,
+        )
+        st.caption(t(
+            "The selected model is downloaded on first use. FFmpeg is required; install it and add it to PATH."
+        ))
+        if running:
+            if st.button(t("⏹ Stop transcription"), key="transcription_stop"):
+                session.stop()
+            status_labels = {
+                "resolving_stream": "Finding the live audio stream…",
+                "loading_model": "Loading the local Whisper model…",
+                "connecting": "Connecting to live audio…",
+                "listening": "Transcribing and translating…",
+                "stopping": "Stopping transcription…",
+            }
+            snapshot = session.snapshot()
+            status_label = status_labels.get(snapshot["status"])
+            if status_label:
+                st.info(t(status_label))
+        elif st.button(
+            t("▶ Start transcription + translation"),
+            key="transcription_start",
+            type="primary",
+        ):
+            source = sources[platform]
+            session = transcribe.LiveTranscriber(
+                platform=platform,
+                source_id=source["id"],
+                source_resolver=source["resolve"],
+                target_language=st.session_state["translate_target"],
+                model_size=st.session_state["transcription_model"],
+                translation_enabled=st.session_state["translate_enabled"],
+            )
+            try:
+                session.start()
+                st.session_state["transcription_session"] = session
+                st.rerun()
+            except RuntimeError as exc:
+                st.error(t("Could not start transcription: {error}", error=str(exc)))
+                return
+
+        if session:
+            _render_transcription_results(session)
+
+    _panel()
+
+
 # ──────────────────────────────────────────────────────────────────────────────
-# Main area tabs
+# Main pages
 # ──────────────────────────────────────────────────────────────────────────────
 
-tab_chat, tab_status, tab_obs, tab_analytics, tab_filters, tab_cookies = st.tabs(
-    [t(x) for x in ("💬 Chat", "📡 Stream Monitoring", "🎬 OBS", "📊 Analytics", "🛡️ Filters", "🍪 Cookies")]
+st.html(
+    """<script>(() => {
+  if (window.__mpcDrawerNavigation) return;
+  window.__mpcDrawerNavigation = true;
+  const closeDrawer = () => {
+    const sidebar = document.querySelector('[data-testid="stSidebar"][aria-expanded="true"]');
+    sidebar?.querySelector('[data-testid="stSidebarCollapseButton"] button')?.click();
+  };
+  if (document.querySelector('[data-testid="stSidebar"]')) {
+    closeDrawer();
+  } else {
+    const observer = new MutationObserver(() => {
+      if (!document.querySelector('[data-testid="stSidebar"]')) return;
+      observer.disconnect();
+      closeDrawer();
+    });
+    observer.observe(document.body, {childList: true, subtree: true});
+  }
+  document.addEventListener('click', event => {
+    if (event.target instanceof Element &&
+        event.target.closest('.st-key-active_page [data-testid="stRadioOption"]')) {
+      setTimeout(closeDrawer, 0);
+    }
+  }, true);
+  document.addEventListener('change', event => {
+    if (event.target instanceof Element && event.target.closest('.st-key-active_page')) {
+      setTimeout(closeDrawer, 0);
+    }
+  }, true);
+  document.addEventListener('keydown', event => {
+    if (event.key === 'Escape') closeDrawer();
+    if (event.target instanceof Element && event.target.closest('.st-key-active_page') &&
+        ['ArrowDown', 'ArrowUp', 'ArrowLeft', 'ArrowRight', 'Home', 'End', ' ', 'Enter'].includes(event.key)) {
+      setTimeout(closeDrawer, 0);
+    }
+  }, true);
+})();</script>""",
+    unsafe_allow_javascript=True,
 )
+
+# Keep the page containers mounted so switching pages preserves widgets and polling fragments.
+st.html("<style>" + "".join(
+    f".st-key-page_{page}, "
+    f'[data-testid="stLayoutWrapper"]:has(> .st-key-page_{page}) {{ display: none !important; }}'
+    for page in _pages if page != selected_page
+) + "</style>")
+page_chat = st.container(key="page_chat")
+page_transcription = st.container(key="page_transcription") if app_config.TRANSCRIPTION_ENABLED else None
+page_status = st.container(key="page_status")
+page_obs = st.container(key="page_obs")
+page_analytics = st.container(key="page_analytics")
+page_filters = st.container(key="page_filters")
+page_cookies = st.container(key="page_cookies")
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TAB: TRANSCRIPTION
+# ═══════════════════════════════════════════════════════════════════════════════
+
+if page_transcription is not None:
+    with page_transcription:
+        st.subheader(t("🎙️ Live transcription + translation"))
+        st.info(t("⚠️ Trial feature: live transcription is experimental and may be inaccurate."))
+        _render_transcription_panel()
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # TAB: STREAM STATUS
 # ═══════════════════════════════════════════════════════════════════════════════
 
-with tab_status:
-    _notify_col, _allow_col = st.columns([3, 2], vertical_alignment="center")
-    _notify_col.toggle(
+with page_status:
+    st.toggle(
         t("Notify me when a stream goes live"), key="live_notify",
         help=t("While this dashboard is open, show a pop-up (and a desktop notification, if allowed) "
                "when the YouTube channel/stream, Bilibili room or MissEvan room below goes live."),
     )
     if st.session_state["live_notify"]:
-        with _allow_col:
+        with st.container(key="desktop_notify"):
             # A real click in the page: browsers only ask for notification permission on a user gesture.
             st.html(
                 f'<button id="mpc-allow-notify" style="padding:4px 10px;border-radius:6px;cursor:pointer;'
@@ -1927,6 +2616,7 @@ with tab_status:
         ).strip()
         bili_room = bili.parse_room_id(bili_input)
         if bili_room != st.session_state["bili_room_id"]:
+            _stop_transcription_for("bilibili")
             st.session_state["bili_room_id"] = bili_room
             if st.session_state["bili_listener"]:
                 st.session_state["bili_listener"].stop()
@@ -1948,6 +2638,7 @@ with tab_status:
             level, msg = "ok", t("🎧 Listening ✓")
         action = _render_listener("bili", bili_running, level, msg, can_start=bool(bili_room))
         if action == "stop":
+            _stop_transcription_for("bilibili")
             listener.stop()
             st.session_state["bili_listener"] = None
             st.rerun()
@@ -2005,6 +2696,7 @@ with tab_status:
         ).strip()
         me_room = me.parse_room_id(me_input)
         if me_room != st.session_state["me_room_id"]:
+            _stop_transcription_for("missevan")
             st.session_state["me_room_id"] = me_room
             if st.session_state["me_listener"]:
                 st.session_state["me_listener"].stop()
@@ -2023,6 +2715,7 @@ with tab_status:
             level, msg = "info", t("🎧 Connecting…")
         action = _render_listener("me", me_running, level, msg, can_start=bool(me_room))
         if action == "stop":
+            _stop_transcription_for("missevan")
             me_listener.stop()
             st.session_state["me_listener"] = None
             st.rerun()
@@ -2158,28 +2851,37 @@ def _emote_packs(packs: list[dict], key: str, locked_help: str) -> dict | None:
     keys = _emote_pack_keys(packs, key)
     any_owner = any(p.get("owner") for p in packs)
     prefs = st.session_state.get(_EMOTE_PACK_PREFS, {})
+    for n, (pack, pack_key) in enumerate(zip(packs, keys)):
+        # Streamlit forgets a widget's state while it isn't shown (picker closed), so the prefs are the source.
+        if pack_key not in st.session_state:
+            st.session_state[pack_key] = prefs.get(pack_key, bool(pack.get("owner")) or (not any_owner and n == 0))
+    def render_pack(n: int) -> None:
+        nonlocal picked
+        pack, pack_key = packs[n], keys[n]
+        label = ("⭐ " if pack.get("owner") else "") + (pack["name"] or "?") + f" ({len(pack['emotes'])})"
+        exp = st.expander(label, key=pack_key, type="compact",
+                          on_change=_remember_emote_packs, args=([pack_key],))
+        if exp.open:
+            with exp, st.container(horizontal=True, gap="small", key=f"emote_grid_{key}{n}"):
+                for i, e in enumerate(pack["emotes"]):
+                    if _emote_button(e, f"emo_{key}{n}_{i}", locked_help):
+                        picked = e
+
+    # Closed packs use compact grid tiles; expanded packs remain full-width at the bottom.
+    closed = [n for n in range(len(packs)) if not st.session_state[keys[n]]]
+    for row_start in range(0, len(closed), 3):
+        row = st.columns(3, gap="small")
+        for column, n in zip(row, closed[row_start:row_start + 3]):
+            with column:
+                render_pack(n)
+    for n in range(len(packs)):
+        if st.session_state[keys[n]]:
+            render_pack(n)
     tools = st.container(horizontal=True, gap="small")
     tools.button(t("Expand all"), key=f"emo_{key}_expand", type="tertiary", icon=":material/unfold_more:",
                  on_click=_set_emote_packs_open, args=(keys, True))
     tools.button(t("Collapse all"), key=f"emo_{key}_collapse", type="tertiary", icon=":material/unfold_less:",
                  on_click=_set_emote_packs_open, args=(keys, False))
-    for n, (pack, pack_key) in enumerate(zip(packs, keys)):
-        # Streamlit forgets a widget's state while it isn't shown (picker closed), so the prefs are the source.
-        if pack_key not in st.session_state:
-            st.session_state[pack_key] = prefs.get(pack_key, bool(pack.get("owner")) or (not any_owner and n == 0))
-    # Open packs first (in their usual order), then the closed ones; n stays the pack's original index for keys.
-    order = sorted(range(len(packs)), key=lambda n: not st.session_state[keys[n]])
-    for n in order:
-        pack, pack_key = packs[n], keys[n]
-        label = ("⭐ " if pack.get("owner") else "") + (pack["name"] or "?") + f" ({len(pack['emotes'])})"
-        exp = st.expander(label, key=pack_key, type="compact",
-                          on_change=_remember_emote_packs, args=([pack_key],))
-        if not exp.open:
-            continue
-        with exp, st.container(horizontal=True, gap="small", key=f"emote_grid_{key}{n}"):
-            for i, e in enumerate(pack["emotes"]):
-                if _emote_button(e, f"emo_{key}{n}_{i}", locked_help):
-                    picked = e
     return picked
 
 
@@ -2192,49 +2894,6 @@ def _append_message_input(value: str) -> None:
 
 def _append_youtube_emote_input(emote: dict) -> None:
     _append_message_input(emote["code"])
-
-
-def _append_bili_emote_input(emote: dict) -> None:
-    token = f"[{emote['name']}]"
-    draft = st.session_state.get("chat_message_input", "")
-    if draft and not draft[-1].isspace():
-        draft += " "
-    st.session_state["chat_message_input"] = draft + token
-    st.session_state.setdefault("bili_emote_draft", []).append(
-        {"token": token, "unique": emote["unique"]}
-    )
-
-
-def _split_bili_emote_draft(message: str) -> tuple[list[tuple[str, str]], str]:
-    """Split selected Bilibili emotes from text, preserving their order for send-on-submit."""
-    pending = list(st.session_state.get("bili_emote_draft", []))
-    remaining = message
-    segments: list[tuple[str, str]] = []
-    other_parts: list[str] = []
-    while pending:
-        match = None
-        for index, emote in enumerate(pending):
-            token = emote["token"]
-            position = remaining.find(token)
-            if position >= 0 and (match is None or position < match[0]):
-                match = (position, index, token)
-        if match is None:
-            break
-        position, index, token = match
-        text = remaining[:position].strip()
-        if text:
-            segments.append(("text", text))
-            other_parts.append(text)
-        segments.append(("emote", pending.pop(index)["unique"]))
-        remaining = remaining[position + len(token):]
-    text = remaining.strip()
-    if text:
-        segments.append(("text", text))
-        other_parts.append(text)
-    if not segments and message.strip():
-        segments.append(("text", message.strip()))
-        other_parts.append(message.strip())
-    return segments, " ".join(other_parts)
 
 
 def _report_send(site: str, ok: bool, err: str) -> None:
@@ -2257,26 +2916,155 @@ _EMOTE_IMG_JS = """<script>(() => {
     img.setAttribute('src', src);
   });
   fix(document);
-  // Keep emote popovers inside the window: when they open low, the bottom (last packs) was unreachable.
+  // Keep the upward-opening emote picker within the space above its trigger.
   const fit = () => document.querySelectorAll('[data-testid="stPopoverBody"]').forEach((p) => {
     if (!p.querySelector('[class*="st-key-emote_grid_"], [class*="st-key-emo_bili_expand"]')) return;
-    const room = Math.max(240, Math.floor(window.innerHeight - p.getBoundingClientRect().top - 12));
+    const trigger = p.closest('[data-testid="stPopover"]')?.querySelector('button');
+    const room = trigger
+      ? Math.max(160, Math.floor(trigger.getBoundingClientRect().top - 16))
+      : Math.floor(window.innerHeight * 0.7);
     if (p.style.maxHeight !== room + 'px') p.style.setProperty('max-height', room + 'px', 'important');
+    p.style.setProperty('overflow-y', 'auto', 'important');
+    p.style.setProperty('overscroll-behavior', 'contain');
   });
   new MutationObserver(() => { fix(document); fit(); }).observe(document.body, {childList: true, subtree: true});
   window.addEventListener('resize', fit);
 })();</script>"""
 
 
+_CHAT_SCROLL_BUTTON_JS = """<script>(() => {
+  const w = window.parent || window, d = w.document;
+  const newestFirst = __NEWEST_FIRST__;
+  const existingButton = d.querySelector('.mpc-scroll-bottom');
+  if (w.__mpcChatScrollButton) {
+    if (existingButton && existingButton.parentElement !== d.body) d.body.append(existingButton);
+    w.__mpcChatScrollButton.configure(newestFirst, __LABEL__);
+    return;
+  }
+  const button = d.createElement('button');
+  button.type = 'button';
+  button.className = 'mpc-scroll-bottom';
+  button.textContent = '↓';
+  button.title = __LABEL__;
+  button.setAttribute('aria-label', __LABEL__);
+  button.style.cssText = 'position:fixed;z-index:9999;width:40px;height:40px;border:1px solid rgba(128,128,128,.5);'
+    + 'border-radius:50%;background:var(--secondary-background-color,#333);color:var(--text-color,#fff);'
+    + 'font-size:20px;cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,.25);';
+  d.body.append(button);
+  let feed = null, hovered = false, hideTimer = 0, resizeObserver = null;
+  const observedRows = new Set();
+  let topLatest = newestFirst, following = true, frame = 0;
+  const atLatest = () => !feed || (topLatest ? feed.scrollTop <= 8
+    : feed.scrollHeight - feed.clientHeight - feed.scrollTop <= 8);
+  const followLatest = () => {
+    if (feed && following) feed.scrollTop = topLatest ? 0 : feed.scrollHeight;
+  };
+  const onScroll = () => {
+    following = atLatest();
+    update();
+  };
+  const scheduleUpdate = () => {
+    if (frame) return;
+    frame = w.requestAnimationFrame(() => {
+      frame = 0;
+      update();
+    });
+  };
+  const update = () => {
+    const activeFeed = [...d.querySelectorAll('.st-key-chat_feed')]
+      .find((candidate) => candidate.getBoundingClientRect().height > 0);
+    if (feed !== activeFeed) {
+      if (feed) {
+        feed.removeEventListener('pointerenter', enter);
+        feed.removeEventListener('pointerleave', leave);
+        feed.removeEventListener('scroll', onScroll);
+      }
+      resizeObserver?.disconnect();
+      observedRows.clear();
+      feed = activeFeed || null;
+      hovered = false;
+      following = true;
+      if (feed) {
+        feed.addEventListener('pointerenter', enter);
+        feed.addEventListener('pointerleave', leave);
+        feed.addEventListener('scroll', onScroll, {passive: true});
+        resizeObserver = new w.ResizeObserver(scheduleUpdate);
+        resizeObserver.observe(feed);
+      }
+    }
+    if (!feed) {
+      button.classList.remove('is-visible');
+      return;
+    }
+    // New rows and late-loading images can grow the content without resizing the feed.
+    if (resizeObserver) {
+      for (const row of observedRows) {
+        if (row.parentElement !== feed) {
+          resizeObserver.unobserve(row);
+          observedRows.delete(row);
+        }
+      }
+      for (const row of feed.children) {
+        if (!observedRows.has(row)) {
+          resizeObserver.observe(row);
+          observedRows.add(row);
+        }
+      }
+    }
+    followLatest();
+    const rect = feed.getBoundingClientRect();
+    const scrollable = feed.scrollHeight - feed.clientHeight > 8;
+    button.style.left = `${Math.max(8, rect.right - 48)}px`;
+    button.style.top = `${Math.max(8, rect.bottom - 48)}px`;
+    const touch = w.matchMedia('(hover: none)').matches;
+    button.classList.toggle('is-visible', scrollable && !atLatest() && (hovered || touch || button === d.activeElement));
+  };
+  const enter = () => {
+    w.clearTimeout(hideTimer);
+    hovered = true;
+    update();
+  };
+  const leave = () => {
+    w.clearTimeout(hideTimer);
+    hideTimer = w.setTimeout(() => {
+      hovered = feed?.matches(':hover') || button.matches(':hover');
+      update();
+    }, 300);
+  };
+  button.addEventListener('pointerenter', enter);
+  button.addEventListener('pointerleave', leave);
+  button.addEventListener('focus', enter);
+  button.addEventListener('blur', leave);
+  button.addEventListener('click', event => {
+    event.preventDefault();
+    following = true;
+    update();
+  });
+  w.__mpcChatScrollButton = {
+    configure: (order, label) => {
+      if (topLatest !== order) following = true;
+      topLatest = order;
+      button.textContent = topLatest ? '↑' : '↓';
+      button.title = label;
+      button.setAttribute('aria-label', label);
+      scheduleUpdate();
+    },
+  };
+  new w.MutationObserver(scheduleUpdate).observe(d.body, {childList: true, subtree: true, characterData: true});
+  w.addEventListener('resize', scheduleUpdate);
+  w.__mpcChatScrollButton.configure(newestFirst, __LABEL__);
+  update();
+})();</script>"""
+
+
 def _site_emote_row(yt_chat: str, yt_vid: str, bili_room: str, bili_monitoring: bool,
                     me_room: str = "", me_logged_in: bool = False,
                     me_monitoring: bool = False) -> None:
-    """One picker per site. YouTube stamps and Bilibili emotes are added to the message draft."""
+    """One picker per site. YouTube stamps enter the draft; Bilibili emotes send immediately."""
     st.html(_EMOTE_IMG_JS, unsafe_allow_javascript=True)
     _load_emote_pack_prefs()
     _save_emote_pack_prefs()
     row = st.container(horizontal=True, vertical_alignment="center", gap="small", key="emote_row")
-    row.markdown(f"**{t('Site emotes')}:**", width="content")
     yt_pop = row.popover("YouTube", icon="😀", key="emo_pop_yt", on_change="rerun", disabled=not yt_chat,
                          help=None if yt_chat else t("Start the YouTube listener first."))
     bili_pop = row.popover(
@@ -2292,15 +3080,17 @@ def _site_emote_row(yt_chat: str, yt_vid: str, bili_room: str, bili_monitoring: 
                          t("Log in to MissEvan in the 🍪 Cookies tab first.") if not me_logged_in
                          else t("Enter a MissEvan room ID first.") if not me_room
                          else t("Start the MissEvan listener first."))
-    row.caption(t("Each site's own emotes, sent only to that site."), width="content")
+    row.button(
+        "ⓘ", key="emote_help", type="tertiary",
+        help=t(
+            "Each site's own emotes are sent only to that site. Clicking a Bilibili special emote sends it "
+            "immediately as its own danmaku."
+        ),
+    )
 
     if yt_pop.open:
         with yt_pop:
             items = ytw.channel_emojis(yt_vid, fetch=True)
-            st.caption(t("Click stamps to add them to the message box. You can add text, then send to YouTube. "
-                         "Channel stamps show up here once someone uses them in chat; with a "
-                         "YouTube login (🍪 Cookies tab) the full set is listed and 🔒 marks member-only stamps "
-                         "you can't use."))
             if not items:
                 st.info(t("No channel stamps seen yet."))
             _emote_buttons(items, "yt", t("Members only"), on_pick=_append_youtube_emote_input)
@@ -2314,8 +3104,6 @@ def _site_emote_row(yt_chat: str, yt_vid: str, bili_room: str, bili_monitoring: 
             if cache.get("room") != bili_room:
                 packs, err = bili.get_emoticons(bili_room)
                 cache.update(room=bili_room, packs=packs, err=err)
-            st.caption(t("Click a Bilibili emote to add it to the message box. 🔒 emotes need e.g. this room's fan medal, "
-                         "a guard membership, or charging (充电) the streamer for the 充电表情 tab."))
             if cache.get("err"):
                 st.warning(t(cache["err"]))
             packs = cache.get("packs") or []
@@ -2324,7 +3112,7 @@ def _site_emote_row(yt_chat: str, yt_vid: str, bili_room: str, bili_monitoring: 
                 packs = sorted(packs, key=lambda p: 0 if p.get("owner") else 1)
                 picked = _emote_packs(packs, "bili", t("Locked"))
                 if picked and bili_monitoring:
-                    _append_bili_emote_input(picked)
+                    _report_send("Bilibili", *bili.send_emoticon(bili_room, picked["unique"]))
             elif not cache.get("err"):
                 st.info(t("This room has no emotes you can send."))
 
@@ -2340,7 +3128,6 @@ def _site_emote_row(yt_chat: str, yt_vid: str, bili_room: str, bili_monitoring: 
             if not cache.get("tabs_loaded"):
                 tabs, err = me.get_sticker_tabs(me_room)
                 cache.update(tabs=tabs, tabs_error=err, tabs_loaded=True)
-            st.caption(t("Sent only to MissEvan. Click a room sticker to send it immediately."))
             if cache.get("tabs_error"):
                 st.warning(t(cache["tabs_error"]))
             kaomoji = me.preset_kaomoji()
@@ -2415,119 +3202,96 @@ def _site_emote_row(yt_chat: str, yt_vid: str, bili_room: str, bili_monitoring: 
                     elif not items:
                         st.info(t("This package has no stickers."))
 
-with tab_chat:
+with page_chat:
     # ── Send message ──────────────────────────────────────────────────────────
-    yt_chat = st.session_state.get("selected_chat_id", "")
-    bili_room_send = st.session_state["bili_room_id"]
-    tgt_row = st.container(horizontal=True, vertical_alignment="center", gap="medium", key="send_targets")
-    tgt_row.markdown(f"**{t('Send to')}:**", width="content")
-    send_yt = tgt_row.checkbox(
-        "YouTube", key="send_yt", value=True, disabled=not yt_chat,
-        help=None if yt_chat else t("Start the YouTube listener first."),
-    )
-    bili_listener_send = st.session_state.get("bili_listener")
-    bili_monitoring = bool(
-        bili_listener_send and bili_listener_send.running
-        and str(bili_listener_send.room_id) == str(bili_room_send)
-    )
-    send_bili = tgt_row.checkbox(
-        "Bilibili", key="send_bili", value=True, disabled=not (bili_room_send and bili_monitoring),
-        help=None if bili_room_send and bili_monitoring
-        else t("Enter a Bilibili room ID first.") if not bili_room_send
-        else t("Start the Bilibili listener first."),
-    )
-    me_room_send = st.session_state["me_room_id"]
-    _me_send_login = _me_login_state()
-    # A failed check (network error) shouldn't block sending; only a confirmed logout does.
-    me_logged_in = bool(_me_send_login and (_me_send_login["is_login"] or _me_send_login.get("error")))
-    me_listener_send = st.session_state.get("me_listener")
-    me_monitoring = bool(
-        me_listener_send and me_listener_send.running
-        and str(me_listener_send.room_id) == str(me_room_send)
-    )
-    send_me = tgt_row.checkbox(
-        t("MissEvan"), key="send_me", value=True,
-        disabled=not (me_room_send and me_logged_in and me_monitoring),
-        help=None if me_room_send and me_logged_in and me_monitoring
-        else t("Log in to MissEvan in the 🍪 Cookies tab first.") if not me_logged_in
-        else t("Enter a MissEvan room first.") if not me_room_send
-        else t("Start the MissEvan listener first."),
-    )
-    _yt_emo_vid = _yt_video_id() or (yt_chat[len(yt.WEB_CHAT_PREFIX):] if yt.is_web_chat(yt_chat) else "")
-    _emotes_ready = hasattr(ytw, "channel_emojis") and hasattr(bili, "get_emoticons")
-    _yt_emojis = ytw.channel_emojis(_yt_emo_vid) if _emotes_ready and _yt_emo_vid else []
-    if _emotes_ready:
-        _site_emote_row(
-            yt_chat, _yt_emo_vid, bili_room_send, bili_monitoring,
-            me_room_send, me_logged_in, me_monitoring,
+    with st.container(key="send_controls_expander"):
+        yt_chat = st.session_state.get("selected_chat_id", "")
+        bili_room_send = st.session_state["bili_room_id"]
+        bili_listener_send = st.session_state.get("bili_listener")
+        bili_monitoring = bool(
+            bili_listener_send and bili_listener_send.running
+            and str(bili_listener_send.room_id) == str(bili_room_send)
         )
-    with st.form("send_form", clear_on_submit=True), st.container(key="send_box"):
-        send_cols = st.columns([8, 1])
-        outgoing = send_cols[0].text_input(
-            t("Message"), key="chat_message_input", label_visibility="collapsed",
-            placeholder=t("Type a message…"),
+        me_room_send = st.session_state["me_room_id"]
+        _me_send_login = _me_login_state()
+        # A failed check (network error) shouldn't block sending; only a confirmed logout does.
+        me_logged_in = bool(_me_send_login and (_me_send_login["is_login"] or _me_send_login.get("error")))
+        me_listener_send = st.session_state.get("me_listener")
+        me_monitoring = bool(
+            me_listener_send and me_listener_send.running
+            and str(me_listener_send.room_id) == str(me_room_send)
         )
-        submitted = send_cols[1].form_submit_button(t("Send"))
-        if submitted:
-            segments, other_outgoing = _split_bili_emote_draft(outgoing or "")
-            # YouTube stamp codes (:_name:) only mean something on YouTube; don't spam them elsewhere.
-            other = ytw.strip_emoji_codes(other_outgoing, _yt_emojis) if _emotes_ready else other_outgoing
-            targets = []
-            if send_yt and yt_chat and other_outgoing:
-                targets.append(("YouTube", lambda: yt.send_chat(
-                    yt_chat, _yt_video_id(), other_outgoing)))
-            if send_bili and bili_room_send and bili_monitoring:
-                sent_bili_content = False
-                for kind, content in segments:
-                    if kind == "text" and content:
-                        bili_content = (
-                            ytw.strip_emoji_codes(content, _yt_emojis) if _emotes_ready else content
-                        )
-                        if bili_content:
-                            targets.append(("Bilibili", lambda content=bili_content: (
-                                bili.send_danmaku(bili_room_send, content), ""
-                            )))
-                            sent_bili_content = True
-                    elif kind == "emote":
-                        targets.append(("Bilibili", lambda content=content: bili.send_emoticon(
-                            bili_room_send, content
-                        )))
-                        sent_bili_content = True
-                if not sent_bili_content:
-                    st.info(t("Only YouTube stamps — not sent to {site}.", site="Bilibili"))
-            if send_me and me_room_send and me_logged_in and me_monitoring:
-                if other:
-                    targets.append(("MissEvan", lambda: me.send_message(me_room_send, other)))
-                else:
-                    st.info(t("Only YouTube stamps — not sent to {site}.", site=t("MissEvan")))
-            if not (send_yt and yt_chat) and not (send_bili and bili_room_send and bili_monitoring) and not (
-                    send_me and me_room_send and me_logged_in and me_monitoring):
-                st.warning(t("Tick at least one site to send to."))
-            for name, send in targets:
-                ok, err = send()
-                if ok:
-                    st.toast(t("Sent to {site} ✓", site=name))
-                elif err:
-                    st.error(t("Failed to send to {site}: {err}", site=name, err=err))
-                else:
-                    st.error(t("Failed to send to {site} (check the login cookies).", site=name))
-            st.session_state["bili_emote_draft"] = []
-
-    st.divider()
-
-    # ── Platform filter ───────────────────────────────────────────────────────
-    show_row = st.container(horizontal=True, vertical_alignment="center", gap="large", key="show_row")
-    show_yt = show_row.checkbox("YouTube", key="show_yt")
-    show_bili = show_row.checkbox("Bilibili", key="show_bili")
-    show_me = show_row.checkbox(t("MissEvan"), key="show_me")
-    show_row.space("stretch")
-    show_row.segmented_control(
-        t("Layout"), ["columns", "stack"], key="feed_layout", required=True, label_visibility="collapsed",
-        format_func=lambda v: t("◫ 2 columns") if v == "columns" else t("☰ 1 column"),
-        help=t("Use ▲ ▼ on each list to change its position, and ◀ ▶ to move it to the other column."),
-    )
-    if st.session_state["tts_enabled"]:
-        _tts_stop_buttons(show_row, "feeds")
+        _yt_emo_vid = _yt_video_id() or (
+            yt_chat[len(yt.WEB_CHAT_PREFIX):] if yt.is_web_chat(yt_chat) else ""
+        )
+        _emotes_ready = hasattr(ytw, "channel_emojis") and hasattr(bili, "get_emoticons")
+        _yt_emojis = ytw.channel_emojis(_yt_emo_vid) if _emotes_ready and _yt_emo_vid else []
+        if _emotes_ready:
+            _site_emote_row(
+                yt_chat, _yt_emo_vid, bili_room_send, bili_monitoring,
+                me_room_send, me_logged_in, me_monitoring,
+            )
+        with st.container(key="send_box"):
+            action_cols = st.columns([10, 1], vertical_alignment="bottom")
+            with action_cols[0]:
+                with st.form("send_form", clear_on_submit=True):
+                    send_cols = st.columns([8, 1])
+                    outgoing = send_cols[0].text_input(
+                        t("Message"), key="chat_message_input", label_visibility="collapsed",
+                        placeholder=t("Type a message…"),
+                    )
+                    submitted = send_cols[1].form_submit_button(t("Send"))
+            with action_cols[1], st.container(key="send_targets"):
+                with st.popover("📤", help=t("Send to")):
+                    send_yt = st.checkbox(
+                        "YouTube", key="send_yt", value=True, disabled=not yt_chat,
+                        help=None if yt_chat else t("Start the YouTube listener first."),
+                    )
+                    send_bili = st.checkbox(
+                        "Bilibili", key="send_bili", value=True,
+                        disabled=not (bili_room_send and bili_monitoring),
+                        help=None if bili_room_send and bili_monitoring
+                        else t("Enter a Bilibili room ID first.") if not bili_room_send
+                        else t("Start the Bilibili listener first."),
+                    )
+                    send_me = st.checkbox(
+                        t("MissEvan"), key="send_me", value=True,
+                        disabled=not (me_room_send and me_logged_in and me_monitoring),
+                        help=None if me_room_send and me_logged_in and me_monitoring
+                        else t("Log in to MissEvan in the 🍪 Cookies tab first.") if not me_logged_in
+                        else t("Enter a MissEvan room first.") if not me_room_send
+                        else t("Start the MissEvan listener first."),
+                    )
+            if submitted:
+                outgoing_text = (outgoing or "").strip()
+                # YouTube stamp codes (:_name:) only mean something on YouTube; don't spam them elsewhere.
+                other = ytw.strip_emoji_codes(outgoing_text, _yt_emojis) if _emotes_ready else outgoing_text
+                targets = []
+                if send_yt and yt_chat and outgoing_text:
+                    targets.append(("YouTube", lambda: yt.send_chat(
+                        yt_chat, _yt_video_id(), outgoing_text)))
+                if send_bili and bili_room_send and bili_monitoring and outgoing_text:
+                    bili_content = ytw.strip_emoji_codes(outgoing_text, _yt_emojis) if _emotes_ready else outgoing_text
+                    if bili_content:
+                        targets.append(("Bilibili", lambda: bili.send_danmaku(bili_room_send, bili_content)))
+                    else:
+                        st.info(t("Only YouTube stamps — not sent to {site}.", site="Bilibili"))
+                if send_me and me_room_send and me_logged_in and me_monitoring:
+                    if other:
+                        targets.append(("MissEvan", lambda: me.send_message(me_room_send, other)))
+                    else:
+                        st.info(t("Only YouTube stamps — not sent to {site}.", site=t("MissEvan")))
+                if not (send_yt and yt_chat) and not (send_bili and bili_room_send and bili_monitoring) and not (
+                        send_me and me_room_send and me_logged_in and me_monitoring):
+                    st.warning(t("Tick at least one site to send to."))
+                for name, send in targets:
+                    ok, err = send()
+                    if ok:
+                        st.toast(t("Sent to {site} ✓", site=name))
+                    elif err:
+                        st.error(t("Failed to send to {site}: {err}", site=name, err=err))
+                    else:
+                        st.error(t("Failed to send to {site} (check the login cookies).", site=name))
 
     # Only the live feeds poll and re-render on their timer; controls and other tabs stay untouched.
     @st.fragment(run_every=CHAT_POLL_INTERVAL)
@@ -2544,7 +3308,22 @@ with tab_chat:
             if m.get("platform") not in hidden_platforms and not (is_paid(m) or is_gift(m))
         ]
         paid_all = [m for m in st.session_state["paid_messages"] if m.get("platform") not in hidden_platforms]
-
+        topbar = st.container(horizontal=True, vertical_alignment="center", gap="small", key="show_row")
+        topbar.checkbox("YouTube", key="show_yt")
+        topbar.checkbox("Bilibili", key="show_bili")
+        topbar.checkbox(t("MissEvan"), key="show_me")
+        topbar.space("stretch")
+        received_amounts = gifts.amount_totals(paid_all)
+        received_total = " + ".join(
+            gifts.format_amount(currency, amount)
+            for currency, amount in sorted(received_amounts.items())
+        ) or "—"
+        topbar.markdown(
+            f"**{t('Total received: {amount}', amount=received_total)}**",
+            width="content",
+        )
+        if st.session_state["tts_enabled"]:
+            _tts_stop_buttons(topbar, "feeds")
         # Show newest first
         visible = msgs[-st.session_state["max_chat_display"] :]
         if st.session_state["translate_enabled"]:
@@ -2552,107 +3331,144 @@ with tab_chat:
             tr.prefetch(
                 [m.get("text", "") for m in visible + paid_all[-100:] if m.get("type") != "enter"],
                 st.session_state["translate_target"],
-                wait=2.0,
             )
 
-        scales = st.session_state["text_scale"]
+        scale = st.session_state["text_scale"]
         _joins_shown = st.session_state["show_enter_events"]
-        feed_order, feed_sides, stacked = _feed_layout_state()
-        if stacked:
-            feed_columns = [feed_order]
-        else:
-            feed_columns = [[f for f in feed_order if feed_sides[f] == side] for side in ("left", "right")]
-            feed_columns = [c for c in feed_columns if c]
+        joins = [
+            m for m in st.session_state["join_messages"]
+            if m.get("platform") not in hidden_platforms
+        ]
+        latest_join = joins[-1] if joins else None
+        transcription_html = ""
+        session = st.session_state.get("transcription_session")
+        if app_config.TRANSCRIPTION_ENABLED and session and session.is_running:
+            snapshot = session.snapshot()
+            segments = [
+                s for s in snapshot.get("segments", [])
+                if s.get("original") or s.get("transcription_error")
+            ]
+            preview_lines = []
+            for segment in _display_order(segments[-3:]):
+                original = segment.get("original") or segment.get("transcription_error", "")
+                annotated = reading.annotate_html(original, _chat_reading_mode())
+                text = (
+                    f'<span class="chat-reading">{annotated}</span>'
+                    if annotated else html_lib.escape(original)
+                )
+                translated_text = segment.get("translated", "")
+                translated_reading = reading.annotate_html(translated_text, _chat_reading_mode())
+                translated = (
+                    f'<span class="chat-reading">{translated_reading}</span>'
+                    if translated_reading else html_lib.escape(translated_text)
+                )
+                preview_lines.append(
+                    f'<div class="transcription-preview-line">'
+                    f'<span class="transcription-preview-time">{html_lib.escape(segment.get("time", ""))}</span>{text}'
+                    f'<span class="transcription-preview-translation">{translated}</span></div>'
+                )
+            transcription_html = (
+                '<div class="transcription-preview-sticky"><div class="transcription-preview-heading">🌐 ' +
+                    html_lib.escape(t("Live transcription")) + '</div><section class="transcription-preview-panel" title="' +
+                html_lib.escape(t("Latest three transcription segments.")) + '">' +
+                "".join(preview_lines) + "</section></div>"
+            )
+        feed_columns = [["chat"], ["paid", "join"]]
         st.markdown(
-            f"<style>.st-key-chat_feed {{ --chat-scale: {scales['chat'] / 100}; }}"
-            f".st-key-paid_feed {{ --chat-scale: {scales['paid'] / 100}; }}"
-            f"{_feed_height_css(feed_columns, stacked, _joins_shown)}</style>",
+            f"<style>.st-key-chat_feed, .st-key-paid_feed, .transcription-preview-panel "
+            f"{{ --chat-scale: {scale / 100}; }}"
+            f"{_feed_height_css(feed_columns, _joins_shown, bool(transcription_html))}</style>",
             unsafe_allow_html=True,
         )
+        if transcription_html:
+            st.markdown(transcription_html, unsafe_allow_html=True)
 
         def _chat_feed():
             chat_head = st.container(horizontal=True, vertical_alignment="center")
             chat_head.markdown(f"**💬 {t('Chat')}**", width="content")
-            with chat_head.popover(f"🔤 {t('Chat reading aid')}"):
-                _rd_keys = list(reading.MODES)
-                st.selectbox(
-                    t("Chat reading aid"),
-                    _rd_keys,
-                    index=_rd_keys.index(st.session_state["sc_reading"]),
-                    key="sc_reading_pick",
-                    format_func=lambda k: t(reading.MODES[k]),
-                    help=t("Shows pinyin / furigana above Chinese characters in chat, Super Chats, gifts and all usernames "
-                           "so you can read them aloud. Translations get furigana when Japanese and pinyin when Chinese."),
-                    on_change=lambda: st.session_state.update(sc_reading=st.session_state["sc_reading_pick"]),
-                )
             _feed_tts_button(chat_head, "tts_read_chat")
             if st.session_state["tts_enabled"]:
-                _tts_option(chat_head, "tts_skip_emoji", t("Ignore emoji"),
+                _tts_option(chat_head, "tts_skip_emoji", t("Emoji"),
                             t("Skip emoji-only messages and stickers, and don't read emoji inside messages."))
-                _tts_option(chat_head, "tts_skip_name", t("Don't read usernames"),
+                _tts_option(chat_head, "tts_skip_name", t("Username"),
                             t("Reads only the message text. Gifts and Super Chats still say who sent them."))
-                _tts_option(chat_head, "tts_translate", t("Read translated chat"), t(
-                    "When the TTS language is Auto-detect or matches \"Translate to\" (Translation section), every chat "
-                    "message is read translated into that language. Otherwise messages are read in their original language."
-                ))
-            _feed_tools(chat_head, "chat")
+                _tts_option(chat_head, "tts_translate", t("Translated"), t("Read chat translations"))
             with st.container(key="chat_feed"):
-                for msg in reversed(visible):
+                st.markdown('<div class="chat-feed-bottom-spacer"></div>', unsafe_allow_html=True)
+                for msg in _display_order(visible):
                     _render_message(msg, key_prefix="chat")
+                if _joins_shown and latest_join:
+                    st.markdown(
+                        f'<div class="join-latest" style="--chat-scale: {scale / 100}">'
+                        f'{t("{name} entered", name=html_lib.escape(latest_join.get("author", "")))}'
+                        f'</div>',
+                        unsafe_allow_html=True,
+                    )
+            st.html(
+                _CHAT_SCROLL_BUTTON_JS.replace(
+                    "__LABEL__", json.dumps(t("Scroll to latest")).replace("</", "<\\/")
+                ).replace("__NEWEST_FIRST__", json.dumps(st.session_state["feed_order"] == "newest_first")),
+                unsafe_allow_javascript=True,
+            )
 
         def _paid_feed():
             thanked_ids: set = st.session_state["thanked_ids"]
             pending = [m for m in paid_all if m["id"] not in thanked_ids]
-            _received_amounts = gifts.amount_totals(paid_all)
-            _received_total = " + ".join(
-                gifts.format_amount(currency, amount)
-                for currency, amount in sorted(_received_amounts.items())
-            ) or "—"
-            paid_head = st.container(horizontal=True, vertical_alignment="center")
-            paid_head.markdown(
-                f"**🎁 {t('Gifts & Super Chats')}** · "
-                f"{t('{n} to thank', n=len(pending))} / {t('{n} total', n=len(paid_all))} · "
-                f"{t('Total received: {amount}', amount=_received_total)}",
-                width="content",
+            shown_paid = pending[-200:] if st.session_state["paid_unthanked_only"] else paid_all[-200:]
+            label = (
+                f"🎁 {t('Gifts & Super Chats')} · "
+                f"{t('{n} to thank', n=len(pending))} / {t('{n} total', n=len(paid_all))}"
             )
-            paid_head.button(
-                t("🙏 Mark all thanked"), key="thank_all", disabled=not pending,
-                on_click=_set_thanked, args=([m["id"] for m in pending], True),
-            )
-            _feed_tts_button(paid_head, "tts_announce_paid")
-            if st.session_state["tts_enabled"]:
-                _tts_option(paid_head, "tts_translate_paid", t("Read translated Super Chats"), t(
-                    "When the TTS language is Auto-detect or matches \"Translate to\" (Translation section), Super Chat "
-                    "messages are read translated into that language. Gift names are always read as they are."
-                ))
-            _feed_tools(paid_head, "paid")
-            with st.container(key="paid_feed"):
-                if not paid_all:
-                    st.caption(t("No gifts or Super Chats yet."))
-                for msg in reversed(paid_all[-200:]):
-                    _render_message(msg, key_prefix="paid", thank=True)
+            with st.expander(label, expanded=True, key="paid_gifts_expander"):
+                paid_head = st.container(
+                    horizontal=True, vertical_alignment="center", key="paid_header",
+                )
+                paid_head.button(
+                    t("🙏 Mark all thanked"), key="thank_all", disabled=not pending,
+                    on_click=_set_thanked, args=([m["id"] for m in pending], True),
+                )
+                paid_head.button(
+                    t("Unthanked"), key="paid_unthanked_only_btn",
+                    type="primary" if st.session_state["paid_unthanked_only"] else "secondary",
+                    help=t("Show only gifts and Super Chats that haven't been thanked yet."),
+                    on_click=lambda: st.session_state.update(
+                        paid_unthanked_only=not st.session_state["paid_unthanked_only"],
+                    ),
+                )
+                _feed_tts_button(paid_head, "tts_announce_paid")
+                if st.session_state["tts_enabled"]:
+                    _tts_option(paid_head, "tts_translate_paid", t("Translated"), t("Read Super Chat translations"))
+                with st.container(key="paid_feed"):
+                    if not paid_all:
+                        st.caption(t("No gifts or Super Chats yet."))
+                    elif not shown_paid:
+                        st.caption(t("No unthanked gifts or Super Chats."))
+                    for msg in _display_order(shown_paid):
+                        _render_message(msg, key_prefix="paid", thank=True)
 
         def _join_feed():
-            joins = [m for m in st.session_state["join_messages"] if m.get("platform") not in hidden_platforms]
-            join_head = st.container(horizontal=True, vertical_alignment="center")
-            join_head.markdown(f"**👋 {t('Joins')}** · {t('{n} total', n=len(joins))}", width="content")
-            join_head.button(
-                t("🙈 Hide") if _joins_shown else t("👁️ Show"), key="toggle_joins",
-                help=t("Show or hide viewers entering the room."),
-                on_click=lambda: st.session_state.update(show_enter_events=not st.session_state["show_enter_events"]),
-            )
-            _feed_tts_button(join_head, "tts_read_joins")
-            _feed_tools(join_head, "join", text_size=_joins_shown)
-            if _joins_shown:
-                rows = "".join(
-                    f'<div class="join-row"><span class="join-time">{_fmt_time(m.get("timestamp", ""))}</span>'
-                    f'{_platform_badge(m)}<b>{_author_html(m.get("author", ""))}</b></div>'
-                    for m in reversed(joins[-150:])
-                ) or f'<div class="join-empty">{t("No one has joined yet.")}</div>'
-                st.markdown(
-                    f'<div class="join-feed" style="--chat-scale: {scales["join"] / 100}">{rows}</div>',
-                    unsafe_allow_html=True,
+            with st.container(key="join_section"):
+                join_head = st.container(horizontal=True, vertical_alignment="center")
+                join_head.markdown(f"**👋 {t('Joins')}** · {t('{n} total', n=len(joins))}", width="content")
+                join_head.button(
+                    t("🙈 Hide") if _joins_shown else t("👁️ Show"), key="toggle_joins",
+                    help=t("Show or hide viewers entering the room."),
+                    on_click=lambda: st.session_state.update(show_enter_events=not st.session_state["show_enter_events"]),
                 )
+                if len(joins) > 1:
+                    join_head.toggle(t("Show all arrivals"), key="show_all_joins")
+                _feed_tts_button(join_head, "tts_read_joins")
+                if _joins_shown:
+                    shown_joins = joins if st.session_state["show_all_joins"] else joins[-1:]
+                    rows = "".join(
+                        f'<div class="join-row"><span class="join-time">{_fmt_time(m.get("timestamp", ""))}</span>'
+                        f'{_platform_badge(m)}<b>{_author_html(m.get("author", ""))}</b></div>'
+                        for m in reversed(shown_joins[-150:])
+                    ) or f'<div class="join-empty">{t("No one has joined yet.")}</div>'
+                    st.markdown(
+                        f'<div class="join-feed" style="--chat-scale: {scale / 100}">{rows}</div>',
+                        unsafe_allow_html=True,
+                    )
 
         _feed_renderers = {"chat": _chat_feed, "paid": _paid_feed, "join": _join_feed}
         feeds_box = st.container(key="chat_paid")
@@ -2666,20 +3482,13 @@ with tab_chat:
                 for feed in column:
                     _feed_renderers[feed]()
 
-        # Auto-refresh placeholder
-        st.markdown(
-            f"<p style='color:color-mix(in srgb, currentColor 50%, transparent);font-size:0.75rem'>"
-            f"{t('Auto-refreshes every {s}s · {n} messages shown', s=CHAT_POLL_INTERVAL, n=len(msgs))}</p>",
-            unsafe_allow_html=True,
-        )
-
     _chat_live()
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # TAB: OBS
 # ═══════════════════════════════════════════════════════════════════════════════
 
-with tab_obs:
+with page_obs:
     # Everything OBS-related lives here: it's for the streamer only.
     # Filled in below, once the overlay settings further down have produced the link.
     _overlay_quick = st.container(border=True)
@@ -3094,7 +3903,7 @@ with tab_obs:
 # TAB: ANALYTICS
 # ═══════════════════════════════════════════════════════════════════════════════
 
-with tab_analytics:
+with page_analytics:
     st.subheader(t("📊 Stream Analytics"))
 
     history = st.session_state["viewer_history"]
@@ -3371,78 +4180,6 @@ with tab_analytics:
                 st.plotly_chart(_fig_n, width="stretch")
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# TAB: FILTERS
-# ═══════════════════════════════════════════════════════════════════════════════
-
-with tab_filters:
-    filt: ChatFilter = st.session_state["filter"]
-    st.subheader(t("🛡️ Chat Filters"))
-
-    col_kw, col_user = st.columns(2)
-
-    with col_kw:
-        st.markdown("#### " + t("Keyword / Regex Block Patterns"))
-        st.caption(t("Each pattern is a Python regex (case-insensitive by default)."))
-        patterns = filt.block_patterns
-        if patterns:
-            for pat in patterns:
-                c1, c2 = st.columns([8, 1])
-                c1.code(pat)
-                if c2.button("✕", key=f"del_pat_{pat}"):
-                    filt.remove_block_pattern(pat)
-                    st.rerun()
-        else:
-            st.info(t("No keyword filters."))
-
-        with st.form("add_pattern", clear_on_submit=True):
-            new_pat = st.text_input(t("New pattern (regex)"))
-            if st.form_submit_button(t("Add")) and new_pat:
-                filt.add_block_pattern(new_pat)
-                st.rerun()
-
-        st.markdown("#### " + t("Allow Patterns (override block)"))
-        for pat in filt.allow_patterns:
-            c1, c2 = st.columns([8, 1])
-            c1.code(pat)
-            if c2.button("✕", key=f"del_allow_{pat}"):
-                filt.remove_allow_pattern(pat)
-                st.rerun()
-        with st.form("add_allow_pattern", clear_on_submit=True):
-            new_allow = st.text_input(t("New allow pattern"))
-            if st.form_submit_button(t("Add allow pattern")) and new_allow:
-                filt.add_allow_pattern(new_allow)
-                st.rerun()
-
-    with col_user:
-        st.markdown("#### " + t("Blocked Users"))
-        st.caption(t("Saved to chat_filters.json and kept after restarting the app."))
-        blocked = filt.blocked_users
-        blocked_names = filt.blocked_names
-        if blocked or blocked_names:
-            for key, name in sorted(blocked.items(), key=lambda kv: (kv[1] or kv[0]).lower()):
-                platform, _, uid = key.rpartition(":")
-                site = _PLATFORM_NAMES.get(platform, t("Any platform"))
-                c1, c2 = st.columns([8, 1], vertical_alignment="center")
-                c1.markdown(f"**{html_lib.escape(name) or '—'}** · {site} · `{uid}`")
-                if c2.button("✕", key=f"del_uid_{key}", help=t("Unblock")):
-                    filt.unblock_user(key)
-                    st.rerun()
-            for name in blocked_names:
-                c1, c2 = st.columns([8, 1], vertical_alignment="center")
-                c1.markdown(f"**{html_lib.escape(name)}** · {t('by name')}")
-                if c2.button("✕", key=f"del_name_{name}", help=t("Unblock")):
-                    filt.unblock_name(name)
-                    st.rerun()
-        else:
-            st.info(t("No blocked users."))
-
-        with st.form("block_user_form", clear_on_submit=True):
-            new_uid = st.text_input(t("Block by user ID / channel ID"))
-            if st.form_submit_button(t("Block")) and new_uid:
-                filt.block_user(new_uid)
-                st.rerun()
-
-# ═══════════════════════════════════════════════════════════════════════════════
 # TAB: COOKIES
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -3546,7 +4283,12 @@ def _clipboard_paste_button():
                                       css=_CLIPBOARD_CSS, js=_CLIPBOARD_JS)
 
 
-with tab_cookies:
+with page_filters:
+    st.subheader(t("🛡️ Chat Filters"))
+    _render_chat_filters()
+
+
+with page_cookies:
     st.subheader(t("🍪 Import login cookies"))
     st.caption(t(
         "Your logins are yours only: other people opening this dashboard don't see or use them. "

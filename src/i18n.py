@@ -14,7 +14,56 @@ UI_LANGUAGES: dict[str, str] = {
 # English -> (Chinese, Japanese)
 _STRINGS: dict[str, tuple[str, str]] = {
     # ── Sidebar ──────────────────────────────────────────────────────────────
-    "🎙️ Streaming Dashboard": ("🎙️ 直播仪表板", "🎙️ 配信ダッシュボード"),
+    "⚙️ Global settings": ("⚙️ 全局设定", "⚙️ グローバル設定"),
+    "🎙 Transcription": ("🎙 转录", "🎙 文字起こし"),
+    "🎙️ Live transcription + translation": ("🎙️ 实时转录 + 翻译", "🎙️ ライブ文字起こし＋翻訳"),
+    "⚠️ Trial feature: live transcription is experimental and may be inaccurate.": (
+        "⚠️ 试用功能：实时转录仍在试验阶段，识别结果可能不准确。",
+        "⚠️ 試験機能：ライブ文字起こしは試験段階のため、認識結果が不正確な場合があります。",
+    ),
+    "Audio recognition runs locally. When translation is started, text in another language is translated into the selected target language.": (
+        "语音识别在本机运行。启动翻译后，识别语言不同的内容会翻译成侧边栏所选目标语言。",
+        "音声認識はローカルで実行されます。翻訳を開始すると、異なる言語のテキストをサイドバーで選択した翻訳先に翻訳します。",
+    ),
+    "Start listening to a live YouTube, Bilibili, or MissEvan room to enable transcription.": (
+        "请先开始监听正在直播的 YouTube、Bilibili 或猫耳房间，再启用转录。",
+        "文字起こしを有効にするには、配信中の YouTube、Bilibili、または MissEvan ルームの受信を開始してください。",
+    ),
+    "Platform": ("平台", "プラットフォーム"),
+    "Local Whisper model": ("本地 Whisper 模型", "ローカル Whisper モデル"),
+    "Tiny — fastest, lower accuracy": ("Tiny — 速度最快，准确度较低", "Tiny — 最速、精度は低め"),
+    "Base — balanced": ("Base — 速度与准确度均衡", "Base — 速度と精度のバランス"),
+    "Small — slower, more accurate": ("Small — 速度较慢，准确度较高", "Small — 遅め、高精度"),
+    "The selected model is downloaded on first use. FFmpeg is required; install it and add it to PATH.": (
+        "所选模型会在首次使用时下载。需要安装 FFmpeg 并将其添加到 PATH。",
+        "選択したモデルは初回使用時にダウンロードされます。FFmpeg をインストールし、PATH に追加してください。",
+    ),
+    "⏹ Stop transcription": ("⏹ 停止转录", "⏹ 文字起こしを停止"),
+    "Finding the live audio stream…": ("正在查找直播音频流…", "ライブ音声ストリームを検索中…"),
+    "Loading the local Whisper model…": ("正在加载本地 Whisper 模型…", "ローカル Whisper モデルを読み込み中…"),
+    "Connecting to live audio…": ("正在连接直播音频…", "ライブ音声に接続中…"),
+    "Transcribing and translating…": ("正在转录并翻译…", "文字起こしと翻訳を実行中…"),
+    "Stopping transcription…": ("正在停止转录…", "文字起こしを停止中…"),
+    "Transcription stopped.": ("转录已停止。", "文字起こしを停止しました。"),
+    "The live stream ended; transcription stopped.": (
+        "直播已结束，转录已停止。",
+        "配信が終了したため、文字起こしを停止しました。",
+    ),
+    "Transcription target language: {language}": (
+        "转录翻译目标语言：{language}",
+        "文字起こしの翻訳先：{language}",
+    ),
+    "▶ Start transcription + translation": ("▶ 开始转录 + 翻译", "▶ 文字起こし＋翻訳を開始"),
+    "Could not start transcription: {error}": (
+        "无法启动转录：{error}",
+        "文字起こしを開始できませんでした：{error}",
+    ),
+    "Transcription failed: {error}": ("转录失败：{error}", "文字起こしに失敗しました：{error}"),
+    "Could not transcribe this audio segment: {error}": (
+        "无法转录此音频片段：{error}",
+        "この音声セグメントを文字起こしできませんでした：{error}",
+    ),
+    "Translation failed: {error}": ("翻译失败：{error}", "翻訳に失敗しました：{error}"),
     "YouTube chat listener active ✓": ("YouTube 弹幕监听中 ✓", "YouTube チャット受信中 ✓"),
     "Room ID": ("房间号", "ルーム ID"),
     "Room ID or URL": ("房间号或链接", "ルームIDまたはURL"),
@@ -22,6 +71,7 @@ _STRINGS: dict[str, tuple[str, str]] = {
     "MissEvan": ("猫耳FM", "MissEvan"),
     "Followers: {n}": ("关注：{n}", "フォロワー：{n}"),
     "MissEvan messages": ("猫耳FM 消息", "MissEvan メッセージ"),
+    "Scroll to bottom": ("滚动到底部", "一番下までスクロール"),
     "bilibili-api-python not installed or connection failed.": (
         "未安装 bilibili-api-python 或连接失败。",
         "bilibili-api-python が未インストールか、接続に失敗しました。",
@@ -152,35 +202,35 @@ OBS に何も表示されない場合は、ダッシュボードのプログラ�
         "OBS のチャットテキストを更新できません：{err}",
     ),
     "🌐 Translation": ("🌐 翻译", "🌐 翻訳"),
-    "Translate chat": ("翻译弹幕", "チャットを翻訳"),
-    "Site emotes": ("特制表情包", "サイト専用スタンプ"),
+    "Start translation": ("启动翻译", "翻訳を開始"),
+    "When started, translates chat and transcription into the selected language when the source language differs.": (
+        "启动后，所有与“翻译为”所选语言不同的弹幕和转录内容都会翻译成该语言。",
+        "開始すると、「翻訳先」で選択した言語と異なるチャットと文字起こしをその言語に翻訳します。",
+    ),
     "Expand all": ("全部展开", "すべて展開"),
     "Collapse all": ("全部收起", "すべて折りたたむ"),
-    "Each site's own emotes, sent only to that site.": ("各网站的特制表情包，只发到该网站。", "各サイト専用のスタンプは、そのサイトにだけ送信されます。"),
+    "Each site's own emotes are sent only to that site. Clicking a Bilibili special emote sends it "
+    "immediately as its own danmaku.": (
+        "各网站专属表情包，只发到该网站。点击 B站专属表情包后会立即单独发送为一条弹幕。",
+        "各サイト専用のスタンプは、そのサイトにだけ送信されます。Bilibili の専用スタンプをクリックすると、"
+        "単独のコメントとしてすぐに送信されます。",
+    ),
+    "🔒 Bilibili emotes may require this room's fan medal, a guard membership, or charging the streamer "
+    "for the 充电表情 tab.": (
+        "🔒 表情包可能需要本房间的粉丝勋章、大航海等条件；「充电表情」需要为主播充电。",
+        "🔒 スタンプにはこの部屋のファンメダルや大航海などが必要な場合があります。「充电表情」には配信者への充電が必要です。",
+    ),
     "🔄 Refresh": ("🔄 刷新", "🔄 更新"),
     "Members only": ("仅限会员", "メンバー限定"),
     "Locked": ("未解锁", "ロック中"),
     "No channel stamps seen yet.": ("还没有看到频道表情包。", "チャンネルのスタンプはまだ見つかっていません。"),
-    "Click stamps to add them to the message box. You can add text, then send to YouTube. "
-    "Channel stamps show up here once someone uses them in chat; with a YouTube login (🍪 Cookies tab) the "
-    "full set is listed and 🔒 marks member-only stamps you can't use.": (
-        "点击表情包将其加入留言框，可继续输入文字，确认后再发送到 YouTube。有人在弹幕中使用频道表情包后，"
-        "它们会出现在这里；登录 YouTube（🍪 Cookies 标签页）后会列出全部表情包，🔒 表示你无法使用的会员专属表情包。",
-        "スタンプをクリックするとメッセージ欄に追加されます。文字も入力し、確認してから YouTube に送信できます。"
-        "チャットで誰かが使ったチャンネルスタンプがここに表示されます。YouTube にログイン（🍪 Cookies タブ）すると"
-        "全スタンプが表示され、🔒 は使えないメンバー限定スタンプです。",
-    ),
-    "Click a Bilibili emote to add it to the message box. 🔒 emotes need e.g. this room's fan medal, a guard "
-    "membership, or charging (充电) the streamer for the 充电表情 tab.": (
-        "点击 B站表情包将其加入留言框，确认后再发送。🔒 表情包需要本房间的粉丝勋章、大航海等条件；「充电表情」需要为主播充电。",
-        "Bilibili のスタンプをクリックするとメッセージ欄に追加され、確認後に送信できます。🔒 のスタンプにはこの部屋のファンメダルや大航海などが必要です。"
+    "Click a Bilibili emote to send it immediately as its own danmaku. 🔒 emotes need e.g. this room's fan medal, "
+    "a guard membership, or charging (充电) the streamer for the 充电表情 tab.": (
+        "点击 B站专属表情包后会立即单独发送为一条弹幕。🔒 表情包需要本房间的粉丝勋章、大航海等条件；「充电表情」需要为主播充电。",
+        "Bilibili の専用スタンプをクリックすると、単独のコメントとしてすぐに送信されます。🔒 のスタンプにはこの部屋のファンメダルや大航海などが必要です。"
         "「充电表情」は配信者への充電（充电）が必要です。",
     ),
     "This room has no emotes you can send.": ("这个房间没有你可以发送的表情包。", "この部屋で送信できるスタンプはありません。"),
-    "Sent only to MissEvan. Click a room sticker to send it immediately.": (
-        "只发送到猫耳FM。点击房间表情即可立即发送。",
-        "MissEvan にだけ送信されます。ルームスタンプをクリックするとすぐに送信します。",
-    ),
     "This room has no sticker packages.": ("这个房间没有表情包。", "このルームにスタンプパッケージはありません。"),
     "This package has no stickers.": ("这个表情包没有表情。", "このパッケージにスタンプはありません。"),
     "Preset kaomoji ({n})": ("预设颜文字（{n}）", "顔文字プリセット（{n}）"),
@@ -280,12 +330,9 @@ OBS に何も表示されない場合は、ダッシュボードのプログラ�
         "各チャットメッセージの下に翻訳を表示します。",
     ),
     "Translate to": ("翻译为", "翻訳先"),
-    "Chat reading aid": ("聊天注音", "チャットの読み仮名"),
-    "Shows pinyin / furigana above Chinese characters in chat, Super Chats, gifts and all usernames "
-    "so you can read them aloud. Translations get furigana when Japanese and pinyin when Chinese.": (
-        "在聊天、醒目留言、礼物和所有用户名的汉字上方显示拼音 / 振假名，方便朗读。日语译文加振假名，中文译文加拼音。",
-        "チャット、スーパーチャット、ギフト、すべてのユーザー名の漢字の上にピンイン／振り仮名を表示し、読み上げやすくします。日本語の翻訳には振り仮名、中国語の翻訳にはピンインを付けます。",
-    ),
+    "Show pinyin / furigana": ("显示拼音 / 振假名", "ピンイン／振り仮名を表示"),
+    "Pinyin": ("拼音", "ピンイン"),
+    "Furigana": ("振假名", "振り仮名"),
     "🔊 Text-to-Speech": ("🔊 语音朗读", "🔊 読み上げ"),
     "Enable TTS": ("启用语音朗读", "読み上げを有効化"),
     "Speak on": ("朗读设备", "読み上げ先"),
@@ -306,11 +353,16 @@ OBS に何も表示されない場合は、ダッシュボードのプログラ�
         "自動検出ではすべてのメッセージをその言語で読み上げます。言語を選ぶと、その言語で書かれたチャットだけを読み上げます。",
     ),
     "Ignore emoji": ("忽略表情包", "絵文字を無視"),
+    "Mute emoji": ("不读表情", "絵文字をミュート"),
+    "Emoji": ("表情", "絵文字"),
     "Skip emoji-only messages and stickers, and don't read emoji inside messages.": (
         "跳过纯表情消息和表情包，并且不朗读消息中的表情。",
         "絵文字のみのメッセージやスタンプをスキップし、メッセージ内の絵文字も読み上げません。",
     ),
     "Read translated chat": ("朗读翻译后的弹幕", "翻訳したチャットを読み上げ"),
+    "Translated": ("译文", "翻訳"),
+    "Read chat translations": ("阅读弹幕译文", "チャットの翻訳を読み上げ"),
+    "Read Super Chat translations": ("阅读醒目留言译文", "スーパーチャットの翻訳を読み上げ"),
     "Read translated Super Chats": ("朗读翻译后的醒目留言", "翻訳したスーパーチャットを読み上げ"),
     "When the TTS language is Auto-detect or matches \"Translate to\" (Translation section), Super Chat "
     "messages are read translated into that language. Gift names are always read as they are.": (
@@ -325,6 +377,8 @@ OBS に何も表示されない場合は、ダッシュボードのプログラ�
     ),
     "🔊 Read aloud": ("🔊 朗读", "🔊 読み上げ"),
     "🔇 Muted": ("🔇 不朗读", "🔇 読み上げない"),
+    "Mute": ("静音", "ミュート"),
+    "Unmute": ("取消静音", "ミュート解除"),
     "Text-to-speech reads this list. Click to mute it.": (
         "语音朗读会读这个列表。点击可静音。",
         "このリストを読み上げます。クリックするとミュートします。",
@@ -343,6 +397,8 @@ OBS に何も表示されない場合は、ダッシュボードのプログラ�
         "⚠️ 無効：TTS の言語を自動検出、または「翻訳先」と同じ言語（{target}）にしてください。",
     ),
     "Don't read usernames": ("不朗读用户名", "ユーザー名を読み上げない"),
+    "Mute username": ("不读用户名", "ユーザー名をミュート"),
+    "Username": ("用户名", "ユーザー名"),
     "Reads only the message text. Gifts and Super Chats still say who sent them.": (
         "只朗读消息内容。礼物和醒目留言仍会说出发送者。",
         "メッセージ本文のみを読み上げます。ギフトとスーパーチャットは送り主の名前も読み上げます。",
@@ -398,10 +454,15 @@ OBS に何も表示されない場合は、ダッシュボードのプログラ�
     "🎬 OBS": ("🎬 OBS", "🎬 OBS"),
     "📊 Analytics": ("📊 数据分析", "📊 分析"),
     "🛡️ Filters": ("🛡️ 过滤", "🛡️ フィルター"),
+    "Navigation": ("页面导航", "ナビゲーション"),
+    "Scroll to latest": ("滚动到最新消息", "最新メッセージへスクロール"),
+    "Page": ("页面", "ページ"),
     "🍪 Cookies": ("🍪 Cookies", "🍪 Cookie"),
     # ── Chat tab ─────────────────────────────────────────────────────────────
-    "Blocked {author} — see the 🛡️ Filters tab to unblock": (
-        "已屏蔽 {author}——可在 🛡️ 过滤 标签页取消屏蔽", "{author} をブロックしました（🛡️ フィルター タブで解除できます）"),
+    "Blocked {author} — select 🛡️ Filters in the sidebar to unblock": (
+        "已屏蔽 {author}——可从左侧栏选择 🛡️ 过滤以取消屏蔽",
+        "{author} をブロックしました（サイドバーから 🛡️ フィルターを選択して解除できます）",
+    ),
     "Saved to chat_filters.json and kept after restarting the app.": (
         "保存在 chat_filters.json，重启应用后仍然有效。", "chat_filters.json に保存され、アプリを再起動しても保持されます。"),
     "Any platform": ("任意平台", "全プラットフォーム"),
@@ -439,20 +500,45 @@ OBS に何も表示されない場合は、ダッシュボードのプログラ�
     "{site} is live: {title}": ("{site} 开播了：{title}", "{site} が配信を開始しました: {title}"),
     "Tick at least one site to send to.": ("请至少勾选一个发送平台。", "送信先を1つ以上選択してください。"),
     "Sent to {site} ✓": ("已发送到 {site} ✓", "{site} に送信しました ✓"),
+    "Send a message": ("发送弹幕和留言", "コメントを送信"),
+    "Expand or collapse the message composer.": (
+        "展开或收起弹幕和留言输入区。",
+        "コメント入力欄を展開／折りたたみます。",
+    ),
     "Message": ("消息", "メッセージ"),
     "Type a message…": ("输入消息…", "メッセージを入力…"),
     "Send": ("发送", "送信"),
     "Chat": ("弹幕", "チャット"),
+    "Advanced mode": ("高级模式", "詳細モード"),
+    "Live transcription": ("实时转录", "ライブ文字起こし"),
+    "Latest three transcription segments.": ("显示最近 3 条转录。", "最新の文字起こしを3件表示します。"),
+    "Start live transcription in the Transcription tab to see recent speech here.": (
+        "请在“转录”标签页启动实时转录，此处将显示最近语音。",
+        "「文字起こし」タブでライブ文字起こしを開始すると、ここに最近の発話が表示されます。",
+    ),
     "Gifts & Super Chats": ("礼物和醒目留言", "ギフトとスーパーチャット"),
     "Total received: {amount}": ("累计收到：{amount}", "受取合計：{amount}"),
     "{n} to thank": ("{n} 条待感谢", "未お礼 {n} 件"),
     "{n} total": ("共 {n} 条", "合計 {n} 件"),
     "🙏 Mark all thanked": ("🙏 全部标为已感谢", "🙏 すべてお礼済みにする"),
+    "Unthanked only": ("仅显示未感谢", "未お礼のみ"),
+    "Unthanked": ("未感谢", "未お礼"),
+    "Show only gifts and Super Chats that haven't been thanked yet.": (
+        "只显示尚未标记为已感谢的礼物和醒目留言。",
+        "まだお礼済みにしていないギフトとスーパーチャットだけを表示します。",
+    ),
+    "No unthanked gifts or Super Chats.": ("没有待感谢的礼物或醒目留言。", "未お礼のギフトやスーパーチャットはありません。"),
     "No gifts or Super Chats yet.": ("还没有礼物或醒目留言。", "まだギフトやスーパーチャットはありません。"),
     "Joins": ("进场", "入室"),
+    "{name} entered": ("{name} 进入了", "{name} が入室しました"),
+    "Show all arrivals": ("显示全部进场", "すべての入室を表示"),
     "No one has joined yet.": ("还没有人进场。", "まだ誰も入室していません。"),
     "Show or hide viewers entering the room.": ("显示或隐藏进场的观众。", "入室した視聴者を表示／非表示にします。"),
-    "Layout": ("布局", "レイアウト"),
+    "Chat text size": ("弹幕文字大小", "チャット文字サイズ"),
+    "💬 Feed display": ("💬 列表显示", "💬 フィード表示"),
+    "Message order": ("消息顺序", "メッセージの順序"),
+    "Newest at top": ("最新在上", "新しい順（上）"),
+    "Newest at bottom": ("最新在下", "新しい順（下）"),
     "◫ 2 columns": ("◫ 2 栏", "◫ 2 列"),
     "☰ 1 column": ("☰ 1 栏", "☰ 1 列"),
     "Use ▲ ▼ on each list to change its position, and ◀ ▶ to move it to the other column.": (
@@ -628,7 +714,7 @@ OBS に何も表示されない場合は、ダッシュボードのプログラ�
         "网络为整台机器（或容器）的流量；操作系统不按程序统计。",
         "ネットワークはマシン（またはコンテナ）全体の通信量です。OS はプログラムごとには数えません。",
     ),
-    # ── Filters tab ──────────────────────────────────────────────────────────
+    # ── Sidebar filters ──────────────────────────────────────────────────────
     "🛡️ Chat Filters": ("🛡️ 弹幕过滤", "🛡️ チャットフィルター"),
     "Keyword / Regex Block Patterns": ("关键词 / 正则屏蔽规则", "キーワード / 正規表現ブロック"),
     "Each pattern is a Python regex (case-insensitive by default).": (
@@ -768,6 +854,10 @@ OBS に何も表示されない場合は、ダッシュボードのプログラ�
     ),
     "Enter a MissEvan room first.": ("请先输入猫耳FM 房间号。", "先に MissEvan のルームを入力してください。"),
     "Failed to send to {site}: {err}": ("发送到 {site} 失败：{err}", "{site} への送信に失敗しました：{err}"),
+    "Bilibili is limiting message frequency. Wait a few seconds and try again.": (
+        "Bilibili 限制了弹幕发送频率，请等待几秒后再试。",
+        "Bilibili がコメント送信を制限しています。数秒待ってから再試行してください。",
+    ),
     "browser-cookie3 is not installed. Run `pip install browser-cookie3`.": (
         "未安装 browser-cookie3。请运行 `pip install browser-cookie3`。",
         "browser-cookie3 がインストールされていません。`pip install browser-cookie3` を実行してください。",

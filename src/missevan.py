@@ -422,6 +422,30 @@ def get_room_info(room_id: str) -> dict:
         return {}
 
 
+def get_live_audio_url(room_id: str) -> str:
+    """Return the current signed HLS URL for a live MissEvan room."""
+    if not room_id.isdigit():
+        raise ValueError("A numeric MissEvan room ID is required.")
+    response = requests.get(
+        MISSEVAN_ROOM_INFO_URL.format(room_id=room_id),
+        headers={"User-Agent": _UA},
+        timeout=10,
+    )
+    response.raise_for_status()
+    data = response.json()
+    if data.get("code") != 0:
+        raise RuntimeError(f"MissEvan room API error: {data.get('message') or data.get('code')}")
+    info = data.get("info") or {}
+    room = info.get("room") or {}
+    if not (room.get("status") or {}).get("open"):
+        raise RuntimeError("The MissEvan room is not live.")
+    channel = room.get("channel") or {}
+    stream_url = channel.get("hls_pull_url") or channel.get("flv_pull_url")
+    if not stream_url:
+        raise RuntimeError("MissEvan did not return a live audio stream URL.")
+    return stream_url
+
+
 def _admins(s: requests.Session, room_id: str) -> set[int]:
     try:
         d = s.get(MISSEVAN_CHATROOM_META_URL, params={"room_id": room_id}, timeout=10).json()

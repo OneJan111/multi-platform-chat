@@ -3,7 +3,63 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
+from src import bilibili as bili
 from src.bilibili import DanmakuListener, _decode_interact_word_v2, _decode_send_gift_v2
+
+
+class BilibiliSendTests(unittest.TestCase):
+    def test_waits_between_consecutive_sends_for_same_user_and_room(self):
+        with patch.object(bili, "_cookie_values", return_value=("session", "", "", "42")), \
+                patch.object(bili.time, "monotonic", side_effect=[10.0, 10.0]), \
+                patch.object(bili.time, "sleep") as sleep, \
+                patch.dict(bili._bili_next_send_at, {}, clear=True):
+            first_key = bili._wait_for_bili_send_slot("123")
+            second_key = bili._wait_for_bili_send_slot("123")
+
+        self.assertEqual(first_key, second_key)
+        sleep.assert_called_once_with(bili._BILI_SEND_INTERVAL)
+
+    def test_rate_limit_error_is_short_and_starts_cooldown(self):
+        class RateLimitError(Exception):
+            code = 10031
+            msg = "您发送弹幕的频率过快"
+
+            def __str__(self):
+                return "10031 with a large response payload"
+
+        key = ("42", "123")
+        with patch.object(bili.time, "monotonic", return_value=20.0), \
+                patch.dict(bili._bili_next_send_at, {key: 20.0}, clear=True):
+            message = bili._bili_send_error(RateLimitError(), key)
+            cooldown_until = bili._bili_next_send_at[key]
+
+        self.assertEqual(
+            message,
+            "Bilibili is limiting message frequency. Wait a few seconds and try again.",
+        )
+        self.assertEqual(cooldown_until, 20.0 + bili._BILI_RATE_LIMIT_COOLDOWN)
+
+    def test_send_danmaku_returns_the_api_error(self):
+        class RateLimitError(Exception):
+            code = 10031
+            msg = "您发送弹幕的频率过快"
+
+        room = Mock()
+        with patch.object(bili, "BILIBILI_LIB_OK", True), \
+                patch.object(bili, "live", SimpleNamespace(
+                    LiveRoom=Mock(return_value=room), Danmaku=Mock()
+                )), \
+                patch.object(bili, "_credential"), \
+                patch.object(bili, "_wait_for_bili_send_slot", return_value=("42", "123")), \
+                patch.object(bili, "_run", side_effect=RateLimitError()), \
+                patch.object(bili, "_record_bili_rate_limit") as record_cooldown:
+            result = bili.send_danmaku("123", "hello")
+
+        self.assertEqual(result, (
+            False,
+            "Bilibili is limiting message frequency. Wait a few seconds and try again.",
+        ))
+        record_cooldown.assert_called_once_with(("42", "123"))
 
 
 class BilibiliRoomInfoTests(unittest.TestCase):

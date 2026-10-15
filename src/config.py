@@ -72,5 +72,6 @@ OVERLAY_PORT: int = int(os.getenv("OVERLAY_PORT", "8502"))
 OVERLAY_PUBLIC_URL: str = os.getenv("OVERLAY_PUBLIC_URL", "").strip().rstrip("/")
 
 # App
+TRANSCRIPTION_ENABLED: bool = os.getenv("TRANSCRIPTION_ENABLED", "false").strip().lower() == "true"
 TTS_USE_GTTS: bool = os.getenv("TTS_USE_GTTS", "false").lower() == "true"
 CHAT_POLL_INTERVAL: int = int(os.getenv("CHAT_POLL_INTERVAL", "5"))

@@ -50,6 +50,58 @@ class TranslationCoverageTests(unittest.TestCase):
                 self.assertEqual(actual, expected, f"{language}: {key}")
                 self.assertTrue(translated.strip(), f"{language}: {key} is empty")
 
+    def test_reading_aids_toggle_is_localized(self):
+        label = "Show pinyin / furigana"
+        self.assertEqual(i18n.translate(label, "en"), label)
+        self.assertEqual(i18n.translate(label, "zh"), "显示拼音 / 振假名")
+        self.assertEqual(i18n.translate(label, "ja"), "ピンイン／振り仮名を表示")
+
+    def test_unthanked_filter_is_localized(self):
+        label = "Unthanked"
+        self.assertEqual(i18n.translate(label, "en"), label)
+        self.assertEqual(i18n.translate(label, "zh"), "未感谢")
+        self.assertEqual(i18n.translate(label, "ja"), "未お礼")
+
+    def test_chat_tts_buttons_are_localized(self):
+        for label, zh, ja in (
+            ("Mute", "静音", "ミュート"),
+            ("Unmute", "取消静音", "ミュート解除"),
+            ("Emoji", "表情", "絵文字"),
+            ("Username", "用户名", "ユーザー名"),
+            ("Translated", "译文", "翻訳"),
+            ("Read chat translations", "阅读弹幕译文", "チャットの翻訳を読み上げ"),
+            ("Read Super Chat translations", "阅读醒目留言译文", "スーパーチャットの翻訳を読み上げ"),
+        ):
+            self.assertEqual(i18n.translate(label, "en"), label)
+            self.assertEqual(i18n.translate(label, "zh"), zh)
+            self.assertEqual(i18n.translate(label, "ja"), ja)
+
+    def test_feed_order_options_are_localized(self):
+        self.assertEqual(i18n.translate("Newest at top", "zh"), "最新在上")
+        self.assertEqual(i18n.translate("Newest at bottom", "zh"), "最新在下")
+        self.assertEqual(i18n.translate("⚙️ Global settings", "zh"), "⚙️ 全局设定")
+
+    def test_scroll_to_bottom_is_localized(self):
+        self.assertEqual(i18n.translate("Scroll to bottom", "zh"), "滚动到底部")
+        self.assertEqual(i18n.translate("Scroll to bottom", "ja"), "一番下までスクロール")
+        self.assertEqual(i18n.translate("Scroll to latest", "zh"), "滚动到最新消息")
+        self.assertEqual(i18n.translate("Scroll to latest", "ja"), "最新メッセージへスクロール")
+
+    def test_drawer_page_heading_is_localized(self):
+        self.assertEqual(i18n.translate("Page", "en"), "Page")
+        self.assertEqual(i18n.translate("Page", "zh"), "页面")
+        self.assertEqual(i18n.translate("Page", "ja"), "ページ")
+
+    def test_emote_help_combines_site_scope_and_bilibili_send_behavior(self):
+        message = (
+            "Each site's own emotes are sent only to that site. Clicking a Bilibili special emote sends it "
+            "immediately as its own danmaku."
+        )
+        self.assertEqual(
+            i18n.translate(message, "zh"),
+            "各网站专属表情包，只发到该网站。点击 B站专属表情包后会立即单独发送为一条弹幕。",
+        )
+
     def test_dynamic_language_and_reading_labels_exist(self):
         labels = set(translate.LANGUAGES.values())
         labels.update(language[0] for language in tts.LANGUAGES.values())
