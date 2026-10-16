@@ -828,6 +828,10 @@ def _init_state():
     for k, v in defaults.items():
         if k not in st.session_state:
             st.session_state[k] = v
+    if not app_config.ANALYTICS_ENABLED:
+        st.session_state["viewer_history"].clear()
+        st.session_state["activity_log"].clear()
+        st.session_state["stream_starts"].clear()
     st.session_state["max_chat_display"] = max(10, min(200, st.session_state["max_chat_display"]))
     if isinstance(st.session_state["text_scale"], dict):  # migrate older per-feed sizes
         st.session_state["text_scale"] = st.session_state["text_scale"].get("chat", 100)
@@ -1587,7 +1591,7 @@ def _poll_chat():
     for _i, m in enumerate(allowed):
         # Arrival order, so the overlay and preview can interleave Super Chats / gifts with chat.
         m.setdefault("_arrived", _now_ns + _i)
-        if m.get("type") != "enter":
+        if app_config.ANALYTICS_ENABLED and m.get("type") != "enter":
             _log.append(hl.log_entry(m, is_paid(m) or is_gift(m), _now))
         if wait_for_translation and m.get("text") and m.get("type") not in ("enter", "gift"):
             pending_translations.append(m)
@@ -1599,7 +1603,7 @@ def _poll_chat():
     if pending_translations:
         tr.prefetch([m["text"] for m in pending_translations], translation_target)
     _cap_chat_history()
-    if len(_log) > hl.MAX_LOG:
+    if app_config.ANALYTICS_ENABLED and len(_log) > hl.MAX_LOG:
         st.session_state["activity_log"] = _log[-hl.MAX_LOG:]
 
     st.session_state["blocked_msgs"].extend(blocked)
@@ -1607,6 +1611,8 @@ def _poll_chat():
 def _note_stream_start(site: str, value: str, zone: str = "") -> None:
     """Remember when `site`'s stream went live (hotspot clip times are measured from it).
     `zone` is the time zone of naive date strings (Bilibili reports Beijing time)."""
+    if not app_config.ANALYTICS_ENABLED:
+        return
     value = (value or "").strip()
     if not value or value.startswith("0000") or value == "0":
         return
@@ -1623,6 +1629,8 @@ def _note_stream_start(site: str, value: str, zone: str = "") -> None:
 
 
 def _record_viewer_snapshot(yt_viewers: int, bili_viewers: int, me_viewers: int = 0):
+    if not app_config.ANALYTICS_ENABLED:
+        return
     now = datetime.now().strftime("%H:%M:%S")
     st.session_state["viewer_history"].append(
         {"time": now, "YouTube": yt_viewers, "Bilibili": bili_viewers, "MissEvan": me_viewers}
@@ -2201,6 +2209,8 @@ if not app_config.TRANSCRIPTION_ENABLED:
     if session:
         session.stop()
         st.session_state["transcription_session"] = None
+if not app_config.ANALYTICS_ENABLED:
+    _pages.pop("analytics")
 if st.session_state.get("active_page") not in _pages:
     st.session_state["active_page"] = "status"
 selected_page = st.radio(
@@ -2506,10 +2516,13 @@ st.html(
 )
 
 # Keep the page containers mounted so switching pages preserves widgets and polling fragments.
+_hidden_pages = [page for page in _pages if page != selected_page]
+if not app_config.ANALYTICS_ENABLED:
+    _hidden_pages.append("analytics")
 st.html("<style>" + "".join(
     f".st-key-page_{page}, "
     f'[data-testid="stLayoutWrapper"]:has(> .st-key-page_{page}) {{ display: none !important; }}'
-    for page in _pages if page != selected_page
+    for page in _hidden_pages
 ) + "</style>")
 page_chat = st.container(key="page_chat")
 page_transcription = st.container(key="page_transcription") if app_config.TRANSCRIPTION_ENABLED else None
@@ -3989,7 +4002,7 @@ with page_obs:
 # TAB: ANALYTICS
 # ═══════════════════════════════════════════════════════════════════════════════
 
-with page_analytics:
+def _render_analytics():
     st.subheader(t("📊 Stream Analytics"))
 
     history = st.session_state["viewer_history"]
@@ -4264,6 +4277,11 @@ with page_analytics:
                 _fig_n.update_layout(template="plotly_dark", height=220, margin=dict(t=30, b=10),
                                      yaxis=dict(title="KB/s", rangemode="tozero"), legend=dict(orientation="h", y=1.2))
                 st.plotly_chart(_fig_n, width="stretch")
+
+
+if app_config.ANALYTICS_ENABLED:
+    with page_analytics:
+        _render_analytics()
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # TAB: COOKIES

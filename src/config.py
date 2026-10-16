@@ -72,6 +72,7 @@ OVERLAY_PORT: int = int(os.getenv("OVERLAY_PORT", "8502"))
 OVERLAY_PUBLIC_URL: str = os.getenv("OVERLAY_PUBLIC_URL", "").strip().rstrip("/")
 
 # App
+ANALYTICS_ENABLED: bool = os.getenv("ANALYTICS_ENABLED", "false").strip().lower() == "true"
 TRANSCRIPTION_ENABLED: bool = os.getenv("TRANSCRIPTION_ENABLED", "false").strip().lower() == "true"
 TTS_USE_GTTS: bool = os.getenv("TTS_USE_GTTS", "false").lower() == "true"
 RENDER_CHAT_IMAGES: bool = os.getenv("RENDER_CHAT_IMAGES", "true").strip().lower() == "true"

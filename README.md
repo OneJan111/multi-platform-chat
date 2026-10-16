@@ -65,6 +65,7 @@ The template only contains placeholder values (`your-…`, `xxx`). **Replace the
 | `OVERLAY_HOST` | Chat overlay listen address: `127.0.0.1` = this computer only, `0.0.0.0` = reachable from other machines | `127.0.0.1` |
 | `OVERLAY_PORT` | Chat overlay port | `8502` |
 | `OVERLAY_PUBLIC_URL` | Overlay address shown in the 🎬 OBS tab (e.g. `http://203.0.113.5:8502` or a reverse-proxy URL) | auto |
+| `ANALYTICS_ENABLED` | `false` hides the Analytics page and stops recording viewer history and hotspot data | `false` |
 | `TTS_USE_GTTS` | `true` = online gTTS, `false` = offline pyttsx3 | `false` |
 | `CHAT_POLL_INTERVAL` | Chat refresh interval in seconds | `5` |
 | `CHAT_TRANSLATION_DISPLAY_MODE` | `immediate` shows chat right away and adds translations when ready; `wait` shows each message when its translation is ready | `immediate` |

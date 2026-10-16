@@ -40,6 +40,13 @@ class DisplayConfigTests(unittest.TestCase):
             ), patch("dotenv.load_dotenv"), self.assertRaises(ValueError):
                 runpy.run_path(config_path)
 
+    def test_analytics_enabled_defaults_to_false_and_can_be_enabled(self):
+        config_path = str(Path(__file__).resolve().parents[1] / "src" / "config.py")
+        for value, expected in ((None, False), ("true", True), (" FALSE ", False)):
+            env = {} if value is None else {"ANALYTICS_ENABLED": value}
+            with self.subTest(value=value), patch.dict(os.environ, env, clear=True), patch("dotenv.load_dotenv"):
+                self.assertEqual(runpy.run_path(config_path)["ANALYTICS_ENABLED"], expected)
+
     def test_transcription_uses_shared_display_limit(self):
         source = (Path(__file__).resolve().parents[1] / "app.py").read_text(encoding="utf-8")
         function = next(
