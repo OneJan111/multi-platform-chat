@@ -85,6 +85,18 @@ pip install -r requirements.txt
 
 然后打开 <http://localhost:8501>。在同一网络的平板上使用时，打开 `http://<电脑IP>:8501`。
 
+如需更精简的监控界面，可运行以下命令。它会自动监听 `.env` 中配置的平台，并显示直播状态、弹幕和礼物：
+
+```powershell
+.\.venv\Scripts\python.exe -m streamlit run simple_app.py
+```
+
+精简版仍在侧边栏提供翻译和浏览器文字转语音设置。
+
+Windows 完成安装后，可双击 [Start_Simple_Monitor.bat](Start_Simple_Monitor.bat) 启动。
+脚本优先使用项目的 `.venv`，否则使用 `PATH` 中的 Python，并自动打开浏览器。
+默认端口为 8501，可通过环境变量 `SIMPLE_MONITOR_PORT` 修改。
+
 ## 使用方法
 
 ### 读取弹幕（无需登录）

@@ -20,6 +20,7 @@ class ChatTranslationTests(unittest.TestCase):
         self.deliver = Mock()
         self.namespace = {
             "st": SimpleNamespace(session_state=self.state),
+            "app_config": SimpleNamespace(ANALYTICS_ENABLED=False),
             "tr": SimpleNamespace(get_translation=self.lookup),
             "_reads_translated": lambda msg: msg.get("type") != "gift",
             "_deliver_message_speech": self.deliver,

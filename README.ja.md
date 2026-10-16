@@ -83,6 +83,18 @@ pip install -r requirements.txt
 
 <http://localhost:8501> を開きます。同じネットワークのタブレットから使う場合は `http://<PCのIP>:8501` を開きます。
 
+簡易モニターを使うには、次を実行します。.env に設定したプラットフォームだけを自動で監視し、配信状態、チャット、ギフトを表示します。
+
+```powershell
+.\.venv\Scripts\python.exe -m streamlit run simple_app.py
+```
+
+翻訳とブラウザーの音声読み上げ設定はサイドバーにあります。
+
+Windows ではセットアップ後に [Start_Simple_Monitor.bat](Start_Simple_Monitor.bat) をダブルクリックして起動できます。
+プロジェクトの `.venv` があれば優先し、なければ `PATH` の Python を使用してブラウザーを開きます。
+既定のポートは 8501 です。環境変数 `SIMPLE_MONITOR_PORT` で変更できます。
+
 ## 使い方
 
 ### チャットを読む（ログイン不要）

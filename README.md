@@ -84,6 +84,18 @@ The template only contains placeholder values (`your-…`, `xxx`). **Replace the
 
 Then open <http://localhost:8501>. To use it from a tablet on the same network, open `http://<PC-IP>:8501`.
 
+For a minimal monitor that automatically watches only the platforms configured in `.env` and shows live status, chat, and gifts, run:
+
+```powershell
+.\.venv\Scripts\python.exe -m streamlit run simple_app.py
+```
+
+The simple monitor keeps translation and browser-based text-to-speech controls in its sidebar.
+
+On Windows, after setup, double-click [Start_Simple_Monitor.bat](Start_Simple_Monitor.bat).
+It uses the project's `.venv` when available, otherwise Python on `PATH`, and opens the browser.
+The default port is 8501; set `SIMPLE_MONITOR_PORT` to use another port.
+
 ## Usage
 
 ### Reading chat (no login needed)
