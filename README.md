@@ -92,6 +92,17 @@ For a minimal monitor that automatically watches only the platforms configured i
 
 The simple monitor keeps translation and browser-based text-to-speech controls in its sidebar.
 
+Configure its new-session defaults in `.env` (see `env.template`):
+
+| Setting | Default | Purpose |
+|---------|---------|---------|
+| `SIMPLE_PAGE_LANGUAGE` | `ja` | UI and translation language: `en`, `zh`, or `ja` |
+| `SIMPLE_TRANSLATION_ENABLED` | `true` | Enable chat translation |
+| `SIMPLE_TTS_TRANSLATE` | `true` | Read translated chat when TTS is enabled |
+| `SIMPLE_NOTIFY_LIVE` | `true` | Enable live notifications; browser permission is still required |
+
+Restart after changing these settings. Existing sessions retain their sidebar selections. TTS itself remains off by default.
+
 On Windows, after setup, double-click [Start_Simple_Monitor.bat](Start_Simple_Monitor.bat).
 It uses the project's `.venv` when available, otherwise Python on `PATH`, and opens the browser.
 The default port is 8501; set `SIMPLE_MONITOR_PORT` to use another port.

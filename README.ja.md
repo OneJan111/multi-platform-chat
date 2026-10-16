@@ -91,6 +91,17 @@ pip install -r requirements.txt
 
 翻訳とブラウザーの音声読み上げ設定はサイドバーにあります。
 
+新しいセッションの既定値は `.env` で設定できます（`env.template` を参照）。
+
+| 設定 | 既定値 | 用途 |
+|------|--------|------|
+| `SIMPLE_PAGE_LANGUAGE` | `ja` | UI と翻訳の言語：`en`、`zh`、`ja` |
+| `SIMPLE_TRANSLATION_ENABLED` | `true` | チャット翻訳を有効化 |
+| `SIMPLE_TTS_TRANSLATE` | `true` | TTS 有効時に翻訳済みチャットを読み上げ |
+| `SIMPLE_NOTIFY_LIVE` | `true` | 配信開始通知を有効化（ブラウザーの許可が必要） |
+
+変更後は再起動してください。既存のセッションではサイドバーの選択を保持します。TTS 自体は既定でオフです。
+
 Windows ではセットアップ後に [Start_Simple_Monitor.bat](Start_Simple_Monitor.bat) をダブルクリックして起動できます。
 プロジェクトの `.venv` があれば優先し、なければ `PATH` の Python を使用してブラウザーを開きます。
 既定のポートは 8501 です。環境変数 `SIMPLE_MONITOR_PORT` で変更できます。

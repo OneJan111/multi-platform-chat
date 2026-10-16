@@ -88,3 +88,11 @@ if ROOM_STATUS_POLL_INTERVAL < 1:
 MAX_CHAT_DISPLAY: int = int(os.getenv("MAX_CHAT_DISPLAY", "50"))
 if not 10 <= MAX_CHAT_DISPLAY <= 200:
     raise ValueError("MAX_CHAT_DISPLAY must be between 10 and 200")
+
+# Simple monitor defaults for new browser sessions.
+SIMPLE_PAGE_LANGUAGE: str = os.getenv("SIMPLE_PAGE_LANGUAGE", "ja").strip().lower()
+if SIMPLE_PAGE_LANGUAGE not in ("en", "zh", "ja"):
+    raise ValueError("SIMPLE_PAGE_LANGUAGE must be 'en', 'zh', or 'ja'")
+SIMPLE_TRANSLATION_ENABLED: bool = os.getenv("SIMPLE_TRANSLATION_ENABLED", "true").strip().lower() == "true"
+SIMPLE_TTS_TRANSLATE: bool = os.getenv("SIMPLE_TTS_TRANSLATE", "true").strip().lower() == "true"
+SIMPLE_NOTIFY_LIVE: bool = os.getenv("SIMPLE_NOTIFY_LIVE", "true").strip().lower() == "true"

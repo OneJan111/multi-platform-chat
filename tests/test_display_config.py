@@ -78,6 +78,35 @@ class DisplayConfigTests(unittest.TestCase):
                 self.assertEqual(streamlit.write.call_count, limit)
                 self.assertEqual(streamlit.write.call_args_list[0].args, (str(250 - limit),))
 
+    def test_simple_monitor_defaults_and_overrides(self):
+        config_path = str(Path(__file__).resolve().parents[1] / "src" / "config.py")
+        defaults = {
+            "SIMPLE_PAGE_LANGUAGE": "ja",
+            "SIMPLE_TRANSLATION_ENABLED": True,
+            "SIMPLE_TTS_TRANSLATE": True,
+            "SIMPLE_NOTIFY_LIVE": True,
+        }
+        overrides = {
+            "SIMPLE_PAGE_LANGUAGE": " en ",
+            "SIMPLE_TRANSLATION_ENABLED": "false",
+            "SIMPLE_TTS_TRANSLATE": " FALSE ",
+            "SIMPLE_NOTIFY_LIVE": "false",
+        }
+        for env, expected in (
+            ({}, defaults),
+            (overrides, {**dict.fromkeys(defaults, False), "SIMPLE_PAGE_LANGUAGE": "en"}),
+        ):
+            with self.subTest(env=env), patch.dict(os.environ, env, clear=True), patch("dotenv.load_dotenv"):
+                config = runpy.run_path(config_path)
+                self.assertEqual({key: config[key] for key in defaults}, expected)
+
+    def test_invalid_simple_monitor_language_raises(self):
+        config_path = str(Path(__file__).resolve().parents[1] / "src" / "config.py")
+        with patch.dict(os.environ, {"SIMPLE_PAGE_LANGUAGE": "invalid"}, clear=True), patch(
+            "dotenv.load_dotenv"
+        ), self.assertRaisesRegex(ValueError, "SIMPLE_PAGE_LANGUAGE"):
+            runpy.run_path(config_path)
+
 
 if __name__ == "__main__":
     unittest.main()

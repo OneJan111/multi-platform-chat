@@ -5,10 +5,12 @@ Run with:
 """
 from __future__ import annotations
 
+import base64
 import html
 import json
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -56,7 +58,7 @@ _STATUS_INTERVAL = max(1, ROOM_STATUS_POLL_INTERVAL)
 
 
 def _page_language() -> str:
-    return st.session_state.get("simple_page_language", "en")
+    return st.session_state.get("simple_page_language", app_config.SIMPLE_PAGE_LANGUAGE)
 
 
 def _t(text: str, **kwargs) -> str:
@@ -120,16 +122,16 @@ def _init_state() -> None:
         "simple_me_error": "",
         "simple_room_status": {},
         "simple_live_states": {},
-        "simple_notify_live": True,
+        "simple_notify_live": app_config.SIMPLE_NOTIFY_LIVE,
         "simple_tts_queue": [],
         "simple_tts_pending": [],
-        "simple_translation_enabled": False,
-        "simple_page_language": "en",
+        "simple_translation_enabled": app_config.SIMPLE_TRANSLATION_ENABLED,
+        "simple_page_language": app_config.SIMPLE_PAGE_LANGUAGE,
         "simple_tts_enabled": False,
         "simple_tts_language": "auto",
         "simple_tts_rate": 150,
         "simple_tts_volume": 1.0,
-        "simple_tts_translate": False,
+        "simple_tts_translate": app_config.SIMPLE_TTS_TRANSLATE,
         "simple_tts_read_chat": True,
         "simple_tts_read_gifts": True,
     }
@@ -516,6 +518,17 @@ def _source_username(site: str, info: dict) -> str:
     return fallback or _PLATFORM_NAMES[site]
 
 
+@st.cache_resource
+def _site_icon_uris() -> dict[str, str]:
+    icon_dir = Path(__file__).resolve().parent / "assets" / "icons"
+    files = {"youtube": "youtube.png", "bilibili": "bilibili.svg", "missevan": "missevan.png"}
+    return {
+        site: f"data:{'image/svg+xml' if filename.endswith('.svg') else 'image/png'};base64,"
+        + base64.b64encode((icon_dir / filename).read_bytes()).decode("ascii")
+        for site, filename in files.items()
+    }
+
+
 def _status_line(site: str, info: dict) -> None:
     label = _PLATFORM_NAMES[site]
     if site == "youtube" and not info:
@@ -575,9 +588,13 @@ def _status_line(site: str, info: dict) -> None:
 
     color = "#42d392" if live else "inherit"
     escaped = html.escape(text)
+    icon = (
+        f'<img src="{_site_icon_uris()[site]}" alt="{label}" title="{label}" '
+        'style="width:1.1em;height:1.1em;vertical-align:middle;object-fit:contain;margin-right:.35em">'
+    )
     st.markdown(
         f'<div title="{escaped}" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;'
-        f'max-width:100%;line-height:1.5;color:{color}">{escaped}</div>',
+        f'max-width:100%;line-height:1.5;color:{color}">{icon}{escaped}</div>',
         unsafe_allow_html=True,
     )
 

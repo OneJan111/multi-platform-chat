@@ -93,6 +93,17 @@ pip install -r requirements.txt
 
 精简版仍在侧边栏提供翻译和浏览器文字转语音设置。
 
+可在 `.env` 中配置新会话的默认值（参见 `env.template`）：
+
+| 参数 | 默认值 | 用途 |
+|------|--------|------|
+| `SIMPLE_PAGE_LANGUAGE` | `ja` | 界面和翻译语言：`en`、`zh` 或 `ja` |
+| `SIMPLE_TRANSLATION_ENABLED` | `true` | 默认开启弹幕翻译 |
+| `SIMPLE_TTS_TRANSLATE` | `true` | 启用 TTS 时朗读翻译后的弹幕 |
+| `SIMPLE_NOTIFY_LIVE` | `true` | 默认开启开播通知；仍需浏览器授权 |
+
+修改后请重启。已有会话保留侧边栏中的选择，TTS 本身仍默认关闭。
+
 Windows 完成安装后，可双击 [Start_Simple_Monitor.bat](Start_Simple_Monitor.bat) 启动。
 脚本优先使用项目的 `.venv`，否则使用 `PATH` 中的 Python，并自动打开浏览器。
 默认端口为 8501，可通过环境变量 `SIMPLE_MONITOR_PORT` 修改。

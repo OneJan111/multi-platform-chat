@@ -70,6 +70,7 @@ class SimpleAppConfigTests(unittest.TestCase):
             with self.subTest(page_language=page_language):
                 namespace = {
                     "st": SimpleNamespace(session_state={"simple_page_language": page_language}),
+                    "app_config": SimpleNamespace(SIMPLE_PAGE_LANGUAGE="ja"),
                 }
                 exec(compile(ast.Module(body=functions, type_ignores=[]), "simple_app.py", "exec"), namespace)
                 self.assertEqual(namespace["_translation_target"](), expected)
@@ -413,6 +414,45 @@ class SimpleAppConfigTests(unittest.TestCase):
             self.assertNotIn("message-2", rendered)
             self.assertIn("message-3", rendered)
             self.assertIn("message-4", rendered)
+
+    def test_waiting_status_includes_platform_icon(self):
+        source = (ROOT / "simple_app.py").read_text(encoding="utf-8")
+        function = next(
+            node for node in ast.parse(source).body
+            if isinstance(node, ast.FunctionDef) and node.name == "_status_line"
+        )
+        output = []
+        state = {
+            "simple_yt_error": "",
+            "simple_yt_channel": "channel",
+            "simple_bili_listener": None,
+            "simple_bili_error": "",
+            "simple_me_listener": None,
+            "simple_me_error": "",
+            "simple_room_status": {
+                "bilibili": {"live_status": 0},
+                "missevan": {"live": False},
+            },
+        }
+        platforms = {"youtube": "YouTube", "bilibili": "Bilibili", "missevan": "MissEvan"}
+        namespace = {
+            "st": SimpleNamespace(
+                session_state=state,
+                markdown=lambda content, **kwargs: output.append(content),
+            ),
+            "html": html,
+            "_PLATFORM_NAMES": platforms,
+            "_site_icon_uris": lambda: {site: f"data:image/png;base64,{site}" for site in platforms},
+            "_source_username": lambda site, info: "Streamer",
+            "_t": lambda text, **kwargs: text.format(**kwargs),
+        }
+        exec(compile(ast.Module(body=[function], type_ignores=[]), "simple_app.py", "exec"), namespace)
+        for site, label in platforms.items():
+            with self.subTest(site=site):
+                namespace["_status_line"](site, {"live": False})
+                self.assertIn(f'alt="{label}"', output[-1])
+                self.assertIn("Waiting for Streamer", output[-1])
+                self.assertIn("white-space:nowrap", output[-1])
 
     def test_live_notification_only_triggers_on_offline_to_live_transition(self):
         source = (ROOT / "simple_app.py").read_text(encoding="utf-8")
