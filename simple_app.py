@@ -643,7 +643,7 @@ def _render_feeds() -> None:
     ) or "—"
     gifts_html = _feed_messages_html(st.session_state["simple_gifts"], browser_timezone)
     chat_html = _feed_messages_html(st.session_state["simple_chat"], browser_timezone)
-    st.markdown(
+    st.html(
         """
         <style>
         [data-testid="stMainBlockContainer"] {
@@ -705,7 +705,6 @@ def _render_feeds() -> None:
         f'<h2 class="simple-feed-title">{html.escape("💬 " + _t("Chat"))}</h2>'
         f'<div class="simple-feed-scroll">{chat_html}</div>'
         '</section></div>',
-        unsafe_allow_html=True,
     )
 
 

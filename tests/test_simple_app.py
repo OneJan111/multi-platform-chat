@@ -276,19 +276,19 @@ class SimpleAppConfigTests(unittest.TestCase):
                 "text": "<script>alert(1)</script>",
             }],
             "simple_chat": [{
-                "platform": "youtube",
+                "platform": "missevan",
                 "author": "Viewer",
-                "text": "Hello",
+                "text": "Hello\n\n    [拼音] [bái māo]\n\n```html\n<div>chat text</div>\n```",
             }],
         }
         namespace = {
             "st": SimpleNamespace(
                 session_state=state,
                 context=SimpleNamespace(timezone=""),
-                markdown=lambda content, **kwargs: output.append(content),
+                html=lambda content, **kwargs: output.append(content),
             ),
             "html": html,
-            "_PLATFORM_NAMES": {"youtube": "YouTube"},
+            "_PLATFORM_NAMES": {"youtube": "YouTube", "missevan": "MissEvan"},
             "_format_message_time": lambda timestamp, browser_timezone: "",
             "tr": SimpleNamespace(),
             "_translation_target": lambda: "en",
@@ -314,6 +314,8 @@ class SimpleAppConfigTests(unittest.TestCase):
         self.assertIn("overflow-y: auto", markup)
         self.assertIn("&lt;script&gt;alert(1)&lt;/script&gt;", markup)
         self.assertIn("Hello", markup)
+        self.assertIn("Hello\n\n    [拼音] [bái māo]", markup)
+        self.assertIn("```html\n&lt;div&gt;chat text&lt;/div&gt;\n```", markup)
         self.assertIn("Total profit (session): $7.5", markup)
 
     def test_feed_uses_render_chat_images_setting_for_emotes(self):
