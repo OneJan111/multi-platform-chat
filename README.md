@@ -84,6 +84,28 @@ The template only contains placeholder values (`your-…`, `xxx`). **Replace the
 
 Then open <http://localhost:8501>. To use it from a tablet on the same network, open `http://<PC-IP>:8501`.
 
+### Desktop app (PySide6)
+
+`desktop_app.py` is a native desktop version of the dashboard. It runs in its own window (no browser) and has the same features as `app.py`, plus chat saved automatically to disk and Bilibili recording. Install PySide6 in the same environment first:
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install PySide6
+.\.venv\Scripts\python.exe desktop_app.py
+```
+
+On Windows you can double-click [Start_Desktop.bat](Start_Desktop.bat) instead. It uses the project's `.venv` when available, otherwise Python on `PATH`.
+
+- **Monitoring / Cookies**: add any number of YouTube channels, Bilibili rooms and MissEvan rooms. Each room shows as a card (3 per row) with live state, title and viewers, and can be switched on or off. On first launch the rooms in `.env` (`YOUTUBE_CHANNEL`, `BILIBILI_ROOM_ID`, `MISSEVAN_ROOM_ID`) are added. Optional live notifications. Cookie import for sending chat is on the same tab.
+- **Chat**: pick one monitored room per site to show; sending also goes to that room. Hover a message for its actions (Read, Block, Thank, …). Chat, gifts / Super Chats and room joins have their own panels, with emotes, stickers and member badges as images, optional translation and pinyin / furigana. **Skip current speech** and **Stop and clear speech queue** sit on this tab.
+- **Saved Chat**: chat from every monitored room is saved continuously while the room is monitored; rooms that are switched off are not saved. Browse saved rooms by channel name with readable times, reload them later, or delete them. Files are kept under `%LOCALAPPDATA%\StreamingDashboard\chat_archive` on Windows.
+- **Bilibili recording**: tick **Auto record when live** on a Bilibili room card to save the stream as FLV whenever the room goes live (modelled on [BililiveRecorder](https://github.com/BililiveRecorder/BililiveRecorder)). Each recording is saved as `{room}-{name}/录制-{room}-{date-time}-{title}.flv` and, optionally, a danmaku / Super Chat / gift XML file next to it. Choose the folder (default `recordings/`) and preferred quality under the room cards. Original quality usually needs a Bilibili login. Recording stops when the room goes offline, monitoring is switched off, or the app closes.
+- **OBS**: the same controls as `app.py` (connect, stream / recording, scenes and sources, OBS Text source). The Text source can include usernames (**Show usernames**). The **Chat Overlay** section starts the Browser Source overlay for the monitored room you pick per site; the URL uses the short site names (`yt`, `bili`, `me`) and leaves out unselected sites. Press **Start server and copy Browser Source URL** again after changing options to get an updated link.
+- **Settings / TTS, Moderation, Transcription, Analytics**: as in `app.py`.
+- **Theme** menu: light or dark.
+- **Languages**: English / 简体中文 / 日本語, chosen in Settings.
+
+The desktop app remembers its settings (rooms, selected rooms, TTS, translation, overlay, OBS and recording options, language, theme, last tab, window size) between runs. Settings live in the per-user application settings (the registry on Windows); `.env` is only read.
+
 For a minimal monitor that automatically watches only the platforms configured in `.env` and shows live status, chat, and gifts, run:
 
 ```powershell
@@ -225,6 +247,8 @@ Only messages received while the dashboard page is open are counted.
 
 ```
 app.py                 Streamlit UI (all tabs, sidebar, CSS)
+desktop_app.py         Native PySide6 desktop app (same features, plus auto-saved chat and Bilibili recording)
+Start_Desktop.bat      Windows launcher for desktop_app.py
 requirements.txt       Python dependencies
 env.template           Template for .env (placeholder values only)
 .env                   Your settings                          (created by you, git-ignored)
@@ -245,6 +269,7 @@ src/
   reading.py           Pinyin / furigana reading aids
   tts.py               Text-to-speech with priority queue
   obs_ctrl.py          OBS WebSocket v5 control
+  bili_recorder.py     Bilibili live recorder (FLV + danmaku XML, BililiveRecorder-compatible)
 ```
 
 ## Troubleshooting

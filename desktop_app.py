@@ -86,6 +86,86 @@ def _format_chat_timestamp(timestamp) -> str:
             return str(timestamp)
 
 
+_DESKTOP_STRINGS: dict[str, tuple[str, str]] = {
+    "Theme": ("主题", "テーマ"),
+    "Light": ("浅色", "ライト"),
+    "Dark": ("深色", "ダーク"),
+    "Add translations to overlay": ("在叠加层中添加翻译", "オーバーレイに翻訳を追加"),
+    "Auto record when live": ("开播时自动录制", "配信開始時に自動録画"),
+    "Bilibili recording": ("B站录制", "Bilibili 録画"),
+    "Browse…": ("浏览…", "参照…"),
+    "Chat messages": ("聊天消息", "チャットメッセージ"),
+    "Paid messages": ("付费消息", "有料メッセージ"),
+    "Export DaVinci EDL": ("导出 DaVinci EDL", "DaVinci EDL をエクスポート"),
+    "Export hotspots CSV": ("导出热点 CSV", "ホットスポット CSV をエクスポート"),
+    "Open folder": ("打开文件夹", "フォルダーを開く"),
+    "Optional custom overlay message": ("可选：叠加层自定义消息", "任意：オーバーレイのカスタムメッセージ"),
+    "Preferred quality": ("首选画质", "優先画質"),
+    "Remove selected allow pattern": ("删除所选允许规则", "選択した許可パターンを削除"),
+    "Remove selected block pattern": ("删除所选屏蔽规则", "選択したブロックパターンを削除"),
+    "Room to transcribe": ("要转录的直播间", "文字起こしするルーム"),
+    " s window": (" 秒窗口", " 秒ウィンドウ"),
+    "Save danmaku, Super Chats and gifts to an XML file next to each video": (
+        "将弹幕、醒目留言和礼物保存为视频旁的 XML 文件",
+        "コメント・スーパーチャット・ギフトを動画と同じ場所の XML ファイルに保存",
+    ),
+    "Save recordings to": ("录像保存位置", "録画の保存先"),
+    "Show usernames": ("显示用户名", "ユーザー名を表示"),
+    "Start server and copy Browser Source URL": (
+        "启动服务器并复制浏览器源 URL", "サーバーを起動してブラウザソース URL をコピー"
+    ),
+    "Start the local overlay server for an OBS Browser Source.": (
+        "启动本地叠加层服务器，用于 OBS 浏览器源。",
+        "OBS ブラウザソース用のローカルオーバーレイサーバーを起動します。",
+    ),
+    "Starting monitor…": ("正在启动监控…", "モニターを起動中…"),
+    "Tick \u201cAuto record when live\u201d on a Bilibili room to save its stream "
+    "as FLV (like BililiveRecorder). Recording stops when the room goes offline.": (
+        "在 B站直播间勾选\u201c开播时自动录制\u201d即可将直播保存为 FLV（同 BililiveRecorder）。下播后录制自动停止。",
+        "Bilibili ルームで「配信開始時に自動録画」にチェックすると、配信を FLV で保存します"
+        "（BililiveRecorder と同様）。ルームがオフラインになると録画は停止します。",
+    ),
+    "Translate transcription": ("翻译转录内容", "文字起こしを翻訳"),
+    "Use the overlay URL in OBS as a Browser Source to show a transparent chat on stream.": (
+        "在 OBS 中将叠加层 URL 添加为浏览器源，即可在直播画面上显示透明聊天。",
+        "オーバーレイ URL を OBS のブラウザソースとして使うと、配信画面に透過チャットを表示できます。",
+    ),
+    "Select a monitored room": ("选择监控的直播间", "モニター中のルームを選択"),
+    "Paste / import": ("粘贴 / 导入", "貼り付け / インポート"),
+    "No monitored room": ("无监控直播间", "モニター中のルームなし"),
+    "Monitored {site} room shown in the overlay": (
+        "叠加层显示的 {site} 监控直播间", "オーバーレイに表示する {site} のモニタールーム"
+    ),
+    "Last recording: {size}": ("上次录制：{size}", "前回の録画：{size}"),
+    "Saved room files: {path}": ("已保存的直播间文件：{path}", "保存済みルームファイル：{path}"),
+    "Select at least one monitored room for the overlay.": (
+        "请为叠加层至少选择一个监控直播间。", "オーバーレイ用のモニタールームを 1 つ以上選択してください。"
+    ),
+    "Starting": ("正在开始", "開始中"),
+    "Retrying": ("正在重试", "再試行中"),
+    "Stream ended": ("直播流已结束", "ストリーム終了"),
+    "Stopped": ("已停止", "停止"),
+}
+
+
+class _DesktopI18n:
+    """`src.i18n` plus strings that only the desktop app uses."""
+
+    def __init__(self, base):
+        self._base = base
+        self.UI_LANGUAGES = base.UI_LANGUAGES
+
+    def __getattr__(self, name):
+        return getattr(self._base, name)
+
+    def translate(self, text: str, lang: str, **kwargs) -> str:
+        index = {"zh": 0, "ja": 1}.get(lang)
+        if index is not None and text in _DESKTOP_STRINGS:
+            out = _DESKTOP_STRINGS[text][index]
+            return out.format(**kwargs) if kwargs else out
+        return self._base.translate(text, lang, **kwargs)
+
+
 _OBS_SETUP_MD = """1. Open OBS → **Tools → WebSocket Server Settings**
 2. Enable the WebSocket server
 3. Set a password and note the port (default 4455)
@@ -1089,7 +1169,7 @@ if QtCore is not None:
 
             self.config = config
             self.filters = filters
-            self.i18n = i18n
+            self.i18n = _DesktopI18n(i18n)
             self.user_login = user_login
             self._encode_logins = encode
             self._login_data = {}
@@ -1147,6 +1227,9 @@ if QtCore is not None:
             self.setWindowTitle("Streaming Dashboard — PySide6")
             self.resize(1450, 920)
             self.setMinimumSize(1000, 650)
+            geometry = self._settings.value("window_geometry")
+            if isinstance(geometry, QtCore.QByteArray) and not geometry.isEmpty():
+                self.restoreGeometry(geometry)
             self._build_ui()
             self._apply_font_size()
             self._apply_ui_language()
@@ -1228,12 +1311,41 @@ if QtCore is not None:
             self._refresh_overlay_room_selectors()
             self._refresh_feeds()
 
+        def _persist_widget(self, widget, key):
+            """Restore `widget` from QSettings `key` and save it whenever it changes."""
+            save = lambda value: self._settings.setValue(key, value)
+            if isinstance(widget, QtWidgets.QCheckBox):
+                widget.setChecked(self._settings.value(key, widget.isChecked(), type=bool))
+                widget.toggled.connect(lambda checked: save(bool(checked)))
+            elif isinstance(widget, (QtWidgets.QSpinBox, QtWidgets.QSlider)):
+                widget.setValue(self._settings.value(key, widget.value(), type=int))
+                widget.valueChanged.connect(lambda value: save(int(value)))
+            elif isinstance(widget, QtWidgets.QComboBox):
+                saved = self._settings.value(key, "", type=str)
+                index = widget.findData(saved) if saved else -1
+                if index < 0 and saved:
+                    index = widget.findText(saved)
+                if index >= 0:
+                    widget.setCurrentIndex(index)
+                widget.currentIndexChanged.connect(
+                    lambda _index: save(
+                        str(widget.currentData())
+                        if widget.currentData() is not None
+                        else widget.currentText()
+                    )
+                )
+            elif isinstance(widget, QtWidgets.QLineEdit):
+                widget.setText(self._settings.value(key, widget.text(), type=str))
+                widget.textChanged.connect(save)
+
         def _build_ui(self):
             theme_menu = self.menuBar().addMenu("Theme")
+            self._theme_menu = theme_menu
             theme_group = QtGui.QActionGroup(self)
             theme_group.setExclusive(True)
             for theme, label in (("light", "Light"), ("dark", "Dark")):
                 action = theme_menu.addAction(label)
+                action.setProperty("_desktop_source_text", label)
                 action.setCheckable(True)
                 action.setChecked(theme == self._theme)
                 action.triggered.connect(
@@ -1251,6 +1363,12 @@ if QtCore is not None:
             tabs.addTab(self._make_transcription_tab(), "Transcription")
             tabs.addTab(self._make_analytics_tab(), "Analytics")
             tabs.addTab(self._make_archive_tab(), "Saved Chat")
+            tabs.setCurrentIndex(
+                min(max(0, self._settings.value("main_tab", 0, type=int)), tabs.count() - 1)
+            )
+            tabs.currentChanged.connect(
+                lambda index: self._settings.setValue("main_tab", int(index))
+            )
             self.setCentralWidget(tabs)
             self.statusBar().showMessage("Ready")
 
@@ -1386,6 +1504,7 @@ if QtCore is not None:
             for site in ("youtube", "bilibili", "missevan"):
                 check = QtWidgets.QCheckBox(site.title())
                 check.setChecked(True)
+                self._persist_widget(check, f"chat_site_visible_{site}")
                 check.toggled.connect(self._refresh_feeds)
                 self.site_visible[site] = check
                 filters_row.addWidget(check)
@@ -1831,10 +1950,13 @@ if QtCore is not None:
             tts_form.addRow("Voice language", self.tts_lang)
             self.tts_paid = QtWidgets.QCheckBox("Read gifts and paid messages")
             self.tts_paid.setChecked(True)
+            self._persist_widget(self.tts_paid, "tts_paid")
             tts_form.addRow(self.tts_paid)
             self.tts_joins = QtWidgets.QCheckBox("Read room joins")
+            self._persist_widget(self.tts_joins, "tts_joins")
             tts_form.addRow(self.tts_joins)
             self.tts_translate = QtWidgets.QCheckBox("Read translated messages when available")
+            self._persist_widget(self.tts_translate, "tts_translate")
             tts_form.addRow(self.tts_translate)
             self.tts_skip_name = QtWidgets.QCheckBox("Do not announce usernames for chat messages")
             self.tts_skip_name.setChecked(self._settings.value("tts_skip_name", False, type=bool))
@@ -1844,10 +1966,12 @@ if QtCore is not None:
             tts_form.addRow(self.tts_skip_name)
             self.tts_skip_emoji = QtWidgets.QCheckBox("Skip emoji-only messages")
             self.tts_skip_emoji.setChecked(True)
+            self._persist_widget(self.tts_skip_emoji, "tts_skip_emoji")
             tts_form.addRow(self.tts_skip_emoji)
             self.tts_rate = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
             self.tts_rate.setRange(80, 300)
             self.tts_rate.setValue(150)
+            self._persist_widget(self.tts_rate, "tts_rate")
             self.tts_rate.setTickPosition(QtWidgets.QSlider.TickPosition.TicksBelow)
             self.tts_rate.setTickInterval(20)
             self.tts_rate_value = QtWidgets.QLabel()
@@ -1865,6 +1989,7 @@ if QtCore is not None:
             self.tts_volume = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
             self.tts_volume.setRange(0, 100)
             self.tts_volume.setValue(100)
+            self._persist_widget(self.tts_volume, "tts_volume")
             self.tts_volume.setTickPosition(QtWidgets.QSlider.TickPosition.TicksBelow)
             self.tts_volume.setTickInterval(10)
             self.tts_volume_value = QtWidgets.QLabel()
@@ -1991,6 +2116,17 @@ if QtCore is not None:
                     tabs.setProperty("_desktop_rendered_tabs", translated_tabs)
             if getattr(self, "_obs_last_state", None) is not None:
                 self._render_obs_state(self._obs_last_state)
+            self._theme_menu.setTitle(self.i18n.translate("Theme", language))
+            for action in self._theme_menu.actions():
+                source = action.property("_desktop_source_text")
+                if source:
+                    action.setText(self.i18n.translate(source, language))
+            self.cookie_browser.setItemText(
+                0, self.i18n.translate("Paste / import", language)
+            )
+            self.hotspot_window.setSuffix(self.i18n.translate(" s window", language))
+            self._refresh_overlay_room_selectors()
+            self._refresh_transcription_rooms()
             self.statusBar().showMessage(self.i18n.translate("Ready", language))
 
         def _set_ui_language(self, *_):
@@ -2277,6 +2413,7 @@ if QtCore is not None:
                 ("MissEvan", "missevan"),
             ):
                 self.transcribe_site.addItem(label, platform)
+            self._persist_widget(self.transcribe_site, "transcribe_site")
             form.addRow("Stream", self.transcribe_site)
             self.transcribe_room = QtWidgets.QComboBox()
             self.transcribe_room.setMinimumWidth(240)
@@ -2291,9 +2428,11 @@ if QtCore is not None:
             self.transcribe_model = QtWidgets.QComboBox()
             self.transcribe_model.addItems(["tiny", "base", "small"])
             self.transcribe_model.setCurrentText("base")
+            self._persist_widget(self.transcribe_model, "transcribe_model")
             form.addRow("Whisper model", self.transcribe_model)
             self.transcribe_translation = QtWidgets.QCheckBox("Translate transcription")
             self.transcribe_translation.setChecked(True)
+            self._persist_widget(self.transcribe_translation, "transcribe_translation")
             form.addRow(self.transcribe_translation)
             layout.addLayout(form)
             row = QtWidgets.QHBoxLayout()
@@ -2516,6 +2655,7 @@ if QtCore is not None:
             self.hotspot_window = QtWidgets.QSpinBox()
             self.hotspot_window.setRange(10, 300)
             self.hotspot_window.setValue(30)
+            self._persist_widget(self.hotspot_window, "hotspot_window")
             self.hotspot_window.setSuffix(" s window")
             refresh_row = QtWidgets.QHBoxLayout()
             refresh_row.addWidget(self.hotspot_window)
@@ -2572,19 +2712,24 @@ if QtCore is not None:
             self.overlay_count = QtWidgets.QSpinBox()
             self.overlay_count.setRange(1, 50)
             self.overlay_count.setValue(5)
+            self._persist_widget(self.overlay_count, "overlay_count")
             counts_form.addRow("Chat messages", self.overlay_count)
             self.overlay_paid_count = QtWidgets.QSpinBox()
             self.overlay_paid_count.setRange(0, 50)
             self.overlay_paid_count.setValue(3)
+            self._persist_widget(self.overlay_paid_count, "overlay_paid_count")
             counts_form.addRow("Paid messages", self.overlay_paid_count)
             layout.addLayout(counts_form)
             self.overlay_show_names = QtWidgets.QCheckBox("Show usernames")
             self.overlay_show_names.setChecked(True)
+            self._persist_widget(self.overlay_show_names, "overlay_show_names")
             layout.addWidget(self.overlay_show_names)
             self.overlay_translate = QtWidgets.QCheckBox("Add translations to overlay")
+            self._persist_widget(self.overlay_translate, "overlay_translate")
             layout.addWidget(self.overlay_translate)
             self.overlay_custom_text = QtWidgets.QLineEdit()
             self.overlay_custom_text.setPlaceholderText("Optional custom overlay message")
+            self._persist_widget(self.overlay_custom_text, "overlay_custom_text")
             layout.addWidget(self.overlay_custom_text)
             start = QtWidgets.QPushButton("Start server and copy Browser Source URL")
             start.clicked.connect(self._start_overlay)
@@ -2621,7 +2766,7 @@ if QtCore is not None:
             self.archive_table.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
             layout.addWidget(self.archive_table, 1)
             self.archive_path_label = QtWidgets.QLabel(
-                f"Saved room files: {self._archive.sessions_path}"
+                self.i18n.translate("Saved room files: {path}", self._ui_language, path=self._archive.sessions_path)
             )
             layout.addWidget(self.archive_path_label)
             self.archive_sessions.currentIndexChanged.connect(self._show_archive_session)
@@ -3000,6 +3145,18 @@ if QtCore is not None:
             from src import reading
 
             view.clear()
+            base_font = QtGui.QFont(view.font())
+            reading_font = QtGui.QFont(base_font)
+            # Qt renders <small> one size step down (÷1.2).
+            reading_font.setPointSizeF(max(1.0, base_font.pointSizeF() / 1.2))
+            base_metrics = QtGui.QFontMetricsF(base_font)
+            reading_metrics = QtGui.QFontMetricsF(reading_font)
+
+            def measure_ruby(value, is_reading):
+                metrics = reading_metrics if is_reading else base_metrics
+                return metrics.horizontalAdvance(value.replace(" ", "\u00a0"))
+
+            ruby_width = max(1, view.viewport().width() - 16)
             for msg in messages:
                 stamp = _format_chat_timestamp(msg.get("timestamp", ""))
                 prefix = f"{stamp}  [{msg.get('platform', '').upper()}]  {msg.get('author', '?')}"
@@ -3076,8 +3233,9 @@ if QtCore is not None:
                             reading.ruby_html(
                                 part,
                                 "auto",
-                                max_width=max(1, view.viewport().width() - 16),
+                                max_width=ruby_width,
                                 font_size=view.font().pointSizeF(),
+                                measure=measure_ruby,
                             )
                             if self.show_reading.isChecked()
                             else html.escape(part).replace("\n", "<br>")
@@ -3099,8 +3257,9 @@ if QtCore is not None:
                         rendered_translation = reading.ruby_html(
                             translated_text,
                             "auto",
-                            max_width=max(1, view.viewport().width() - 16),
+                            max_width=ruby_width,
                             font_size=view.font().pointSizeF(),
+                            measure=measure_ruby,
                         )
                     else:
                         rendered_translation = html.escape(translated_text).replace(
@@ -4535,7 +4694,7 @@ if QtCore is not None:
                 "missevan": missevan.parse_room_id(targets["missevan"]) if targets["missevan"] else "",
             }
             if not any(selected.values()):
-                self._show_error("Select at least one monitored room for the overlay.")
+                self._show_error(self.i18n.translate("Select at least one monitored room for the overlay.", self._ui_language))
                 return
             count = self.overlay_count.value()
             host = (
@@ -4578,7 +4737,7 @@ if QtCore is not None:
             )
             self.transcribe_room.blockSignals(True)
             self.transcribe_room.clear()
-            self.transcribe_room.addItem("Select a monitored room", "")
+            self.transcribe_room.addItem(self.i18n.translate("Select a monitored room", self._ui_language), "")
             for entry in entries:
                 target = entry["target"]
                 name = self._room_names.get(entry["id"], "").strip()
@@ -4809,7 +4968,7 @@ if QtCore is not None:
             self.archive_sessions.blockSignals(False)
             self._show_archive_session()
             self.archive_path_label.setText(
-                f"Saved room files: {self._archive.sessions_path}"
+                self.i18n.translate("Saved room files: {path}", self._ui_language, path=self._archive.sessions_path)
             )
 
         def _refresh_archive_session_labels(self):
@@ -5033,6 +5192,8 @@ if QtCore is not None:
                 self._load_archive_view()
 
         def closeEvent(self, event):
+            self._settings.setValue("window_geometry", self.saveGeometry())
+            self._settings.sync()
             if self._transcriber:
                 self._transcriber.stop()
             if self._worker:
