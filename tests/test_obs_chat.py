@@ -32,6 +32,17 @@ class ObsChatTests(unittest.TestCase):
             "你好\nhello\npending",
         )
 
+    def test_usernames_prefix_messages_when_enabled(self):
+        messages = [
+            {"type": "danmaku", "text": "你好", "author": "Alice"},
+            {"type": "danmaku", "text": "hi", "author": ""},
+        ]
+        self.assertEqual(
+            obs_ctrl.format_chat_text(messages, True, "en", lambda text, _: {"你好": "Hello"}.get(text), show_names=True),
+            "Alice: 你好\nHello\nhi",
+        )
+        self.assertEqual(obs_ctrl.format_chat_text(messages, False, "en", lambda *_: None), "你好\nhi")
+
     @patch.object(obs_ctrl, "_client")
     def test_text_source_updates_only_text_setting(self, client):
         obs_ctrl.set_text_source("Chat", "line 1\nline 2")

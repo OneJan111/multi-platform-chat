@@ -29,12 +29,14 @@ def recent_chat(messages: list[dict]) -> list[dict]:
 
 
 def format_chat_text(messages: list[dict], translate_enabled: bool, target: str,
-                     get_translation: Callable[[str, str], Optional[str]]) -> str:
+                     get_translation: Callable[[str, str], Optional[str]],
+                     show_names: bool = False) -> str:
     """Format the latest ten regular chat messages, oldest first, for an OBS text input."""
     lines = []
     for msg in recent_chat(messages):
         text = msg["text"]
-        lines.append(text)
+        author = str(msg.get("author") or "").strip() if show_names else ""
+        lines.append(f"{author}: {text}" if author else text)
         if translate_enabled:
             translated = get_translation(text, target)
             if translated:
@@ -49,7 +51,8 @@ def get_text_sources() -> list[str]:
         raise ConnectionError("OBS is not connected.")
     try:
         return [item["inputName"] for item in cl.get_input_list().inputs
-                if item["inputKind"] in _TEXT_KINDS]
+                if item["inputKind"] in _TEXT_KINDS
+                or item.get("unversionedInputKind") in _TEXT_KINDS]
     finally:
         cl.disconnect()
 

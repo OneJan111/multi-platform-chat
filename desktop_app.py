@@ -2218,6 +2218,11 @@ if QtCore is not None:
                 self._settings.value("obs_chat_enabled", False, type=bool)
             )
             text_layout.addWidget(self.obs_chat_enabled)
+            self.obs_chat_names = QtWidgets.QCheckBox("Show usernames")
+            self.obs_chat_names.setChecked(
+                self._settings.value("obs_chat_names", True, type=bool)
+            )
+            text_layout.addWidget(self.obs_chat_names)
             self.obs_text_source_row = QtWidgets.QWidget()
             text_source_layout = QtWidgets.QFormLayout(self.obs_text_source_row)
             text_source_layout.setContentsMargins(0, 0, 0, 0)
@@ -2245,6 +2250,7 @@ if QtCore is not None:
 
             self.obs_enabled.toggled.connect(self._set_obs_enabled)
             self.obs_chat_enabled.toggled.connect(self._set_obs_chat_enabled)
+            self.obs_chat_names.toggled.connect(self._set_obs_chat_names)
             self.obs_text_source.activated.connect(self._obs_text_source_changed)
             self._obs_timer = QtCore.QTimer(self)
             self._obs_timer.setInterval(3000)
@@ -2878,7 +2884,7 @@ if QtCore is not None:
                     self, "chat_room_selectors", {}
                 ).items()
             }
-            feed_messages = self._paid if feed == "paid" else self._messages
+            feed_messages = {"paid": self._paid, "joins": self._joins}.get(feed, self._messages)
             messages = [
                 message
                 for message in feed_messages
@@ -2916,26 +2922,13 @@ if QtCore is not None:
             self._copy_messages(self._visible_chat_messages(feed))
 
         def _refresh_feeds(self):
-            visible_messages = self._visible_chat_messages()
-            visible_ids = {id(message) for message in visible_messages}
-            self._render_feed(
-                self.chat_list,
-                [message for message in self._messages if id(message) in visible_ids],
-            )
-            self._render_feed(
-                self.paid_list,
-                [message for message in self._paid if id(message) in visible_ids],
-            )
-            self._queue_chat_images(
-                [
-                    message for message in self._messages + self._paid
-                    if id(message) in visible_ids
-                ]
-            )
+            chat_messages = self._visible_chat_messages("chat")
+            paid_messages = self._visible_chat_messages("paid")
+            self._render_feed(self.chat_list, chat_messages)
+            self._render_feed(self.paid_list, paid_messages)
+            self._queue_chat_images(chat_messages + paid_messages)
             self.joins_list.clear()
-            for msg in self._joins:
-                if id(msg) not in visible_ids:
-                    continue
+            for msg in self._visible_chat_messages("joins"):
                 item = QtWidgets.QListWidgetItem(
                     f"{_format_chat_timestamp(msg.get('timestamp', ''))}  "
                     f"[{msg.get('platform', '').upper()}]  "
@@ -4223,6 +4216,11 @@ if QtCore is not None:
                 self._obs_source_snapshot = None
                 self._render_obs_state({"status": {"connected": False}, "error": ("", "")})
 
+        def _set_obs_chat_names(self, enabled):
+            self._settings.setValue("obs_chat_names", bool(enabled))
+            self._settings.sync()
+            self._sync_obs_chat()
+
         def _set_obs_chat_enabled(self, enabled):
             self._settings.setValue("obs_chat_enabled", bool(enabled))
             self._settings.sync()
@@ -4418,7 +4416,11 @@ if QtCore is not None:
                     [msg.get("text", "") for msg in obs_ctrl.recent_chat(chat)], target
                 )
             text = obs_ctrl.format_chat_text(
-                chat, translate_enabled, target, translate.get_translation
+                chat,
+                translate_enabled,
+                target,
+                translate.get_translation,
+                show_names=self.obs_chat_names.isChecked(),
             )
             now = time.monotonic()
             if not _obs_chat_update_due(
@@ -4540,8 +4542,9 @@ if QtCore is not None:
                 config.OVERLAY_PUBLIC_URL
                 or f"http://{'127.0.0.1' if config.OVERLAY_HOST in ('0.0.0.0', '::') else config.OVERLAY_HOST}:{config.OVERLAY_PORT}"
             )
+            short_names = {"youtube": "yt", "bilibili": "bili", "missevan": "me"}
             query_values = {
-                **selected,
+                **{short_names[p]: v for p, v in selected.items() if v},
                 "n": count,
                 "sc": self.overlay_paid_count.value(),
                 "names": 1 if self.overlay_show_names.isChecked() else 0,
