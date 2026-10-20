@@ -621,6 +621,11 @@ def _feed_messages_html(messages: list[dict], browser_timezone: str) -> str:
         )
         stamp = _format_message_time(str(msg.get("timestamp", "")), browser_timezone)
         header = html.escape(f"{platform} · {msg.get('author', '')}" + (f" · {stamp}" if stamp else ""))
+        amount = gift_utils.amount_label(msg) if is_paid(msg) or is_gift(msg) else ""
+        amount_html = (
+            f'<div class="simple-feed-price">{html.escape(amount)}</div>'
+            if amount else ""
+        )
         translated = ""
         if st.session_state["simple_translation_enabled"] and msg.get("text"):
             result = tr.get_translation(msg["text"], _translation_target())
@@ -629,7 +634,7 @@ def _feed_messages_html(messages: list[dict], browser_timezone: str) -> str:
         cards.append(
             '<article class="simple-feed-card">'
             f'<div class="simple-feed-meta">{header}</div>'
-            f'<div class="simple-feed-text">{text}</div>{translated}</article>'
+            f'<div class="simple-feed-text">{text}</div>{amount_html}{translated}</article>'
         )
     return "".join(cards)
 
@@ -689,6 +694,7 @@ def _render_feeds() -> None:
         }
         .simple-feed-meta { font-size: .8rem; opacity: .7; margin-bottom: .25rem; }
         .simple-feed-text { white-space: pre-wrap; overflow-wrap: anywhere; }
+        .simple-feed-price { font-size: .9rem; font-weight: 600; color: #42d392; }
         .simple-feed-translated { color: #60a5fa; white-space: pre-wrap; overflow-wrap: anywhere; }
         .simple-feed-empty { opacity: .7; }
         @media (max-width: 768px) {

@@ -86,6 +86,67 @@ def _format_chat_timestamp(timestamp) -> str:
             return str(timestamp)
 
 
+_OBS_SETUP_MD = """1. Open OBS → **Tools → WebSocket Server Settings**
+2. Enable the WebSocket server
+3. Set a password and note the port (default 4455)
+4. Add to your `.env`:
+
+   ```
+   OBS_HOST=localhost
+   OBS_PORT=4455
+   OBS_PASSWORD=your_password
+   ```
+"""
+
+
+def _obs_connection_message(error: tuple[str, str], host: str, port: int, translate) -> tuple[str, str]:
+    """Describe why OBS isn't connected, matching the web dashboard's wording."""
+    code, detail = error
+    address = f"{host}:{port}"
+    if code == "no_lib":
+        return translate(
+            "⚠️ OBS is not connected: obsws-python is not installed. Run `pip install obsws-python`."
+        ), ""
+    if code == "no_password":
+        return translate("⚠️ OBS is not connected: OBS_PASSWORD is not set in .env."), ""
+    if code == "auth":
+        return translate(
+            "⚠️ OBS at {addr} refused the login — check OBS_PASSWORD. ({detail})",
+            addr=address,
+            detail=detail,
+        ), ""
+    return translate(
+        "⚠️ OBS is not connected: nothing answered at {addr}.", addr=address
+    ), translate(
+        "Is OBS running with its WebSocket server enabled? OBS_HOST is resolved on the computer "
+        "running this dashboard — if that's a server, `localhost` means the server itself. Set "
+        "OBS_HOST to the address of the PC running OBS, reachable from the server (same network, "
+        "VPN such as Tailscale, or a port forward), and allow port {port} in that PC's firewall.",
+        port=port,
+    )
+
+
+def _obs_chat_update_due(
+    last: tuple[str, str] | None, last_at: float, source: str, text: str, now: float
+) -> bool:
+    """Skip identical OBS text pushes, but refresh them every 30 seconds."""
+    return last != (source, text) or now - last_at >= 30
+
+
+def _format_record_size(size: int) -> str:
+    value = float(size or 0)
+    for unit in ("B", "KB", "MB", "GB"):
+        if value < 1024 or unit == "GB":
+            return f"{value:.0f} {unit}" if unit == "B" else f"{value:.1f} {unit}"
+        value /= 1024
+    return f"{value:.1f} GB"
+
+
+def _format_record_duration(seconds: float) -> str:
+    seconds = max(0, int(seconds))
+    return f"{seconds // 3600:d}:{seconds // 60 % 60:02d}:{seconds % 60:02d}"
+
+
 def _saved_session_room_label(session: dict) -> str:
     identity = session.get("channel_id") or session.get("room_id") or session.get(
         "session_id", ""
@@ -1079,6 +1140,8 @@ if QtCore is not None:
             self._tts_language = self._settings.value("tts_language", "auto", type=str)
             self._notify_live = self._settings.value("notify_live", True, type=bool)
             self._live_states = {}
+            self._recorders = {}
+            self._room_titles = {}
             self._viewer_samples = []
 
             self.setWindowTitle("Streaming Dashboard — PySide6")
@@ -1157,9 +1220,12 @@ if QtCore is not None:
                     entry["enabled"] = enabled
                     break
             self._save_monitor_targets()
+            if not enabled:
+                self._stop_recording(monitor_id)
             if self._worker:
                 self._worker.update_targets(self._monitor_targets)
             self._refresh_transcription_rooms()
+            self._refresh_overlay_room_selectors()
             self._refresh_feeds()
 
         def _build_ui(self):
@@ -1184,7 +1250,6 @@ if QtCore is not None:
             tabs.addTab(self._make_obs_tab(), "OBS")
             tabs.addTab(self._make_transcription_tab(), "Transcription")
             tabs.addTab(self._make_analytics_tab(), "Analytics")
-            tabs.addTab(self._make_overlay_tab(), "Overlay")
             tabs.addTab(self._make_archive_tab(), "Saved Chat")
             self.setCentralWidget(tabs)
             self.statusBar().showMessage("Ready")
@@ -1279,6 +1344,7 @@ if QtCore is not None:
             monitor_tab = self._make_monitor_tab()
             cookies_tab = self._make_cookies_tab()
             layout.addWidget(monitor_tab, 1)
+            layout.addWidget(self._make_recording_settings())
             layout.addWidget(self.login_status_group)
             layout.addWidget(cookies_tab)
             scroll_area = QtWidgets.QScrollArea()
@@ -1436,7 +1502,39 @@ if QtCore is not None:
                 self._show_error(
                     "Unable to save chat room selections to application settings."
                 )
+            self._refresh_overlay_room_selectors()
             self._refresh_feeds()
+
+        def _refresh_overlay_room_selectors(self):
+            for platform, selector in getattr(self, "overlay_rooms", {}).items():
+                selected_id = selector.currentData()
+                if selected_id is None:
+                    selected_id = self._settings.value(
+                        f"overlay_room_{platform}", "", type=str
+                    )
+                selector.blockSignals(True)
+                selector.clear()
+                entries = self._channels_for_platform(platform, enabled_only=True)
+                if not entries:
+                    selector.addItem(
+                        self.i18n.translate("No monitored room", self._ui_language), ""
+                    )
+                for entry in entries:
+                    name = self._room_names.get(entry["id"], "").strip()
+                    target = entry["target"]
+                    label = f"{name} · {target}" if name and name != target else target
+                    selector.addItem(label, entry["id"])
+                index = selector.findData(selected_id) if selected_id else -1
+                selector.setCurrentIndex(max(0, index))
+                selector.setEnabled(bool(entries))
+                selector.blockSignals(False)
+
+        def _overlay_room_changed(self, platform):
+            selector = self.overlay_rooms[platform]
+            self._settings.setValue(
+                f"overlay_room_{platform}", str(selector.currentData() or "")
+            )
+            self._settings.sync()
 
         def _chat_room_changed(self, platform):
             selector = self.chat_room_selectors[platform]
@@ -1557,6 +1655,12 @@ if QtCore is not None:
             self.channel_input.clear()
 
         def _remove_monitor_target(self, monitor_id: str):
+            self._stop_recording(monitor_id)
+            self._recorders.pop(monitor_id, None)
+            if monitor_id in self._record_auto_ids():
+                self._save_record_setting(
+                    "record_auto", sorted(self._record_auto_ids() - {monitor_id})
+                )
             self._monitor_targets = [
                 entry for entry in self._monitor_targets if entry["id"] != monitor_id
             ]
@@ -1608,6 +1712,22 @@ if QtCore is not None:
                     self._monitor_target_changed(monitor_id, enabled)
                 )
                 controls.addWidget(monitor)
+                auto_record = None
+                recording = None
+                if entry["platform"] == "bilibili":
+                    auto_record = QtWidgets.QCheckBox(
+                        self.i18n.translate("Auto record when live", self._ui_language)
+                    )
+                    auto_record.setChecked(entry["id"] in self._record_auto_ids())
+                    auto_record.toggled.connect(
+                        lambda enabled, monitor_id=entry["id"]:
+                        self._set_record_auto(monitor_id, enabled)
+                    )
+                    controls.addWidget(auto_record)
+                    recording = QtWidgets.QLabel("")
+                    recording.setStyleSheet("color: #b42318; border: 0;")
+                    recording.setVisible(False)
+                    card_layout.addWidget(recording)
                 controls.addStretch(1)
                 remove = QtWidgets.QPushButton(
                     self.i18n.translate("Remove", self._ui_language)
@@ -1624,9 +1744,12 @@ if QtCore is not None:
                     "detail": detail,
                     "connection": connection,
                     "monitor": monitor,
+                    "auto_record": auto_record,
+                    "recording": recording,
                 }
             self._layout_channel_cards()
             self._apply_theme()
+            self._refresh_recording_status()
 
         def _layout_channel_cards(self):
             if not hasattr(self, "channel_grid"):
@@ -1866,6 +1989,8 @@ if QtCore is not None:
                     for index, label in enumerate(translated_tabs):
                         tabs.setTabText(index, label)
                     tabs.setProperty("_desktop_rendered_tabs", translated_tabs)
+            if getattr(self, "_obs_last_state", None) is not None:
+                self._render_obs_state(self._obs_last_state)
             self.statusBar().showMessage(self.i18n.translate("Ready", language))
 
         def _set_ui_language(self, *_):
@@ -1993,53 +2118,147 @@ if QtCore is not None:
             return widget
 
         def _make_obs_tab(self):
-            widget = QtWidgets.QWidget()
-            layout = QtWidgets.QVBoxLayout(widget)
-            self.obs_status = QtWidgets.QLabel("OBS controls connect only when you request an action.")
+            content = QtWidgets.QWidget()
+            layout = QtWidgets.QVBoxLayout(content)
+            self._obs_connected = False
+            self._obs_poll_running = False
+            self._obs_streaming = False
+            self._obs_recording = False
+            self._obs_source_snapshot = None
+            self._obs_chat_last = None
+            self._obs_chat_last_at = 0.0
+
+            self.obs_enabled = QtWidgets.QCheckBox("Connect to OBS")
+            self.obs_enabled.setToolTip(
+                "Off: the dashboard never contacts OBS. On: stream, recording, scene "
+                "and Text source controls appear here once OBS is connected."
+            )
+            self.obs_enabled.setChecked(
+                self._settings.value("obs_enabled", False, type=bool)
+            )
+            layout.addWidget(self.obs_enabled)
+            self.obs_status = QtWidgets.QLabel()
+            self.obs_status.setWordWrap(True)
+            self.obs_status.setTextFormat(QtCore.Qt.TextFormat.PlainText)
             layout.addWidget(self.obs_status)
-            row = QtWidgets.QHBoxLayout()
-            for label, method in (("Refresh OBS status", self._obs_status), ("Start stream", self._obs_stream_start), ("Stop stream", self._obs_stream_stop), ("Start recording", self._obs_record_start), ("Stop recording", self._obs_record_stop)):
-                button = QtWidgets.QPushButton(label)
-                button.clicked.connect(method)
-                row.addWidget(button)
-            layout.addLayout(row)
-            scene_row = QtWidgets.QHBoxLayout()
+            self.obs_status_detail = QtWidgets.QLabel()
+            self.obs_status_detail.setWordWrap(True)
+            self.obs_status_detail.setTextFormat(QtCore.Qt.TextFormat.PlainText)
+            layout.addWidget(self.obs_status_detail)
+
+            self.obs_setup = QtWidgets.QGroupBox("Setup instructions")
+            self.obs_setup.setCheckable(True)
+            self.obs_setup.setChecked(False)
+            setup_layout = QtWidgets.QVBoxLayout(self.obs_setup)
+            self.obs_setup_text = QtWidgets.QLabel()
+            self.obs_setup_text.setTextFormat(QtCore.Qt.TextFormat.MarkdownText)
+            self.obs_setup_text.setWordWrap(True)
+            self.obs_setup_text.setTextInteractionFlags(
+                QtCore.Qt.TextInteractionFlag.TextSelectableByMouse
+            )
+            self.obs_setup_text.setVisible(False)
+            self.obs_setup.toggled.connect(self.obs_setup_text.setVisible)
+            setup_layout.addWidget(self.obs_setup_text)
+            layout.addWidget(self.obs_setup)
+
+            self.obs_controls = QtWidgets.QWidget()
+            controls_layout = QtWidgets.QVBoxLayout(self.obs_controls)
+            controls_layout.setContentsMargins(0, 0, 0, 0)
+            metrics = QtWidgets.QHBoxLayout()
+            self.obs_metrics = {}
+            for key, title in (
+                ("cpu", "CPU"),
+                ("ram", "RAM"),
+                ("fps", "FPS"),
+                ("dropped", "Dropped Frames"),
+            ):
+                box = QtWidgets.QGroupBox(title)
+                box_layout = QtWidgets.QVBoxLayout(box)
+                value = QtWidgets.QLabel("—")
+                value.setStyleSheet("font-size: 18pt; font-weight: 600;")
+                box_layout.addWidget(value)
+                metrics.addWidget(box)
+                self.obs_metrics[key] = value
+            controls_layout.addLayout(metrics)
+
+            outputs = QtWidgets.QHBoxLayout()
+            stream_group = QtWidgets.QGroupBox("🔴 Stream")
+            stream_layout = QtWidgets.QVBoxLayout(stream_group)
+            self.obs_stream_state = QtWidgets.QLabel()
+            self.obs_stream_button = QtWidgets.QPushButton()
+            self.obs_stream_button.clicked.connect(self._obs_toggle_stream)
+            stream_layout.addWidget(self.obs_stream_state)
+            stream_layout.addWidget(self.obs_stream_button)
+            outputs.addWidget(stream_group)
+            record_group = QtWidgets.QGroupBox("⏺ Recording")
+            record_layout = QtWidgets.QVBoxLayout(record_group)
+            self.obs_record_state = QtWidgets.QLabel()
+            self.obs_record_button = QtWidgets.QPushButton()
+            self.obs_record_button.clicked.connect(self._obs_toggle_recording)
+            record_layout.addWidget(self.obs_record_state)
+            record_layout.addWidget(self.obs_record_button)
+            outputs.addWidget(record_group)
+            controls_layout.addLayout(outputs)
+
+            scenes_group = QtWidgets.QGroupBox("🎭 Scenes & Sources")
+            scenes_layout = QtWidgets.QFormLayout(scenes_group)
             self.obs_scenes = QtWidgets.QComboBox()
-            scene_row.addWidget(self.obs_scenes, 1)
-            refresh_scenes = QtWidgets.QPushButton("Refresh scenes")
-            refresh_scenes.clicked.connect(self._obs_scenes)
-            switch_scene = QtWidgets.QPushButton("Switch scene")
-            switch_scene.clicked.connect(self._obs_switch_scene)
-            scene_row.addWidget(refresh_scenes)
-            scene_row.addWidget(switch_scene)
-            layout.addLayout(scene_row)
+            self.obs_scenes.activated.connect(self._obs_switch_scene)
+            scenes_layout.addRow("Active scene", self.obs_scenes)
             self.obs_sources = QtWidgets.QListWidget()
+            self.obs_sources.setMinimumHeight(140)
             self.obs_sources.itemChanged.connect(self._obs_source_visibility_changed)
-            layout.addWidget(self._feed_group("Current scene sources (toggle visibility)", self.obs_sources), 1)
-            refresh_sources = QtWidgets.QPushButton("Refresh current scene sources")
-            refresh_sources.clicked.connect(self._obs_refresh_sources)
-            layout.addWidget(refresh_sources)
-            self.obs_source = QtWidgets.QLineEdit()
-            self.obs_source.setPlaceholderText("Existing OBS text source name")
-            self.obs_text = QtWidgets.QLineEdit()
-            self.obs_text.setPlaceholderText("Text to put into the source")
-            source_row = QtWidgets.QHBoxLayout()
-            source_row.addWidget(self.obs_source)
-            source_row.addWidget(self.obs_text, 1)
-            set_text = QtWidgets.QPushButton("Set text")
-            set_text.clicked.connect(self._obs_set_text)
-            source_row.addWidget(set_text)
-            layout.addLayout(source_row)
-            self.obs_chat_enabled = QtWidgets.QCheckBox("Mirror recent live chat to OBS text source")
-            layout.addWidget(self.obs_chat_enabled)
-            self.obs_overlay_channel = QtWidgets.QLineEdit("desktop")
-            layout.addWidget(QtWidgets.QLabel("Overlay channel name (used to share a URL):"))
-            layout.addWidget(self.obs_overlay_channel)
-            overlay_button = QtWidgets.QPushButton("Start overlay server and copy URL")
-            overlay_button.clicked.connect(self._start_overlay)
-            layout.addWidget(overlay_button)
+            scenes_layout.addRow("Sources in selected scene:", self.obs_sources)
+            controls_layout.addWidget(scenes_group)
+
+            text_group = QtWidgets.QGroupBox("📝 OBS Text source")
+            text_layout = QtWidgets.QVBoxLayout(text_group)
+            self.obs_chat_enabled = QtWidgets.QCheckBox("Send chat to OBS Text source")
+            self.obs_chat_enabled.setChecked(
+                self._settings.value("obs_chat_enabled", False, type=bool)
+            )
+            text_layout.addWidget(self.obs_chat_enabled)
+            self.obs_text_source_row = QtWidgets.QWidget()
+            text_source_layout = QtWidgets.QFormLayout(self.obs_text_source_row)
+            text_source_layout.setContentsMargins(0, 0, 0, 0)
+            self.obs_text_source = QtWidgets.QComboBox()
+            text_source_layout.addRow("OBS Text source", self.obs_text_source)
+            text_layout.addWidget(self.obs_text_source_row)
+            self.obs_text_warning = QtWidgets.QLabel()
+            self.obs_text_warning.setWordWrap(True)
+            self.obs_text_warning.setStyleSheet("color: #b45309;")
+            text_layout.addWidget(self.obs_text_warning)
+            controls_layout.addWidget(text_group)
+            layout.addWidget(self.obs_controls)
+
+            overlay_group = QtWidgets.QGroupBox("🖥️ Chat Overlay")
+            overlay_layout = QtWidgets.QVBoxLayout(overlay_group)
+            overlay_intro = QtWidgets.QLabel(
+                "Use the overlay URL in OBS as a Browser Source to show a "
+                "transparent chat on stream."
+            )
+            overlay_intro.setWordWrap(True)
+            overlay_layout.addWidget(overlay_intro)
+            overlay_layout.addWidget(self._make_overlay_tab())
+            layout.addWidget(overlay_group)
             layout.addStretch(1)
-            return widget
+
+            self.obs_enabled.toggled.connect(self._set_obs_enabled)
+            self.obs_chat_enabled.toggled.connect(self._set_obs_chat_enabled)
+            self.obs_text_source.activated.connect(self._obs_text_source_changed)
+            self._obs_timer = QtCore.QTimer(self)
+            self._obs_timer.setInterval(3000)
+            self._obs_timer.timeout.connect(self._obs_poll)
+            self._obs_timer.start()
+            self._render_obs_state({"status": {"connected": False}, "error": ("", "")})
+            if self.obs_enabled.isChecked():
+                QtCore.QTimer.singleShot(0, self._obs_poll)
+
+            scroll_area = QtWidgets.QScrollArea()
+            scroll_area.setWidgetResizable(True)
+            scroll_area.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+            scroll_area.setWidget(content)
+            return scroll_area
 
         def _make_transcription_tab(self):
             widget = QtWidgets.QWidget()
@@ -2089,6 +2308,193 @@ if QtCore is not None:
             self._transcription_timer.start(1000)
             return widget
 
+        def _make_recording_settings(self):
+            from src import bili_recorder
+
+            group = QtWidgets.QGroupBox("Bilibili recording")
+            form = QtWidgets.QFormLayout(group)
+            intro = QtWidgets.QLabel(
+                "Tick \u201cAuto record when live\u201d on a Bilibili room to save its stream "
+                "as FLV (like BililiveRecorder). Recording stops when the room goes offline."
+            )
+            intro.setWordWrap(True)
+            form.addRow(intro)
+            folder_row = QtWidgets.QHBoxLayout()
+            self.record_folder = QtWidgets.QLineEdit(
+                self._settings.value(
+                    "record_folder", str(_ROOT / "recordings"), type=str
+                )
+            )
+            self.record_folder.editingFinished.connect(
+                lambda: self._save_record_setting(
+                    "record_folder", self.record_folder.text().strip()
+                )
+            )
+            folder_row.addWidget(self.record_folder, 1)
+            browse = QtWidgets.QPushButton("Browse\u2026")
+            browse.clicked.connect(self._browse_record_folder)
+            folder_row.addWidget(browse)
+            open_folder = QtWidgets.QPushButton("Open folder")
+            open_folder.clicked.connect(self._open_record_folder)
+            folder_row.addWidget(open_folder)
+            form.addRow("Save recordings to", folder_row)
+            self.record_quality = QtWidgets.QComboBox()
+            for qn, label in bili_recorder.QUALITIES.items():
+                self.record_quality.addItem(label, qn)
+            saved_qn = self._settings.value("record_quality", 10000, type=int)
+            self.record_quality.setCurrentIndex(
+                max(0, self.record_quality.findData(saved_qn))
+            )
+            self.record_quality.setToolTip(
+                "Original quality usually needs a Bilibili login; otherwise Bilibili "
+                "serves a lower quality."
+            )
+            self.record_quality.currentIndexChanged.connect(
+                lambda: self._save_record_setting(
+                    "record_quality", int(self.record_quality.currentData())
+                )
+            )
+            form.addRow("Preferred quality", self.record_quality)
+            self.record_danmaku = QtWidgets.QCheckBox(
+                "Save danmaku, Super Chats and gifts to an XML file next to each video"
+            )
+            self.record_danmaku.setChecked(
+                self._settings.value("record_danmaku", True, type=bool)
+            )
+            self.record_danmaku.toggled.connect(
+                lambda checked: self._save_record_setting("record_danmaku", bool(checked))
+            )
+            form.addRow(self.record_danmaku)
+            self._record_timer = QtCore.QTimer(self)
+            self._record_timer.timeout.connect(self._refresh_recording_status)
+            self._record_timer.start(1000)
+            return group
+
+        def _save_record_setting(self, key, value):
+            self._settings.setValue(key, value)
+            self._settings.sync()
+            if self._settings.status() != QtCore.QSettings.Status.NoError:
+                self._show_error("Unable to save recording settings.")
+
+        def _browse_record_folder(self):
+            folder = QtWidgets.QFileDialog.getExistingDirectory(
+                self, "Save recordings to", self.record_folder.text().strip()
+            )
+            if folder:
+                self.record_folder.setText(folder)
+                self._save_record_setting("record_folder", folder)
+
+        def _open_record_folder(self):
+            folder = Path(self.record_folder.text().strip() or _ROOT / "recordings")
+            try:
+                folder.mkdir(parents=True, exist_ok=True)
+            except OSError as exc:
+                self._show_error(f"Could not create the recording folder: {exc}")
+                return
+            QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromLocalFile(str(folder)))
+
+        def _record_auto_ids(self):
+            return set(self._settings.value("record_auto", [], type=list) or [])
+
+        def _set_record_auto(self, monitor_id, enabled):
+            auto_ids = self._record_auto_ids()
+            if enabled:
+                auto_ids.add(monitor_id)
+            else:
+                auto_ids.discard(monitor_id)
+            self._save_record_setting("record_auto", sorted(auto_ids))
+            entry = next(
+                (t for t in self._monitor_targets if t["id"] == monitor_id), None
+            )
+            if enabled and entry:
+                self._auto_record(entry, self._live_states.get(monitor_id, False))
+            elif not enabled:
+                self._stop_recording(monitor_id)
+
+        def _auto_record(self, entry, live):
+            monitor_id = entry["id"]
+            recorder = self._recorders.get(monitor_id)
+            if (
+                live
+                and entry["enabled"]
+                and monitor_id in self._record_auto_ids()
+                and not (recorder and recorder.is_running)
+            ):
+                self._start_recording(monitor_id)
+
+        def _start_recording(self, monitor_id):
+            from src import bili_recorder, bilibili
+
+            entry = next(
+                (t for t in self._monitor_targets if t["id"] == monitor_id), None
+            )
+            if not entry or entry["platform"] != "bilibili":
+                return
+            existing = self._recorders.get(monitor_id)
+            if existing and existing.is_running:
+                return
+            room_id = bilibili.parse_room_id(entry["target"])
+            if not room_id:
+                self._show_error("Invalid Bilibili room URL or ID.")
+                return
+            folder = self.record_folder.text().strip() or str(_ROOT / "recordings")
+            recorder = bili_recorder.BilibiliRecorder(
+                room_id,
+                folder,
+                quality=int(self.record_quality.currentData() or 10000),
+                cookies=self._login_data.get("bilibili") or {},
+                name=self._room_names.get(monitor_id, ""),
+                title=self._room_titles.get(monitor_id, ""),
+                save_danmaku=self.record_danmaku.isChecked(),
+            )
+            self._recorders[monitor_id] = recorder
+            recorder.start()
+            self._refresh_recording_status()
+
+        def _stop_recording(self, monitor_id):
+            recorder = self._recorders.get(monitor_id)
+            if recorder:
+                recorder.stop()
+            self._refresh_recording_status()
+
+        def _recording_status_text(self, monitor_id):
+            recorder = self._recorders.get(monitor_id)
+            if recorder is None:
+                return ""
+            state = recorder.snapshot()
+            if state["running"]:
+                status = state.get("status", "")
+                if status == "Recording":
+                    text = self.i18n.translate("\u23fa Recording", self._ui_language)
+                    if state.get("started_at"):
+                        text += " " + _format_record_duration(time.time() - state["started_at"])
+                    text += " \u00b7 " + _format_record_size(state.get("total_bytes", 0))
+                    if state.get("qn"):
+                        text += f" \u00b7 qn {state['qn']}"
+                    return text
+                return "\u23fa " + self.i18n.translate(status, self._ui_language)
+            if state.get("files"):
+                return self.i18n.translate(
+                    "Last recording: {size}", self._ui_language,
+                    size=_format_record_size(state.get("total_bytes", 0)),
+                )
+            return ""
+
+        def _refresh_recording_status(self):
+            for monitor_id, card in self._monitor_cards.items():
+                label = card.get("recording")
+                if label is None:
+                    continue
+                text = self._recording_status_text(monitor_id)
+                if label.text() != text:
+                    label.setText(text)
+                recorder = self._recorders.get(monitor_id)
+                state = recorder.snapshot() if recorder else {}
+                tooltip = state.get("error") or state.get("file", "")
+                if label.toolTip() != tooltip:
+                    label.setToolTip(tooltip)
+                label.setVisible(bool(text))
+
         def _make_analytics_tab(self):
             widget = QtWidgets.QWidget()
             layout = QtWidgets.QVBoxLayout(widget)
@@ -2121,21 +2527,51 @@ if QtCore is not None:
             widget = QtWidgets.QWidget()
             layout = QtWidgets.QVBoxLayout(widget)
             layout.addWidget(QtWidgets.QLabel("Start the local overlay server for an OBS Browser Source."))
+            sites_form = QtWidgets.QFormLayout()
             self.overlay_sites = {}
-            for platform in ("youtube", "bilibili", "missevan"):
-                check = QtWidgets.QCheckBox(platform.title())
-                check.setChecked(True)
+            self.overlay_rooms = {}
+            for platform, title in (
+                ("youtube", "YouTube"),
+                ("bilibili", "Bilibili"),
+                ("missevan", "MissEvan"),
+            ):
+                check = QtWidgets.QCheckBox(title)
+                check.setChecked(
+                    self._settings.value(f"overlay_site_{platform}", True, type=bool)
+                )
+                check.toggled.connect(
+                    lambda checked, key=f"overlay_site_{platform}":
+                    self._settings.setValue(key, bool(checked))
+                )
+                room = QtWidgets.QComboBox()
+                room.setMinimumWidth(240)
+                room.setToolTip(
+                    self.i18n.translate(
+                        "Monitored {site} room shown in the overlay",
+                        self._ui_language,
+                        site=title,
+                    )
+                )
+                room.currentIndexChanged.connect(
+                    lambda _, key=platform: self._overlay_room_changed(key)
+                )
+                check.toggled.connect(room.setVisible)
+                room.setVisible(check.isChecked())
                 self.overlay_sites[platform] = check
-                layout.addWidget(check)
+                self.overlay_rooms[platform] = room
+                sites_form.addRow(check, room)
+            layout.addLayout(sites_form)
+            self._refresh_overlay_room_selectors()
+            counts_form = QtWidgets.QFormLayout()
             self.overlay_count = QtWidgets.QSpinBox()
             self.overlay_count.setRange(1, 50)
             self.overlay_count.setValue(5)
-            layout.addWidget(self.overlay_count)
+            counts_form.addRow("Chat messages", self.overlay_count)
             self.overlay_paid_count = QtWidgets.QSpinBox()
             self.overlay_paid_count.setRange(0, 50)
             self.overlay_paid_count.setValue(3)
-            layout.addWidget(QtWidgets.QLabel("Paid messages"))
-            layout.addWidget(self.overlay_paid_count)
+            counts_form.addRow("Paid messages", self.overlay_paid_count)
+            layout.addLayout(counts_form)
             self.overlay_show_names = QtWidgets.QCheckBox("Show usernames")
             self.overlay_show_names.setChecked(True)
             layout.addWidget(self.overlay_show_names)
@@ -2224,6 +2660,11 @@ if QtCore is not None:
                     pass
                 previous = self._live_states.get(monitor_id)
                 self._live_states[monitor_id] = live
+                room_title = str(info.get("title") or "").strip()
+                if room_title:
+                    self._room_titles[monitor_id] = room_title
+                if entry["platform"] == "bilibili":
+                    self._auto_record(entry, live)
                 if previous is False and live and self.notify_live_check.isChecked():
                     self._notify(f"{entry['platform'].title()} is live", name)
                 if live:
@@ -2274,6 +2715,10 @@ if QtCore is not None:
 
             allowed, blocked = self._filter.filter_messages(messages)
             self._blocked_messages.extend(blocked)
+            for message in messages:
+                recorder = self._recorders.get(message.get("_monitor_id", ""))
+                if recorder is not None and recorder.is_running and not message.get("history"):
+                    recorder.add_danmaku(message)
             for message in allowed:
                 msg = dict(message)
                 msg["_arrived"] = time.time()
@@ -2345,16 +2790,7 @@ if QtCore is not None:
             self._messages = self._messages[-self.max_messages.value():]
             self._paid = self._paid[-1000:]
             self._refresh_feeds()
-            if self.obs_chat_enabled.isChecked() and self.obs_source.text().strip():
-                from src import obs_ctrl
-                source = self.obs_source.text().strip()
-                recent = [
-                    msg.get("text", "")
-                    for msg in self._messages
-                    if msg.get("type") in ("textMessageEvent", "danmaku") and msg.get("text")
-                ][-10:]
-                text = "\n".join(reversed(recent))
-                self._run_task(lambda: obs_ctrl.set_text_source(source, text))
+            self._sync_obs_chat()
             if allowed:
                 self._save_archive()
 
@@ -3771,52 +4207,293 @@ if QtCore is not None:
                     )
                 )
 
-        def _obs_call(self, operation, callback=None):
-            from src import obs_ctrl
-            self._run_task(lambda: operation(obs_ctrl), callback)
+        def _obs_text(self, text, **kwargs):
+            return self.i18n.translate(text, self._ui_language, **kwargs)
 
-        def _obs_status(self):
-            self._obs_call(lambda obs: obs.get_status(), lambda status: self.obs_status.setText(json.dumps(status, indent=2)))
+        def _set_obs_enabled(self, enabled):
+            self._settings.setValue("obs_enabled", bool(enabled))
+            self._settings.sync()
+            self._obs_chat_last = None
+            if enabled:
+                from src import obs_ctrl
 
-        def _obs_stream_start(self):
-            from src import obs_ctrl
-            self._run_task(obs_ctrl.start_stream, lambda ok: self.obs_status.setText("Stream started." if ok else "Could not start stream; check OBS connection and settings."))
+                obs_ctrl.retry_now()
+                self._obs_poll()
+            else:
+                self._obs_source_snapshot = None
+                self._render_obs_state({"status": {"connected": False}, "error": ("", "")})
 
-        def _obs_stream_stop(self):
-            from src import obs_ctrl
-            self._run_task(obs_ctrl.stop_stream, lambda ok: self.obs_status.setText("Stream stopped." if ok else "Could not stop stream."))
+        def _set_obs_chat_enabled(self, enabled):
+            self._settings.setValue("obs_chat_enabled", bool(enabled))
+            self._settings.sync()
+            self._obs_chat_last = None
+            if enabled:
+                self._obs_poll()
+            else:
+                self._render_obs_text_sources(None, "")
 
-        def _obs_record_start(self):
-            from src import obs_ctrl
-            self._run_task(obs_ctrl.start_recording, lambda ok: self.obs_status.setText("Recording started." if ok else "Could not start recording."))
+        def _obs_text_source_changed(self, _index=None):
+            source = self.obs_text_source.currentData() or ""
+            self._settings.setValue("obs_chat_source", source)
+            self._settings.sync()
+            self._obs_chat_last = None
+            self._sync_obs_chat()
 
-        def _obs_record_stop(self):
-            from src import obs_ctrl
-            self._run_task(obs_ctrl.stop_recording, lambda ok: self.obs_status.setText("Recording stopped." if ok else "Could not stop recording."))
+        def _obs_poll(self):
+            if not self.obs_enabled.isChecked() or self._obs_poll_running:
+                return
+            self._obs_poll_running = True
+            chat_enabled = self.obs_chat_enabled.isChecked()
 
-        def _obs_scenes(self):
-            from src import obs_ctrl
-            self._run_task(obs_ctrl.get_scenes, lambda scenes: (self.obs_scenes.clear(), self.obs_scenes.addItems(scenes)))
+            def fetch():
+                from src import obs_ctrl
 
-        def _obs_switch_scene(self):
-            from src import obs_ctrl
-            scene = self.obs_scenes.currentText()
-            self._run_task(lambda: obs_ctrl.switch_scene(scene), lambda ok: self.obs_status.setText("Scene switched." if ok else "Could not switch scene."))
+                state = {
+                    "status": {"connected": False},
+                    "error": ("", ""),
+                    "scenes": [],
+                    "sources": [],
+                    "text_sources": None,
+                    "text_error": "",
+                }
+                try:
+                    state["status"] = obs_ctrl.get_status()
+                    state["error"] = tuple(obs_ctrl.last_error)
+                    if state["status"].get("connected"):
+                        state["scenes"] = obs_ctrl.get_scenes()
+                        scene = state["status"].get("current_scene") or ""
+                        if scene:
+                            state["sources"] = obs_ctrl.get_sources(scene)
+                        if chat_enabled:
+                            try:
+                                state["text_sources"] = obs_ctrl.get_text_sources()
+                            except Exception as exc:
+                                state["text_error"] = str(exc)
+                except Exception as exc:
+                    state["status"] = {"connected": False}
+                    state["error"] = ("unreachable", str(exc))
+                return state
 
-        def _obs_refresh_sources(self):
-            from src import obs_ctrl
-            scene = self.obs_scenes.currentText()
-            self._run_task(
-                lambda: obs_ctrl.get_sources(scene),
-                self._obs_show_sources,
+            self._run_task(fetch, self._obs_poll_finished)
+
+        def _obs_poll_finished(self, state):
+            self._obs_poll_running = False
+            if not self.obs_enabled.isChecked():
+                return
+            self._render_obs_state(state)
+            self._sync_obs_chat()
+
+        def _render_obs_state(self, state):
+            self._obs_last_state = state
+            enabled = self.obs_enabled.isChecked()
+            status = state.get("status") or {}
+            connected = bool(enabled and status.get("connected"))
+            self._obs_connected = connected
+            self.obs_controls.setVisible(connected)
+            self.obs_setup.setVisible(enabled and not connected)
+            self.obs_status_detail.setVisible(False)
+            self.obs_setup_text.setText(
+                _OBS_SETUP_MD
+                if self._ui_language == "en"
+                else self._obs_text("obs_setup_md")
             )
+            if not enabled:
+                self.obs_status.setText(self._obs_text("OBS functions are off."))
+                return
+            if not connected:
+                from src.config import OBS_HOST, OBS_PORT
 
-        def _obs_show_sources(self, sources):
+                message, detail = _obs_connection_message(
+                    tuple(state.get("error") or ("", "")),
+                    OBS_HOST,
+                    OBS_PORT,
+                    self._obs_text,
+                )
+                self.obs_status.setText(message)
+                self.obs_status_detail.setText(detail)
+                self.obs_status_detail.setVisible(bool(detail))
+                return
+            self.obs_status.setText(self._obs_text("OBS connected ✓"))
+            self.obs_metrics["cpu"].setText(f"{status.get('cpu_usage', 0)}%")
+            self.obs_metrics["ram"].setText(f"{status.get('memory_usage', 0)} MB")
+            self.obs_metrics["fps"].setText(f"{status.get('fps', 0)}")
+            self.obs_metrics["dropped"].setText(f"{status.get('output_skipped_frames', 0)}")
+            self._obs_streaming = bool(status.get("streaming"))
+            self._obs_recording = bool(status.get("recording"))
+            self.obs_stream_state.setText(
+                self._obs_text("Streaming is LIVE" if self._obs_streaming else "Not streaming")
+            )
+            self.obs_stream_button.setText(
+                self._obs_text("⏹ Stop Stream" if self._obs_streaming else "▶️ Start Stream")
+            )
+            self.obs_record_state.setText(
+                self._obs_text(
+                    "Recording in progress" if self._obs_recording else "Not recording"
+                )
+            )
+            self.obs_record_button.setText(
+                self._obs_text(
+                    "⏹ Stop Recording" if self._obs_recording else "▶️ Start Recording"
+                )
+            )
+            scenes = list(state.get("scenes") or [])
+            current_scene = status.get("current_scene") or ""
+            if [self.obs_scenes.itemText(i) for i in range(self.obs_scenes.count())] != scenes:
+                self.obs_scenes.blockSignals(True)
+                self.obs_scenes.clear()
+                self.obs_scenes.addItems(scenes)
+                self.obs_scenes.blockSignals(False)
+            if not self.obs_scenes.view().isVisible():
+                index = self.obs_scenes.findText(current_scene)
+                if index >= 0 and index != self.obs_scenes.currentIndex():
+                    self.obs_scenes.blockSignals(True)
+                    self.obs_scenes.setCurrentIndex(index)
+                    self.obs_scenes.blockSignals(False)
+            self._obs_show_sources(current_scene, state.get("sources") or [])
+            if self.obs_chat_enabled.isChecked():
+                self._render_obs_text_sources(
+                    state.get("text_sources"), state.get("text_error", "")
+                )
+            else:
+                self._render_obs_text_sources(None, "")
+
+        def _render_obs_text_sources(self, sources, error):
+            chat_enabled = self.obs_chat_enabled.isChecked()
+            self.obs_text_source_row.setVisible(chat_enabled and bool(sources))
+            warning = ""
+            if chat_enabled and error:
+                warning = self._obs_text("Couldn't list OBS Text sources: {err}", err=error)
+            elif chat_enabled and sources is not None and not sources:
+                warning = self._obs_text("Add a Text source in OBS to display chat.")
+            if warning or not chat_enabled:
+                self.obs_text_warning.setText(warning)
+            self.obs_text_warning.setVisible(bool(self.obs_text_warning.text()) and chat_enabled)
+            if sources is None:
+                return
+            sources = list(sources)
+            current = [
+                self.obs_text_source.itemData(i) for i in range(self.obs_text_source.count())
+            ]
+            saved = self._settings.value("obs_chat_source", "", type=str)
+            if current != sources:
+                self.obs_text_source.blockSignals(True)
+                self.obs_text_source.clear()
+                for name in sources:
+                    self.obs_text_source.addItem(name, name)
+                self.obs_text_source.blockSignals(False)
+            if sources:
+                index = self.obs_text_source.findData(saved)
+                if index < 0:
+                    index = 0
+                if index != self.obs_text_source.currentIndex():
+                    self.obs_text_source.blockSignals(True)
+                    self.obs_text_source.setCurrentIndex(index)
+                    self.obs_text_source.blockSignals(False)
+                selected = self.obs_text_source.currentData() or ""
+                if selected != saved:
+                    self._settings.setValue("obs_chat_source", selected)
+                    self._settings.sync()
+                    self._obs_chat_last = None
+                self.obs_text_warning.setText("")
+                self.obs_text_warning.setVisible(False)
+
+        def _sync_obs_chat(self):
+            if (
+                not self.obs_enabled.isChecked()
+                or not self.obs_chat_enabled.isChecked()
+                or not self._obs_connected
+            ):
+                if not self.obs_chat_enabled.isChecked():
+                    self._obs_chat_last = None
+                return
+            source = self.obs_text_source.currentData() or ""
+            if not source:
+                return
+            from src import obs_ctrl, translate
+
+            chat = [msg for msg in self._messages if self._is_selected_chat_message(msg)]
+            translate_enabled, target = self._translate_enabled, self._translate_target
+            if translate_enabled:
+                translate.prefetch(
+                    [msg.get("text", "") for msg in obs_ctrl.recent_chat(chat)], target
+                )
+            text = obs_ctrl.format_chat_text(
+                chat, translate_enabled, target, translate.get_translation
+            )
+            now = time.monotonic()
+            if not _obs_chat_update_due(
+                self._obs_chat_last, self._obs_chat_last_at, source, text, now
+            ):
+                return
+            self._obs_chat_last = (source, text)
+            self._obs_chat_last_at = now
+
+            def push():
+                try:
+                    obs_ctrl.set_text_source(source, text)
+                except Exception as exc:
+                    return str(exc)
+                return ""
+
+            self._run_task(push, self._obs_chat_pushed)
+
+        def _obs_chat_pushed(self, error):
+            if error:
+                self._obs_chat_last = None
+                self.obs_text_warning.setText(
+                    self._obs_text("Couldn't update OBS chat text: {err}", err=error)
+                )
+                self.obs_text_warning.setVisible(True)
+
+        def _obs_action(self, operation, failure):
+            def run():
+                from src import obs_ctrl
+
+                try:
+                    return bool(operation(obs_ctrl))
+                except Exception:
+                    return False
+
+            def done(ok):
+                if not ok:
+                    self._show_error(self._obs_text(failure))
+                self._obs_poll()
+
+            self._run_task(run, done)
+
+        def _obs_toggle_stream(self):
+            if self._obs_streaming:
+                self._obs_action(lambda obs: obs.stop_stream(), "Could not stop stream.")
+            else:
+                self._obs_action(
+                    lambda obs: obs.start_stream(),
+                    "Could not start stream; check OBS connection and settings.",
+                )
+
+        def _obs_toggle_recording(self):
+            if self._obs_recording:
+                self._obs_action(lambda obs: obs.stop_recording(), "Could not stop recording.")
+            else:
+                self._obs_action(lambda obs: obs.start_recording(), "Could not start recording.")
+
+        def _obs_switch_scene(self, _index=None):
+            scene = self.obs_scenes.currentText()
+            if scene:
+                self._obs_source_snapshot = None
+                self._obs_action(
+                    lambda obs: obs.switch_scene(scene), "Could not switch scene."
+                )
+
+        def _obs_show_sources(self, scene, sources):
+            snapshot = (scene, tuple((s.get("name"), bool(s.get("visible"))) for s in sources))
+            if snapshot == self._obs_source_snapshot:
+                return
+            self._obs_source_snapshot = snapshot
             self.obs_sources.blockSignals(True)
             self.obs_sources.clear()
             for source in sources:
                 item = QtWidgets.QListWidgetItem(source["name"])
-                item.setData(QtCore.Qt.ItemDataRole.UserRole, source)
+                item.setData(QtCore.Qt.ItemDataRole.UserRole, scene)
                 item.setFlags(item.flags() | QtCore.Qt.ItemFlag.ItemIsUserCheckable)
                 item.setCheckState(
                     QtCore.Qt.CheckState.Checked if source["visible"] else QtCore.Qt.CheckState.Unchecked
@@ -3825,39 +4502,38 @@ if QtCore is not None:
             self.obs_sources.blockSignals(False)
 
         def _obs_source_visibility_changed(self, item):
-            source = item.data(QtCore.Qt.ItemDataRole.UserRole) or {}
-            scene, name = self.obs_scenes.currentText(), item.text()
+            scene = item.data(QtCore.Qt.ItemDataRole.UserRole) or self.obs_scenes.currentText()
+            name = item.text()
             visible = item.checkState() == QtCore.Qt.CheckState.Checked
-            from src import obs_ctrl
-            self._run_task(
-                lambda: obs_ctrl.set_source_visibility(scene, name, visible),
-                lambda ok: self._show_error(
-                    f"{'Updated' if ok else 'Could not update'} source {name} visibility."
-                ),
+            self._obs_source_snapshot = None
+            self._obs_action(
+                lambda obs: obs.set_source_visibility(scene, name, visible),
+                f"Could not update source {name} visibility.",
             )
-
-        def _obs_set_text(self):
-            from src import obs_ctrl
-            name, text = self.obs_source.text().strip(), self.obs_text.text()
-            self._run_task(lambda: obs_ctrl.set_text_source(name, text), lambda _: self.obs_status.setText(f"Updated OBS text source {name}."))
 
         def _start_overlay(self):
             from src import overlay_server, config
             from src import bilibili, missevan, youtube, youtube_web
-            targets = {key: line.text().strip() for key, line in self.target_inputs.items()}
+            targets = {}
+            for platform, check in self.overlay_sites.items():
+                monitor_id = str(self.overlay_rooms[platform].currentData() or "")
+                entry = next(
+                    (t for t in self._monitor_targets if t["id"] == monitor_id), None
+                )
+                targets[platform] = entry["target"].strip() if entry and check.isChecked() else ""
             yt_target = targets["youtube"]
-            if self.overlay_sites["youtube"].isChecked():
+            if yt_target:
                 yt_target = youtube_web.channel_url(yt_target) or youtube.extract_video_id(yt_target)
-                if not yt_target and targets["youtube"]:
+                if not yt_target:
                     self._show_error("Enter a valid YouTube channel, live URL, or video ID for the overlay.")
                     return
             selected = {
-                "youtube": yt_target if self.overlay_sites["youtube"].isChecked() else "",
-                "bilibili": bilibili.parse_room_id(targets["bilibili"]) if self.overlay_sites["bilibili"].isChecked() else "",
-                "missevan": missevan.parse_room_id(targets["missevan"]) if self.overlay_sites["missevan"].isChecked() else "",
+                "youtube": yt_target,
+                "bilibili": bilibili.parse_room_id(targets["bilibili"]) if targets["bilibili"] else "",
+                "missevan": missevan.parse_room_id(targets["missevan"]) if targets["missevan"] else "",
             }
             if not any(selected.values()):
-                self._show_error("Select at least one valid stream for the overlay.")
+                self._show_error("Select at least one monitored room for the overlay.")
                 return
             count = self.overlay_count.value()
             host = (
@@ -4358,6 +5034,11 @@ if QtCore is not None:
                 self._transcriber.stop()
             if self._worker:
                 self._worker.stop()
+            self._obs_timer.stop()
+            for recorder in self._recorders.values():
+                recorder.stop()
+            for recorder in self._recorders.values():
+                recorder.stop(wait=3)
             self._save_monitor_targets()
             self._save_archive()
             self._executor.shutdown(wait=False, cancel_futures=True)

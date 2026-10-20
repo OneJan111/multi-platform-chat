@@ -92,6 +92,14 @@ class PlatformTotalsTests(unittest.TestCase):
             "type": "superchat", "currency": "¥", "value": 10, "text": "SC ¥10",
         }), "")
 
+    def test_amount_label_shows_paid_event_prices_without_duplicates(self):
+        self.assertEqual(gifts.amount_label({
+            "type": "superchat", "currency": "¥", "value": 10, "text": "Thanks!",
+        }), "¥10")
+        self.assertEqual(gifts.amount_label({
+            "type": "superchat", "currency": "$", "value": 5, "text": "[Super Chat $5.00]",
+        }), "")
+
 
 if __name__ == "__main__":
     unittest.main()

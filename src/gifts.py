@@ -73,6 +73,11 @@ def gift_price_label(message: dict) -> str:
     """Return the known gift amount unless the message text already displays it."""
     if message.get("type") != "gift":
         return ""
+    return amount_label(message)
+
+
+def amount_label(message: dict) -> str:
+    """Return a known paid-event amount unless the message text already displays it."""
     currency, value = message.get("currency"), message.get("value")
     if not currency or not value:
         return ""
