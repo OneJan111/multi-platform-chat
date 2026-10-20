@@ -6,6 +6,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from src.tts import resolve_language
+
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -116,6 +118,7 @@ class SimpleAppConfigTests(unittest.TestCase):
             "is_emoji_only": lambda msg: False,
             "strip_emoji": lambda text, platform: text,
             "matches_language": lambda text, language: True,
+            "resolve_language": resolve_language,
             "format_announcement": lambda *args: "paid announcement",
             "TTS_LANGUAGES": {"en": ("English", "English", "en-US"), "auto": ("Auto", "Auto", "en-US")},
         }
@@ -131,50 +134,66 @@ class SimpleAppConfigTests(unittest.TestCase):
 
         self.assertEqual(state["simple_tts_queue"][0]["text"], "Hello everyone")
 
-    def test_gift_tts_uses_auto_language_and_announcement_format(self):
+    def test_gift_tts_uses_selected_language_and_announcement_format(self):
         source = (ROOT / "simple_app.py").read_text(encoding="utf-8")
         function = next(
             node for node in ast.parse(source).body
             if isinstance(node, ast.FunctionDef) and node.name == "_queue_speech"
         )
-        state = {
-            "simple_tts_enabled": True,
-            "simple_tts_read_gifts": True,
-            "simple_tts_read_chat": True,
-            "simple_tts_language": "ja",
-            "simple_tts_translate": False,
-            "simple_translation_enabled": False,
-            "simple_tts_queue": [],
-            "simple_tts_pending": [],
-            "simple_tts_rate": 150,
-            "simple_tts_volume": 1.0,
-        }
-        announcements = []
-        namespace = {
-            "st": SimpleNamespace(session_state=state),
-            "is_paid": lambda msg: True,
-            "is_gift": lambda msg: True,
-            "is_emoji_only": lambda msg: False,
-            "strip_emoji": lambda text, platform: text,
-            "matches_language": lambda text, language: True,
-            "format_announcement": lambda kind, author, text, lang: (
-                announcements.append((kind, author, text, lang)) or f"{author} sent {text}"
-            ),
-            "TTS_LANGUAGES": {"auto": ("Auto", "", "", ""), "ja": ("Japanese", "ja", "ja-JP", "")},
-        }
-        exec(compile(ast.Module(body=[function], type_ignores=[]), "simple_app.py", "exec"), namespace)
+        cases = (
+            ("ja", "ja-JP", "English flower"),
+            ("zh", "zh-CN", "English flower"),
+            ("auto", "ja-JP", "花です"),
+            ("auto", "zh-CN", "鲜花"),
+            ("auto", "en-US", "Flower"),
+        )
+        for language, voice, text in cases:
+            with self.subTest(language=language, text=text):
+                state = {
+                    "simple_tts_enabled": True,
+                    "simple_tts_read_gifts": True,
+                    "simple_tts_read_chat": True,
+                    "simple_tts_language": language,
+                    "simple_tts_translate": False,
+                    "simple_translation_enabled": False,
+                    "simple_tts_queue": [],
+                    "simple_tts_pending": [],
+                    "simple_tts_rate": 150,
+                    "simple_tts_volume": 1.0,
+                }
+                announcements = []
+                namespace = {
+                    "st": SimpleNamespace(session_state=state),
+                    "is_paid": lambda msg: True,
+                    "is_gift": lambda msg: True,
+                    "is_emoji_only": lambda msg: False,
+                    "strip_emoji": lambda text, platform: text,
+                    "matches_language": lambda text, language: True,
+                    "resolve_language": resolve_language,
+                    "format_announcement": lambda kind, author, text, lang: (
+                        announcements.append((kind, author, text, lang)) or f"{lang} announcement"
+                    ),
+                    "TTS_LANGUAGES": {
+                        "auto": ("Auto", "", "", ""),
+                        "ja": ("Japanese", "ja", "ja-JP", ""),
+                        "zh": ("Chinese", "zh-CN", "zh-CN", ""),
+                        "en": ("English", "en", "en-US", ""),
+                    },
+                }
+                exec(compile(ast.Module(body=[function], type_ignores=[]), "simple_app.py", "exec"), namespace)
 
-        namespace["_queue_speech"]({
-            "id": "gift-1",
-            "type": "gift",
-            "author": "Gifter",
-            "text": "Flower ×2",
-            "platform": "missevan",
-        })
+                namespace["_queue_speech"]({
+                    "id": "gift-1",
+                    "type": "gift",
+                    "author": "Gifter",
+                    "text": text,
+                    "platform": "missevan",
+                })
 
-        self.assertEqual(announcements, [("gift", "Gifter", "Flower ×2", "auto")])
-        self.assertEqual(state["simple_tts_queue"][0]["lang"], "")
-        self.assertTrue(state["simple_tts_queue"][0]["priority"])
+                self.assertEqual(announcements, [("gift", "Gifter", text, language)])
+                self.assertEqual(state["simple_tts_queue"][0]["text"], f"{language} announcement")
+                self.assertEqual(state["simple_tts_queue"][0]["lang"], voice)
+                self.assertTrue(state["simple_tts_queue"][0]["priority"])
 
     def test_profit_totals_accumulate_by_currency(self):
         source = (ROOT / "simple_app.py").read_text(encoding="utf-8")

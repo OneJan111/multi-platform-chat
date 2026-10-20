@@ -73,7 +73,10 @@ def protect(text: str, target: str) -> tuple[str, dict[str, str]]:
 def restore(text: str, replacements: dict[str, str]) -> str:
     """Replace protected tokens with their glossary translations."""
     for token, translation in replacements.items():
-        text = re.sub(re.escape(token), lambda _: translation, text, flags=re.IGNORECASE)
+        pattern = re.escape(token).replace(
+            "GLOSSARY", r"(?:GLOSSARY|用語集)"
+        )
+        text = re.sub(pattern, lambda _: translation, text, flags=re.IGNORECASE)
     return text
 
 

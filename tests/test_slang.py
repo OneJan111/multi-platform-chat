@@ -35,6 +35,17 @@ class StreamingSlangTests(unittest.TestCase):
         self.assertIn("renew a Captain membership", result[0][0])
         self.assertIn("become a Captain member", result[0][0])
 
+    def test_japanese_translation_restores_localized_glossary_marker(self):
+        response = Mock()
+        response.json.return_value = [["MPC用語集TOKEN0END", "zh-CN"]]
+        with (
+            patch.object(translate, "INDEX_TRANSLATE_API_BASE", ""),
+            patch.object(translate._session, "get", return_value=response),
+        ):
+            result = translate.translate_batch(["舰长"], "ja")
+
+        self.assertEqual(result, [("キャプテン", "zh-CN")])
+
 
 if __name__ == "__main__":
     unittest.main()

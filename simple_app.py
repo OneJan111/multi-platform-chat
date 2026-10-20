@@ -34,6 +34,7 @@ from src.tts import (
     is_gift,
     is_paid,
     matches_language,
+    resolve_language,
     strip_emoji,
 )
 
@@ -345,7 +346,7 @@ def _queue_speech(msg: dict) -> None:
             return
         text = strip_emoji(text, msg.get("platform", "")) or text
 
-    lang = "auto" if is_gift(msg) else st.session_state["simple_tts_language"]
+    lang = st.session_state["simple_tts_language"]
     if not paid and not st.session_state["simple_tts_translate"] \
             and not matches_language(text, lang):
         return
@@ -364,10 +365,11 @@ def _queue_speech(msg: dict) -> None:
         format_announcement(msg.get("type", ""), msg.get("author", ""), text, lang)
         if paid else text
     )
+    speech_lang = resolve_language(lang, text)
     st.session_state["simple_tts_queue"].append({
         "id": str(msg.get("id") or f"{msg.get('platform')}:{time.time_ns()}"),
         "text": line,
-        "lang": TTS_LANGUAGES.get(lang, TTS_LANGUAGES["auto"])[2],
+        "lang": TTS_LANGUAGES.get(speech_lang, TTS_LANGUAGES["auto"])[2],
         "rate": st.session_state["simple_tts_rate"] / 150,
         "volume": st.session_state["simple_tts_volume"],
         "priority": paid,
@@ -400,10 +402,11 @@ def _flush_tts_pending() -> None:
             format_announcement(msg.get("type", ""), msg.get("author", ""), text, lang)
             if paid else text
         )
+        speech_lang = resolve_language(lang, text)
         st.session_state["simple_tts_queue"].append({
             "id": str(msg.get("id") or f"{msg.get('platform')}:{time.time_ns()}"),
             "text": line,
-            "lang": TTS_LANGUAGES.get(lang, TTS_LANGUAGES["auto"])[2],
+            "lang": TTS_LANGUAGES.get(speech_lang, TTS_LANGUAGES["auto"])[2],
             "rate": st.session_state["simple_tts_rate"] / 150,
             "volume": st.session_state["simple_tts_volume"],
             "priority": paid,
