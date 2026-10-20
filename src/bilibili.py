@@ -256,6 +256,27 @@ def _guard_name(level) -> str:
         return ""
 
 
+def _fan_medal(data) -> dict:
+    """Normalize the medal tuple in DANMU_MSG info[3] for display."""
+    if isinstance(data, dict):
+        level = data.get("medal_level") or data.get("level") or 0
+        name = data.get("medal_name") or data.get("name") or ""
+        color = data.get("medal_color") or data.get("color") or 0
+    elif isinstance(data, (list, tuple)) and len(data) >= 2:
+        level, name = data[0], data[1]
+        color = data[4] if len(data) > 4 else 0
+    else:
+        return {}
+    try:
+        level = int(level or 0)
+        color = int(color or 0)
+    except (TypeError, ValueError):
+        return {}
+    if level <= 0:
+        return {}
+    return {"level": level, "name": str(name or ""), "color": color}
+
+
 def _pb_fields(buf: bytes) -> dict[int, list]:
     """Minimal protobuf wire decoder: field number -> list of raw values."""
     fields: dict[int, list] = {}
@@ -356,6 +377,7 @@ class DanmakuListener:
         self._task: Optional[asyncio.Task] = None
         # UID used in the WebSocket handshake; 0 means anonymous (Bilibili masks usernames).
         self.connected_uid: Optional[int] = None
+        self.error = ""
         # The starting user's login, captured here: the listener thread has no Streamlit session.
         self._login = _cookie_values()
 
@@ -369,6 +391,7 @@ class DanmakuListener:
 
     def start(self) -> bool:
         if not BILIBILI_LIB_OK:
+            self.error = "bilibili-api-python is not installed."
             return False
         if self._running:
             return True
@@ -404,14 +427,15 @@ class DanmakuListener:
                     self.connected_uid = int(danmaku.credential.dedeuserid or 0)
                 except (TypeError, ValueError):
                     self.connected_uid = 0
+                self.error = ""
 
             @danmaku.on("DANMU_MSG")
             async def on_danmu(event):
                 info = event["data"]["info"]
                 meta = info[0] if info and isinstance(info[0], list) else []
+                fan_medal = _fan_medal(info[3] if len(info) > 3 else None)
                 emote_map, sticker = emotes.parse_danmu_emotes(meta)
-                self.messages.append(
-                    {
+                message = {
                         "id": f"bili_{time.time_ns()}",
                         "platform": "bilibili",
                         "author": info[2][1] if len(info) > 2 else "?",
@@ -432,7 +456,9 @@ class DanmakuListener:
                         "avatar": "",
                         "color": meta[3] if len(meta) > 3 else 16777215,
                     }
-                )
+                if fan_medal:
+                    message["fan_medal"] = fan_medal
+                self.messages.append(message)
 
             @danmaku.on("SUPER_CHAT_MESSAGE")
             async def on_superchat(event):
@@ -515,8 +541,10 @@ class DanmakuListener:
                 return
             self._task = asyncio.ensure_future(danmaku.connect())
             await self._task
-        except (Exception, asyncio.CancelledError):
+        except asyncio.CancelledError:
             pass
+        except Exception as exc:
+            self.error = f"{type(exc).__name__}: {exc}"
         finally:
             self._running = False
 

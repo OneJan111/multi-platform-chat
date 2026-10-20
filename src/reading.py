@@ -128,3 +128,71 @@ def segments(text: str, mode: str = "auto") -> tuple[tuple[str, str], ...]:
     else:
         return ()
     return tuple(segs) if any(rd for _, rd in segs) else ()
+
+
+def ruby_html(
+    text: str,
+    mode: str = "auto",
+    *,
+    max_width: int | None = None,
+    font_size: float = 13,
+) -> str:
+    """Return escaped rich text with each reading centered above its matching base text."""
+    annotated = segments(text, mode)
+    if not annotated:
+        return _esc(text).replace("\n", "<br>")
+
+    rows: list[list[tuple[str, str]]] = [[]]
+    row_width = 0.0
+    width_limit = max_width if max_width and max_width > 0 else None
+    font_size = max(float(font_size), 1.0)
+
+    def append_cell(base: str, reading: str) -> None:
+        nonlocal row_width
+        cell_width = max(
+            len(base) * font_size,
+            len(reading) * font_size * 0.62,
+        ) + 4
+        if (
+            width_limit
+            and rows[-1]
+            and row_width + cell_width > width_limit
+        ):
+            rows.append([])
+            row_width = 0.0
+        rows[-1].append((base, reading))
+        row_width += cell_width
+
+    for base, reading in annotated:
+        if reading:
+            append_cell(base, reading)
+            continue
+        for char in base:
+            if char == "\n":
+                if rows[-1]:
+                    rows.append([])
+                    row_width = 0.0
+            else:
+                append_cell(char, "")
+
+    rendered_rows = []
+    for row in rows:
+        if not row:
+            continue
+        reading_cells = "".join(
+            f'<td align="center" valign="bottom"><small>{_esc(reading)}</small></td>'
+            for _, reading in row
+        )
+        text_cells = "".join(
+            '<td align="center">'
+            f'{_esc(base).replace(" ", "&nbsp;")}'
+            "</td>"
+            for base, _ in row
+        )
+        rendered_rows.append(f"<tr>{reading_cells}</tr><tr>{text_cells}</tr>")
+
+    return (
+        '<table cellspacing="0" cellpadding="0" border="0">'
+        f"{''.join(rendered_rows)}"
+        "</table>"
+    )

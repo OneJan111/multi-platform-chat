@@ -28,6 +28,49 @@ class MissEvanGiftTests(unittest.TestCase):
         self.assertEqual((message["currency"], message["value"]), ("💎", 6.0))
 
 
+class MissEvanHistoryTests(unittest.TestCase):
+    def test_history_ignores_api_error_string_in_info(self):
+        listener = MissEvanListener.__new__(MissEvanListener)
+        listener.room_id = "123"
+        listener.messages = []
+        listener._seen = set()
+        response = Mock()
+        response.json.return_value = {"code": 1, "info": "history is unavailable"}
+        session = Mock()
+        session.get.return_value = response
+
+        listener._load_history(session)
+
+        self.assertEqual(listener.messages, [])
+
+    def test_history_loads_message_entries(self):
+        listener = MissEvanListener.__new__(MissEvanListener)
+        listener.room_id = "123"
+        listener.messages = []
+        listener._seen = set()
+        listener._admins = set()
+        listener._creator_id = 0
+        response = Mock()
+        response.json.return_value = {
+            "info": {
+                "history": [{
+                    "type": "message",
+                    "msg_id": "history-1",
+                    "user": {"user_id": 5, "username": "viewer"},
+                    "message": "hello",
+                }],
+            },
+        }
+        session = Mock()
+        session.get.return_value = response
+
+        listener._load_history(session)
+
+        self.assertEqual(len(listener.messages), 1)
+        self.assertEqual(listener.messages[0]["text"], "hello")
+        self.assertTrue(listener.messages[0]["history"])
+
+
 class MissEvanSendTests(unittest.TestCase):
     def test_native_preset_kaomoji_are_available(self):
         kaomoji = missevan.preset_kaomoji()

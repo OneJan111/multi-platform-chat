@@ -596,10 +596,26 @@ class MissEvanListener:
     def _load_history(self, s: requests.Session):
         try:
             d = s.get(MISSEVAN_CHAT_HISTORY_URL, params={"room_id": self.room_id}, timeout=10).json()
-            for h in (d.get("info") or {}).get("history") or []:
+            if not isinstance(d, dict):
+                log.warning("MissEvan history returned an unexpected response: %s", type(d).__name__)
+                return
+            info = d.get("info")
+            if not isinstance(info, dict):
+                log.warning("MissEvan history unavailable: %s", info)
+                return
+            history = info.get("history") or []
+            if not isinstance(history, list):
+                log.warning("MissEvan history returned an unexpected history value: %s", type(history).__name__)
+                return
+            for h in history:
+                if not isinstance(h, dict):
+                    continue
+                user = h.get("user") or {}
+                if not isinstance(user, dict):
+                    continue
                 if h.get("type") == "message":
                     msg = self._chat(
-                        h.get("msg_id", ""), h.get("user") or {},
+                        h.get("msg_id", ""), user,
                         h.get("message", ""), h.get("create_time"), h.get("sticker"),
                     )
                     if msg:
