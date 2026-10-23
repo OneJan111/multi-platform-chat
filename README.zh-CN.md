@@ -65,7 +65,7 @@ pip install -r requirements.txt
 | `OVERLAY_HOST` | 弹幕叠加层监听地址：`127.0.0.1` = 仅本机，`0.0.0.0` = 其他机器也可访问 | `127.0.0.1` |
 | `OVERLAY_PORT` | 弹幕叠加层端口 | `8502` |
 | `OVERLAY_PUBLIC_URL` | 在 🎬 OBS 标签页中显示的叠加层地址（例如 `http://203.0.113.5:8502` 或反向代理地址） | 自动 |
-| `ANALYTICS_ENABLED` | 设为 `false` 可隐藏数据分析页面，并停止记录观众历史和热点数据 | `false` |
+| `ANALYTICS_ENABLED` | 设为 `false` 可隐藏两个应用中的数据分析页面/标签，并停止收集观众历史、活动和热点数据 | `false` |
 | `TTS_USE_GTTS` | `true` = 在线 gTTS，`false` = 离线 pyttsx3 | `false` |
 | `CHAT_POLL_INTERVAL` | 弹幕刷新间隔（秒） | `5` |
 | `CHAT_TRANSLATION_DISPLAY_MODE` | 翻译显示方式：`immediate` 立即显示弹幕，译文就绪后补上；`wait` 等译文就绪后再显示弹幕 | `immediate` |

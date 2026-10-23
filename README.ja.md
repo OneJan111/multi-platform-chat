@@ -67,7 +67,7 @@ pip install -r requirements.txt
 | `OVERLAY_HOST` | チャットオーバーレイの待ち受けアドレス：`127.0.0.1` = このパソコンのみ、`0.0.0.0` = 他のマシンからも接続可 | `127.0.0.1` |
 | `OVERLAY_PORT` | チャットオーバーレイのポート | `8502` |
 | `OVERLAY_PUBLIC_URL` | 🎬 OBS タブに表示するオーバーレイのアドレス（例：`http://203.0.113.5:8502` やリバースプロキシの URL） | 自動 |
-| `ANALYTICS_ENABLED` | `false` にすると分析ページを非表示にし、視聴者数の履歴とホットスポットデータの記録を停止します | `false` |
+| `ANALYTICS_ENABLED` | `false` にすると両アプリの分析ページ/タブを非表示にし、視聴者数の履歴、アクティビティ、ホットスポットデータの収集を停止します | `false` |
 | `TTS_USE_GTTS` | `true` = オンラインの gTTS、`false` = オフラインの pyttsx3 | `false` |
 | `CHAT_POLL_INTERVAL` | チャットの更新間隔（秒） | `5` |
 | `CHAT_TRANSLATION_DISPLAY_MODE` | `immediate` = チャットをすぐ表示し、翻訳完了後に訳文を追加；`wait` = 翻訳完了後にメッセージを表示 | `immediate` |

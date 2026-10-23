@@ -35,12 +35,12 @@ class DesktopTranscriptionRoomSelectionTests(unittest.TestCase):
             },
         ]
 
-    def test_room_choices_are_limited_to_enabled_rooms_on_selected_site(self):
+    def test_room_choices_include_disabled_rooms_on_selected_site(self):
         self.assertEqual(
             [entry["id"] for entry in _transcription_room_entries(
                 "bilibili", self.targets
             )],
-            ["bilibili:123"],
+            ["bilibili:123", "bilibili:456"],
         )
 
     def test_start_room_lookup_returns_only_explicitly_selected_room(self):
@@ -55,10 +55,11 @@ class DesktopTranscriptionRoomSelectionTests(unittest.TestCase):
                 "youtube", "", self.targets
             )
         )
-        self.assertIsNone(
+        self.assertEqual(
             _selected_transcription_room(
                 "bilibili", "bilibili:456", self.targets
-            )
+            )["target"],
+            "456",
         )
 
 

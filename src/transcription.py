@@ -133,7 +133,7 @@ class LiveTranscriber:
         self._thread: threading.Thread | None = None
         self._status = "idle"
         self._error = ""
-        self._segments: deque[dict] = deque(maxlen=250)
+        self._segments: deque[dict] = deque()
 
     def configure_translation(self, enabled: bool, target_language: str) -> None:
         """Update shared translation settings while this session is transcribing."""
@@ -305,12 +305,15 @@ class LiveTranscriber:
         try:
             timestamp = datetime.fromtimestamp(audio_file.stat().st_mtime).astimezone().strftime("%H:%M:%S")
             transcribed, info = model.transcribe(str(audio_file), beam_size=5, vad_filter=True)
-            original = " ".join(part.text.strip() for part in transcribed if part.text.strip()).strip()
+            parts = [part for part in transcribed if part.text.strip()]
+            original = " ".join(part.text.strip() for part in parts).strip()
             if not original:
                 return
+            chunk_index = int(audio_file.stem.removeprefix("segment_"))
             detected_language = getattr(info, "language", "")
             result = {
                 "time": timestamp,
+                "start_seconds": chunk_index * SEGMENT_SECONDS + parts[0].start,
                 "original": original,
                 "translated": "",
                 "translation_error": "",

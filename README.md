@@ -22,13 +22,18 @@ A multilingual dashboard for monitoring **YouTube, Bilibili and MissEvan** live 
 | 🛡️ **Moderation** | 🚫 on any message blocks that user. Blocked users, keyword & regex filters and allow-lists are saved to `chat_filters.json` and kept after restarts. |
 | 🌐 **Translation** | Start translation from the sidebar to translate chat and live transcription into the selected target language when the detected/source language differs. Supports Chinese (Simplified/Traditional), English, Japanese and Korean. Tries the free Index-Translate service first, then falls back to Google. A built-in streaming glossary overrides machine translations for terms such as *舰长*, *醒目留言*, *上舰* and *弹幕*. |
 | 🎙️ **Live transcription** | Transcribe audio from one currently monitored YouTube, Bilibili or MissEvan live stream at a time. While running, the latest three segments appear in a full-width sticky panel above both Chat and Gifts & Super Chats. Audio recognition uses local faster-whisper; the selected model downloads on first use. FFmpeg is required. Transcription is translated into the selected target language when translation is started and the detected language differs. |
-| 🔤 **Reading aids** | Pinyin / furigana ruby over Super Chat text, gift names and usernames so the streamer can read them aloud; translations into Japanese get furigana, and Super Chat and gift translations into Chinese get pinyin. |
+| 🔤 **Reading aids** | In the desktop chat, pinyin / furigana for message text and usernames appears in a tooltip on hover, rather than inline. Super Chat text, gift names and usernames elsewhere can show ruby readings; translations into Japanese get furigana, and Super Chat and gift translations into Chinese get pinyin. |
 | 💾 **Remembered settings** | Your settings (TTS, translation, message order, text size, OBS overlay options, language, time zone, …) are saved in this browser and restored next time. Feed layout adjusts automatically to screen width. Room IDs, stream URLs and chat aren't saved; logins use their own cookie. |
 | 🔊 **Text-to-speech** | Reads chat aloud on this computer (offline `pyttsx3` or online gTTS) or **in the viewer's browser with the device's own voices** (used automatically when the dashboard is opened from another device or Streamlit Cloud). Includes: language filter, emoji skipping, reading the translated text (when the TTS language is Auto-detect or matches *Translate to*), skipping usernames for regular chat, **announcing gifts & Super Chats first**, a 🔊 replay button on every message, and **⏭ Skip / ⏹ Stop TTS** buttons to cut off a sensitive comment instantly. |
 | 📡 **Stream Monitoring** | Per-site controls (stream URL / room ID, start/stop listener, login status) plus live / offline state, title and viewer count for each platform. |
 | 🎬 **OBS** | One streamer-only tab for everything OBS: connect, start/stop stream & recording, switch scenes and sources (OBS WebSocket v5), send chat to an OBS Text source, and the chat-only Browser Source overlay. Off until you turn on *Connect to OBS* in that tab. |
 | 📊 **Analytics** | Viewer count (sampled from Stream Monitoring), messages-per-minute charts, top chatters, per-site gift and Super Chat counts/revenue (totals remain in each site's original currency), and 🔥 hotspots for clipping (CSV, timestamp list and DaVinci Resolve EDL markers). |
 | 🍪 **Cookies** | Import login cookies for Bilibili, MissEvan and YouTube — read from a browser on this computer (Chrome / Edge / Firefox), or paste / upload cookies exported from any browser (for servers). |
+
+In the desktop app, all configured rooms continue receiving live chat whether **Allow saving** is checked or not. That checkbox only controls whether chat from the room can be saved to Saved Chat; it does not stop reception, recording, or transcription.
+In the desktop app, the Chat and Gifts / Super Chats panes sit side by side on wider windows. When the window is narrower than 1000 px, Gifts / Super Chats moves above Chat; the minimum window width is 720 px. Drag the splitter above Joins to adjust how much vertical space the Joins feed uses.
+Desktop window size, feed splitter proportions, room selections, send targets and other app preferences are remembered. Active recording, scroll pause and playback are session-only and do not resume automatically.
+The desktop app shows current process RAM and total RAM for its child processes in the status bar. Samples are logged every 10 seconds to `%LOCALAPPDATA%\StreamingDashboard\logs\memory.log` on Windows (or `~/.streaming-dashboard/logs/memory.log` on macOS/Linux); the **Memory log** button opens the log folder. Logs rotate at 5 MB, retaining three backups, and include chat/cache/TTS/transcription collection sizes to help identify what is growing.
 
 ## Requirements
 
@@ -65,7 +70,7 @@ The template only contains placeholder values (`your-…`, `xxx`). **Replace the
 | `OVERLAY_HOST` | Chat overlay listen address: `127.0.0.1` = this computer only, `0.0.0.0` = reachable from other machines | `127.0.0.1` |
 | `OVERLAY_PORT` | Chat overlay port | `8502` |
 | `OVERLAY_PUBLIC_URL` | Overlay address shown in the 🎬 OBS tab (e.g. `http://203.0.113.5:8502` or a reverse-proxy URL) | auto |
-| `ANALYTICS_ENABLED` | `false` hides the Analytics page and stops recording viewer history and hotspot data | `false` |
+| `ANALYTICS_ENABLED` | `false` hides the Analytics page/tab and stops collecting viewer history, activity and hotspot data in both apps | `false` |
 | `TTS_USE_GTTS` | `true` = online gTTS, `false` = offline pyttsx3 | `false` |
 | `CHAT_POLL_INTERVAL` | Chat refresh interval in seconds | `5` |
 | `CHAT_TRANSLATION_DISPLAY_MODE` | `immediate` shows chat right away and adds translations when ready; `wait` shows each message when its translation is ready | `immediate` |
@@ -86,7 +91,7 @@ Then open <http://localhost:8501>. To use it from a tablet on the same network, 
 
 ### Desktop app (PySide6)
 
-`desktop_app.py` is a native desktop version of the dashboard. It runs in its own window (no browser) and has the same features as `app.py`, plus chat saved automatically to disk and Bilibili recording. Install PySide6 in the same environment first:
+`desktop_app.py` is a native desktop version of the dashboard. It runs in its own window (no browser) and has the same features as `app.py`, plus chat saved automatically to disk and live recording for Bilibili and MissEvan. Install PySide6 in the same environment first:
 
 ```powershell
 .\.venv\Scripts\python.exe -m pip install PySide6
@@ -95,12 +100,15 @@ Then open <http://localhost:8501>. To use it from a tablet on the same network, 
 
 On Windows you can double-click [Start_Desktop.bat](Start_Desktop.bat) instead. It uses the project's `.venv` when available, otherwise Python on `PATH`.
 
-- **Monitoring / Cookies**: add any number of YouTube channels, Bilibili rooms and MissEvan rooms. Each room shows as a card (3 per row) with live state, title and viewers, and can be switched on or off. On first launch the rooms in `.env` (`YOUTUBE_CHANNEL`, `BILIBILI_ROOM_ID`, `MISSEVAN_ROOM_ID`) are added. Optional live notifications. Cookie import for sending chat is on the same tab.
-- **Chat**: pick one monitored room per site to show; sending also goes to that room. Hover a message for its actions (Read, Block, Thank, …). Chat, gifts / Super Chats and room joins have their own panels, with emotes, stickers and member badges as images, optional translation and pinyin / furigana. **Skip current speech** and **Stop and clear speech queue** sit on this tab.
-- **Saved Chat**: chat from every monitored room is saved continuously while the room is monitored; rooms that are switched off are not saved. Browse saved rooms by channel name with readable times, reload them later, or delete them. Files are kept under `%LOCALAPPDATA%\StreamingDashboard\chat_archive` on Windows.
-- **Bilibili recording**: tick **Auto record when live** on a Bilibili room card to save the stream as FLV whenever the room goes live (modelled on [BililiveRecorder](https://github.com/BililiveRecorder/BililiveRecorder)). Each recording is saved as `{room}-{name}/录制-{room}-{date-time}-{title}.flv` and, optionally, a danmaku / Super Chat / gift XML file next to it. Choose the folder (default `recordings/`) and preferred quality under the room cards. Original quality usually needs a Bilibili login. Recording stops when the room goes offline, monitoring is switched off, or the app closes.
+- **Monitoring / Cookies**: add any number of YouTube channels, Bilibili rooms and MissEvan rooms. A YouTube channel monitor follows the channel's live page, including its nearest scheduled stream, and starts reading that stream's chat when it goes live. Each room shows as a card (3 per row) with live state, title and viewers, and can be switched on or off. On first launch the rooms in `.env` (`YOUTUBE_CHANNEL`, `BILIBILI_ROOM_ID`, `MISSEVAN_ROOM_ID`) are added. Optional live notifications. Cookie import for sending chat is on the same tab.
+- **Chat**: pick one monitored room per site to show; sending also goes to that room. Click a chat message or gift to pause that feed's auto-scroll while new messages continue to arrive; click the same message again to clear its selection and resume scrolling. Hover a message for its actions (Read, Block, Thank, …) and, when reading aids are enabled, pinyin / furigana for both the message and username. Chat, gifts / Super Chats and room joins have their own panels, with emotes, stickers and member badges as images and optional translation. **Skip speech** skips the currently playing item; **Clear all speech** stops playback and removes the queued speech.
+- **Saved Chat**: regular chat and gifts / paid messages from every room with **Allow saving** enabled are appended directly to that room's archive file, including rooms not currently selected in Chat. Joins are not archived. Browse saved rooms by channel name with readable times, reload them later, or delete them. Files are kept under `%LOCALAPPDATA%\StreamingDashboard\chat_archive` on Windows.
+- **Live recording**: enable **Monitor** for a YouTube, Bilibili or MissEvan room, then switch **Record** on to arm recording. If the room is offline, recording starts automatically when it goes live; switch **Record** off to disarm or stop immediately. Recording stops when the room goes offline. YouTube and MissEvan streams are saved as MKV; Bilibili streams are saved as FLV (modelled on [BililiveRecorder](https://github.com/BililiveRecorder/BililiveRecorder)). Choose the save folder under **Recording settings**. FFmpeg is required; YouTube recording resolves streams with yt-dlp. Bilibili can also save danmaku / Super Chats / gifts to an XML file.
+- **Interface language**: choose English, Simplified Chinese, or Japanese from the menu bar beside **Theme**.
+- **Transcription**: the Transcription tab supports YouTube, Bilibili and MissEvan. **Start transcription** prompts for an output file (`.txt` or `.lrc`), enables monitoring for the selected room and waits for it to go live; each recognized segment is automatically appended to the chosen file. Choose an existing file to append to it, or a new file for a separate transcript. LRC timestamps are continued after the last timestamp already in the file and advance per transcription chunk; a separately started recording may need a timing offset. Transcription remains armed for subsequent streams until **Stop transcription** is pressed or monitoring is disabled. Earlier sessions remain visible until **Clear all transcripts** is pressed, which clears only transcript text, not chat, gifts or output files. New transcript text continues to arrive and append after clearing.
 - **OBS**: the same controls as `app.py` (connect, stream / recording, scenes and sources, OBS Text source). The Text source can include usernames (**Show usernames**). The **Chat Overlay** section starts the Browser Source overlay for the monitored room you pick per site; the URL uses the short site names (`yt`, `bili`, `me`) and leaves out unselected sites. Press **Start server and copy Browser Source URL** again after changing options to get an updated link.
 - **Settings / TTS, Moderation, Transcription, Analytics**: as in `app.py`.
+- **Message history limits**: the selected room for each site retains up to **Maximum chat messages per room** regular chat, gifts / paid messages, and joins in memory. Non-selected rooms' regular chat and paid messages are written directly to their Saved Chat files instead of accumulating in the feeds. Joins are not archived.
 - **Theme** menu: light or dark.
 - **Languages**: English / 简体中文 / 日本語, chosen in Settings.
 
@@ -172,6 +180,7 @@ Sending to YouTube with browser cookies is unofficial (it works like youtube.com
 - Chat automatically follows new messages at the selected end. Scrolling away pauses following so you can read history; return to the latest end or use the arrow button to resume.
 - On wide screens, live transcription and Chat are on the left, with Gifts & Super Chats on the right. On narrow screens, Gifts & Super Chats moves between live transcription and Chat and can be collapsed with its heading.
 - While scrolling Chat, the live-transcription preview stays pinned at the top. Chat rows show timestamps, hide membership text labels, de-emphasize usernames, and emphasize message text.
+- In the desktop app, right-click a chat or gift to open its actions (Block, Read, Copy, and any room-specific actions) in a popup without changing the chat row height.
 - On narrow screens, the separate Joins controls and feed are hidden; the latest arrival appears as one line in chat.
 - The YouTube / Bilibili / MissEvan checkboxes above the feeds show or hide each site's messages.
 - Only the live Chat feed refreshes every `CHAT_POLL_INTERVAL` seconds (default 5); other tabs and controls are not re-run by the polling timer. *Max messages displayed* in the sidebar limits how many chat lines are kept on screen.
@@ -247,7 +256,7 @@ Only messages received while the dashboard page is open are counted.
 
 ```
 app.py                 Streamlit UI (all tabs, sidebar, CSS)
-desktop_app.py         Native PySide6 desktop app (same features, plus auto-saved chat and Bilibili recording)
+desktop_app.py         Native PySide6 desktop app (same features, plus per-room chat archives and Bilibili / MissEvan recording)
 Start_Desktop.bat      Windows launcher for desktop_app.py
 requirements.txt       Python dependencies
 env.template           Template for .env (placeholder values only)

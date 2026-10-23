@@ -161,6 +161,45 @@ class TranscriptionSourceTests(unittest.TestCase):
 
 
 class TranscriptionWorkerTests(unittest.TestCase):
+    def test_elapsed_timestamp_includes_chunk_offset_and_skipped_silence(self):
+        session = transcription.LiveTranscriber(
+            platform="youtube",
+            source_id="video-id",
+            source_resolver=lambda: "https://example.test/live.m3u8",
+            target_language="en",
+            translation_enabled=False,
+            ffmpeg_path="ffmpeg",
+        )
+        model = unittest.mock.Mock()
+        model.transcribe.return_value = (
+            iter([
+                types.SimpleNamespace(text="  ", start=0.0),
+                types.SimpleNamespace(text="hello", start=2.5),
+            ]),
+            types.SimpleNamespace(language="en"),
+        )
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "segment_000003.wav"
+            path.write_bytes(b"wav")
+            session._transcribe_file(model, path)
+
+        segment = session.snapshot()["segments"][0]
+        self.assertEqual(segment["start_seconds"], 3 * transcription.SEGMENT_SECONDS + 2.5)
+        self.assertEqual(segment["original"], "hello")
+
+    def test_transcriber_retains_all_segments_for_export(self):
+        session = transcription.LiveTranscriber(
+            platform="youtube",
+            source_id="video-id",
+            source_resolver=lambda: "https://example.test/live.m3u8",
+            target_language="en",
+            ffmpeg_path="ffmpeg",
+        )
+        for index in range(300):
+            session._append_segment({"original": str(index)})
+
+        self.assertEqual(len(session.snapshot()["segments"]), 300)
+
     def test_faster_whisper_decodes_wav_with_supported_pyav(self):
         from faster_whisper.audio import decode_audio
 
@@ -181,7 +220,7 @@ class TranscriptionWorkerTests(unittest.TestCase):
             def transcribe(self, path, **kwargs):
                 self.audio_path = path
                 return (
-                    [types.SimpleNamespace(text="hello from the stream")],
+                    [types.SimpleNamespace(text="hello from the stream", start=1.25)],
                     types.SimpleNamespace(language="en"),
                 )
 
@@ -222,6 +261,7 @@ class TranscriptionWorkerTests(unittest.TestCase):
         self.assertEqual(len(snapshot["segments"]), 1)
         self.assertEqual(snapshot["segments"][0]["original"], "hello from the stream")
         self.assertEqual(snapshot["segments"][0]["translated"], "你好")
+        self.assertEqual(snapshot["segments"][0]["start_seconds"], 1.25)
         self.assertIn("-headers", commands[0])
         self.assertIn("User-Agent: test-agent\r\n", commands[0])
         translate_text.assert_called_once_with("hello from the stream", "zh-CN")
@@ -229,7 +269,7 @@ class TranscriptionWorkerTests(unittest.TestCase):
     def test_worker_skips_translation_when_audio_matches_target_language(self):
         class FakeModel:
             def transcribe(self, path, **kwargs):
-                return [types.SimpleNamespace(text="你好，欢迎")], types.SimpleNamespace(language="zh")
+                return [types.SimpleNamespace(text="你好，欢迎", start=0.0)], types.SimpleNamespace(language="zh")
 
         class FakeProcess:
             def __init__(self, command, **kwargs):
@@ -264,7 +304,7 @@ class TranscriptionWorkerTests(unittest.TestCase):
     def test_worker_skips_translation_until_translation_is_started(self):
         class FakeModel:
             def transcribe(self, path, **kwargs):
-                return [types.SimpleNamespace(text="hello")], types.SimpleNamespace(language="en")
+                return [types.SimpleNamespace(text="hello", start=0.0)], types.SimpleNamespace(language="en")
 
         class FakeProcess:
             def __init__(self, command, **kwargs):

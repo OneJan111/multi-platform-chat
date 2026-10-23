@@ -58,6 +58,41 @@ class DesktopChatArchiveTests(unittest.TestCase):
         self.assertEqual(session["room_name"], "Channel Name")
         self.assertEqual(_saved_session_room_label(session), "Channel Name")
 
+    def test_append_messages_writes_to_room_file_and_deduplicates(self):
+        message = self.message("background message")
+        result = self.archive.append_messages(
+            "bilibili:101",
+            [message, message],
+            platform="bilibili",
+            room_id="101",
+            room_name="Channel Name",
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(Path(result["path"]).is_file())
+        saved = json.loads(Path(result["path"]).read_text(encoding="utf-8"))
+        session = saved["sessions"][0]
+        self.assertEqual(session["room_name"], "Channel Name")
+        self.assertEqual(session["messages"], [message])
+
+    def test_append_messages_merges_with_existing_snapshot_without_loading_all(self):
+        self.assertTrue(self.save_room("101", "selected message")["ok"])
+
+        result = self.archive.append_messages(
+            "bilibili:101",
+            [self.message("background message")],
+            platform="bilibili",
+            room_id="101",
+        )
+
+        self.assertTrue(result["ok"])
+        loaded = self.archive.load_archive()
+        self.assertTrue(loaded["ok"])
+        self.assertEqual(
+            {message["text"] for message in loaded["archive"]["sessions"][0]["messages"]},
+            {"selected message", "background message"},
+        )
+
     def test_saved_session_label_falls_back_to_room_id_for_older_archives(self):
         self.assertEqual(
             _saved_session_room_label(

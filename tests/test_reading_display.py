@@ -1,10 +1,32 @@
 import unittest
 from unittest.mock import patch
 
+import desktop_app
 from src import reading
 
 
 class RubyHtmlTests(unittest.TestCase):
+    def test_desktop_chat_text_is_plain_until_reading_tooltip_is_requested(self):
+        self.assertEqual(
+            desktop_app._plain_chat_html("<你好>\nhello"),
+            "&lt;你好&gt;<br>hello",
+        )
+
+    def test_plain_readings_are_available_for_hover_tooltips(self):
+        with patch.object(
+            reading,
+            "segments",
+            return_value=(("用", "yòng"), ("語", "yǔ"), ("集", "jí"), ("! ", "")),
+        ):
+            self.assertEqual(
+                reading.with_readings("用語集! "),
+                "用（yòng）語（yǔ）集（jí）! ",
+            )
+
+    def test_plain_readings_leave_unannotated_text_unchanged(self):
+        with patch.object(reading, "segments", return_value=()):
+            self.assertEqual(reading.with_readings("hello"), "hello")
+
     def test_reading_is_rendered_above_corresponding_escaped_text(self):
         with patch.object(
             reading,
@@ -42,8 +64,9 @@ class RubyHtmlTests(unittest.TestCase):
             rendered = reading.ruby_html("hello world\n!")
 
         self.assertIn("<small>reading</small>", rendered)
-        self.assertIn('<td align="center">h</td>', rendered)
+        self.assertIn('<td align="center">hello</td>', rendered)
         self.assertIn('<td align="center">&nbsp;</td>', rendered)
+        self.assertIn('<td align="center">world</td>', rendered)
         self.assertIn('<td align="center">!</td>', rendered)
         self.assertGreaterEqual(rendered.count("<tr>"), 4)
 
@@ -55,6 +78,20 @@ class RubyHtmlTests(unittest.TestCase):
             )
 
         self.assertGreater(rendered.count("<tr>"), 2)
+
+    def test_measured_widths_fill_the_line_and_rows_use_separate_tables(self):
+        annotated = (("ab", ""), ("你", "nǐ"), ("cd", ""))
+        with patch.object(reading, "segments", return_value=annotated):
+            one_line = reading.ruby_html(
+                "ab你cd", max_width=100, font_size=40, measure=lambda text, _: 10 * len(text)
+            )
+            wrapped = reading.ruby_html(
+                "ab你cd", max_width=30, font_size=40, measure=lambda text, _: 10 * len(text)
+            )
+
+        self.assertEqual(one_line.count("<table"), 1)
+        self.assertGreater(wrapped.count("<table"), 1)
+        self.assertEqual(wrapped.count("<table"), wrapped.count("</table>"))
 
 
 if __name__ == "__main__":

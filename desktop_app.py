@@ -11,6 +11,8 @@ import concurrent.futures
 import hashlib
 import html
 import json
+import logging
+import math
 import os
 import re
 import sys
@@ -19,6 +21,7 @@ import threading
 import time
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from urllib.parse import urlencode
 
@@ -30,6 +33,113 @@ except ImportError:
 _ROOT = Path(__file__).resolve().parent
 _MAX_ARCHIVE_SESSIONS = 200
 _MAX_SESSION_MESSAGES = 5000
+
+
+_CHAT_LAYOUT_BREAKPOINT = 1000
+
+
+def _chat_splitter_layout(width: int) -> tuple[str, tuple[str, str]]:
+    if width < _CHAT_LAYOUT_BREAKPOINT:
+        return "vertical", ("paid", "chat")
+    return "horizontal", ("chat", "paid")
+
+
+def _youtube_channel_video_id(info: dict) -> str:
+    if info.get("live") or info.get("upcoming"):
+        return str(info.get("video_id", ""))
+    return ""
+
+
+def _saved_splitter_sizes(settings, key: str, defaults: list[int]) -> list[int]:
+    sizes = settings.value(key, [], type=list)
+    if (
+        not isinstance(sizes, list)
+        or len(sizes) != len(defaults)
+        or any(type(size) is not int or size <= 0 for size in sizes)
+    ):
+        return defaults
+    return sizes
+
+
+def _memory_log_path() -> Path:
+    if sys.platform == "win32":
+        base = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local")
+        return base / "StreamingDashboard" / "logs" / "memory.log"
+    return Path.home() / ".streaming-dashboard" / "logs" / "memory.log"
+
+
+def _memory_collection_metrics(window) -> dict[str, int]:
+    image_bytes = sum(
+        len(value[1])
+        for value in getattr(window, "_chat_image_cache", {}).values()
+        if isinstance(value, tuple)
+        and len(value) > 1
+        and isinstance(value[1], bytes)
+    )
+    audio_queue = getattr(window, "_audio_queue", [])
+    audio_bytes = sum(
+        len(item) for item in audio_queue if isinstance(item, (bytes, bytearray))
+    )
+    sessions = getattr(window, "_transcription_sessions", [])
+    transcription_worker_segments = 0
+    for session in sessions:
+        worker_session = session.get("worker")
+        if worker_session is None:
+            continue
+        segments = getattr(worker_session, "_segments", ())
+        lock = getattr(worker_session, "_lock", None)
+        if lock is None:
+            transcription_worker_segments += len(segments)
+        else:
+            with lock:
+                transcription_worker_segments += len(segments)
+    worker = getattr(window, "_worker", None)
+    recorders = getattr(window, "_recorders", {})
+    return {
+        "chat_messages": len(getattr(window, "_messages", [])),
+        "paid_messages": len(getattr(window, "_paid", [])),
+        "join_messages": len(getattr(window, "_joins", [])),
+        "activity_entries": len(getattr(window, "_activity", [])),
+        "hotspot_events": len(getattr(window, "_hotspot_events", [])),
+        "chat_image_cache_entries": len(
+            getattr(window, "_chat_image_cache", {})
+        ),
+        "chat_image_cache_bytes": image_bytes,
+        "chat_images_pending": len(getattr(window, "_chat_images_pending", set())),
+        "tts_queue_items": len(audio_queue),
+        "tts_queue_bytes": audio_bytes,
+        "transcription_sessions": len(sessions),
+        "transcription_display_segments": len(
+            getattr(window, "_segments", [])
+        ),
+        "transcription_worker_segments": transcription_worker_segments,
+        "monitored_rooms": len(getattr(window, "_monitor_targets", [])),
+        "chat_listener_count": len(getattr(worker, "_listeners", {})),
+        "recording_count": sum(
+            bool(getattr(recorder, "is_running", False))
+            for recorder in recorders.values()
+        ),
+    }
+
+
+def _memory_process_metrics(process, psutil_module) -> dict[str, int]:
+    parent_rss = process.memory_info().rss
+    children = process.children(recursive=True)
+    child_rss = 0
+    unreadable_children = 0
+    for child in children:
+        try:
+            child_rss += child.memory_info().rss
+        except psutil_module.Error:
+            unreadable_children += 1
+    return {
+        "process_rss_bytes": parent_rss,
+        "child_process_count": len(children),
+        "child_process_rss_bytes": child_rss,
+        "unreadable_child_processes": unreadable_children,
+        "process_tree_rss_bytes": parent_rss + child_rss,
+        "thread_count": process.num_threads(),
+    }
 
 
 def _archive_path() -> Path:
@@ -64,14 +174,34 @@ def _message_key(message: dict[str, str]) -> str:
 
 
 def _message_matches_selected_chat_room(
-    message: dict, selected_ids: dict[str, str], enabled_ids: set[str]
+    message: dict,
+    selected_ids: dict[str, str],
+    room_ids: set[str],
+    visible_platforms: set[str] | None = None,
 ) -> bool:
     platform = str(message.get("platform", "")).lower()
     monitor_id = str(message.get("_monitor_id", ""))
     return bool(
         monitor_id
-        and monitor_id in enabled_ids
+        and monitor_id in room_ids
         and selected_ids.get(platform) == monitor_id
+        and (visible_platforms is None or platform in visible_platforms)
+    )
+
+
+def _chat_speech_is_current(
+    message: dict,
+    selected_ids: dict[str, str],
+    room_ids: set[str],
+    visible_platforms: set[str],
+    queued_generation: int,
+    current_generation: int,
+) -> bool:
+    return (
+        queued_generation == current_generation
+        and _message_matches_selected_chat_room(
+            message, selected_ids, room_ids, visible_platforms
+        )
     )
 
 
@@ -91,8 +221,33 @@ _DESKTOP_STRINGS: dict[str, tuple[str, str]] = {
     "Light": ("浅色", "ライト"),
     "Dark": ("深色", "ダーク"),
     "Add translations to overlay": ("在叠加层中添加翻译", "オーバーレイに翻訳を追加"),
-    "Auto record when live": ("开播时自动录制", "配信開始時に自動録画"),
+    "Record": ("录制", "録画"),
     "Bilibili recording": ("B站录制", "Bilibili 録画"),
+    "Live recording": ("直播录制", "ライブ録画"),
+    "Turn on Record on a YouTube, Bilibili, or MissEvan room card to record its live stream. "
+    "YouTube and MissEvan recordings are MKV; Bilibili recordings are FLV. "
+    "Recording stops when the room goes offline. FFmpeg is required.": (
+        "在 YouTube、Bilibili 或 MissEvan 房间卡片上开启“录制”即可录制直播。"
+        "YouTube 和 MissEvan 录制为 MKV，Bilibili 录制为 FLV；下播后自动停止。需要 FFmpeg。",
+        "YouTube、Bilibili、または MissEvan のルームカードで「録画」をオンにするとライブを録画します。"
+        "YouTube と MissEvan は MKV、Bilibili は FLV で保存され、配信終了時に録画も停止します。FFmpeg が必要です。",
+    ),
+    "Interface language": ("界面语言", "インターフェース言語"),
+    "Clear all transcripts": ("清空全部转录文本", "文字起こしをすべて消去"),
+    "Waiting for room to go live": ("等待房间开播", "配信開始を待機中"),
+    "Choose transcript file": ("选择转录文件", "文字起こしファイルを選択"),
+    " via ": (" 来自 ", " 経由 "),
+    ", worth ¥": (", 价值 ¥", "、相当額 ¥"),
+    ", list ¥": (", 原价 ¥", "、定価 ¥"),
+    "Username: {name}\nMessage: {message}": (
+        "用户名：{name}\n消息：{message}",
+        "ユーザー名：{name}\nメッセージ：{message}",
+    ),
+    "Preferred Bilibili quality": ("Bilibili 首选画质", "Bilibili の優先画質"),
+    "Save Bilibili danmaku, Super Chats and gifts to an XML file next to each video": (
+        "将 Bilibili 弹幕、醒目留言和礼物保存到视频旁的 XML 文件",
+        "Bilibili のコメント・Super Chat・ギフトを動画と同じ場所の XML ファイルに保存",
+    ),
     "Browse…": ("浏览…", "参照…"),
     "Chat messages": ("聊天消息", "チャットメッセージ"),
     "Paid messages": ("付费消息", "有料メッセージ"),
@@ -119,20 +274,19 @@ _DESKTOP_STRINGS: dict[str, tuple[str, str]] = {
         "OBS ブラウザソース用のローカルオーバーレイサーバーを起動します。",
     ),
     "Starting monitor…": ("正在启动监控…", "モニターを起動中…"),
-    "Tick \u201cAuto record when live\u201d on a Bilibili room to save its stream "
-    "as FLV (like BililiveRecorder). Recording stops when the room goes offline.": (
-        "在 B站直播间勾选\u201c开播时自动录制\u201d即可将直播保存为 FLV（同 BililiveRecorder）。下播后录制自动停止。",
-        "Bilibili ルームで「配信開始時に自動録画」にチェックすると、配信を FLV で保存します"
-        "（BililiveRecorder と同様）。ルームがオフラインになると録画は停止します。",
-    ),
     "Translate transcription": ("翻译转录内容", "文字起こしを翻訳"),
     "Use the overlay URL in OBS as a Browser Source to show a transparent chat on stream.": (
         "在 OBS 中将叠加层 URL 添加为浏览器源，即可在直播画面上显示透明聊天。",
         "オーバーレイ URL を OBS のブラウザソースとして使うと、配信画面に透過チャットを表示できます。",
     ),
-    "Select a monitored room": ("选择监控的直播间", "モニター中のルームを選択"),
+    "Select a room": ("选择直播间", "ルームを選択"),
     "Paste / import": ("粘贴 / 导入", "貼り付け / インポート"),
-    "No monitored room": ("无监控直播间", "モニター中のルームなし"),
+    "No room configured": ("未配置直播间", "ルーム未設定"),
+    "Allow saving": ("允许保存", "保存を許可"),
+    "Live chat is received either way. This controls whether messages from this room can be saved.": (
+        "无论此项是否开启，都会实时接收弹幕。此项仅控制是否允许保存该直播间的弹幕。",
+        "この設定に関係なくチャットはリアルタイムで受信されます。このルームのチャットを保存できるかどうかだけを設定します。",
+    ),
     "Monitored {site} room shown in the overlay": (
         "叠加层显示的 {site} 监控直播间", "オーバーレイに表示する {site} のモニタールーム"
     ),
@@ -299,7 +453,7 @@ def _selected_monitor_target(
 def _transcription_room_entries(platform: str, monitor_targets: list[dict]) -> list[dict]:
     return [
         entry for entry in monitor_targets
-        if entry.get("platform") == platform and entry.get("enabled")
+        if entry.get("platform") == platform
     ]
 
 
@@ -313,6 +467,171 @@ def _selected_transcription_room(
         ),
         None,
     )
+
+
+def _format_transcription(segments: list[dict]) -> str:
+    return "\n\n".join(
+        f"[{item.get('time', '')}] {item.get('original', '')}"
+        + (f"\n🌐 {item.get('translated')}" if item.get("translated") else "")
+        for item in segments
+    )
+
+
+def _format_transcription_lrc(segments: list[dict]) -> str:
+    lines = []
+    for item in segments:
+        original = " ".join(str(item.get("original", "")).splitlines()).strip()
+        if not original:
+            continue
+        seconds = item.get("start_seconds")
+        if (
+            not isinstance(seconds, (int, float))
+            or not math.isfinite(seconds)
+            or seconds < 0
+        ):
+            raise ValueError(
+                "LRC export requires audio-relative timestamps. Start a new transcription session."
+            )
+        centiseconds = round(seconds * 100)
+        minutes, remainder = divmod(centiseconds, 6000)
+        whole_seconds, fraction = divmod(remainder, 100)
+        timestamp = f"[{minutes:02d}:{whole_seconds:02d}.{fraction:02d}]"
+        lines.append(timestamp + original)
+        translated = " ".join(str(item.get("translated", "")).splitlines()).strip()
+        if translated:
+            lines.append(timestamp + translated)
+    return "\n".join(lines)
+
+
+def _write_transcription(path: Path | str, text: str) -> Path:
+    destination = Path(path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(text, encoding="utf-8")
+    return destination
+
+
+def _append_transcription_segment(
+    path: Path | str, segment: dict, lrc_offset: float = 0
+) -> Path:
+    destination = Path(path)
+    if not str(segment.get("original", "")).strip():
+        return destination
+    is_lrc = destination.suffix.lower() == ".lrc"
+    if is_lrc and lrc_offset:
+        segment = dict(segment)
+        segment["start_seconds"] = segment.get("start_seconds", 0) + lrc_offset
+    text = (
+        _format_transcription_lrc([segment])
+        if is_lrc
+        else _format_transcription([segment])
+    )
+    if not text:
+        return destination
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    separator = "\n" if is_lrc else "\n\n"
+    with destination.open("a", encoding="utf-8", newline="") as output:
+        if destination.exists() and destination.stat().st_size > 0:
+            output.write(separator)
+        output.write(text)
+    return destination
+
+
+def _existing_lrc_offset(path: Path | str) -> float:
+    source = Path(path)
+    if not source.exists() or source.suffix.lower() != ".lrc":
+        return 0
+    contents = source.read_text(encoding="utf-8")
+    timestamps = [
+        int(minutes) * 60 + int(seconds) + int(centiseconds) / 100
+        for minutes, seconds, centiseconds in re.findall(
+            r"\[(\d+):(\d{2})\.(\d{2})\]", contents
+        )
+    ]
+    return max(timestamps, default=-8) + 8
+
+
+def _recording_status_action(previous_live: bool | None, live: bool, armed: bool) -> str | None:
+    if live and previous_live is not True and armed:
+        return "start"
+    if not live and previous_live is True:
+        return "stop"
+    return None
+
+
+def _plain_chat_html(text: str) -> str:
+    return html.escape(text).replace("\n", "<br>")
+
+
+def _reading_tooltip_allowed(widget) -> bool:
+    return widget.isVisible() and widget.window().isActiveWindow()
+
+
+def _limit_messages_per_room(messages: list[dict], limit: int) -> list[dict]:
+    counts: dict[tuple[str, str], int] = defaultdict(int)
+    retained = []
+    for message in reversed(messages):
+        room = (
+            str(message.get("platform", "")),
+            str(
+                message.get("_monitor_id")
+                or message.get("room_id")
+                or message.get("channel_id")
+                or ""
+            ),
+        )
+        if counts[room] < limit:
+            retained.append(message)
+            counts[room] += 1
+    retained.reverse()
+    return retained
+
+
+def _retain_selected_room_messages(
+    messages: list[dict], selected_ids: dict[str, str], room_ids: set[str], limit: int
+) -> list[dict]:
+    return _limit_messages_per_room(
+        [
+            message for message in messages
+            if _message_matches_selected_chat_room(message, selected_ids, room_ids)
+        ],
+        limit,
+    )
+
+
+def _localize_bilibili_gift_text(text: str, language: str, i18n) -> str:
+    for label in (" via ", ", worth ¥", ", list ¥"):
+        text = text.replace(label, i18n.translate(label, language))
+    return text
+
+
+def _selected_feed_indices(messages: list[dict], selected_messages: list[dict]) -> list[int]:
+    selected_ids = {
+        message.get("_desktop_feed_id")
+        for message in selected_messages
+        if message.get("_desktop_feed_id") is not None
+    }
+    return [
+        index
+        for index, message in enumerate(messages)
+        if message.get("_desktop_feed_id") in selected_ids
+    ]
+
+
+def _feed_scroll_click_state(paused: bool, paused_message_id, clicked_message_id) -> tuple[bool, str | None]:
+    if paused and paused_message_id == clicked_message_id:
+        return False, None
+    return True, clicked_message_id
+
+
+def _set_desktop_widget_text(widget, text: str, language: str, i18n) -> None:
+    translated = i18n.translate(text, language)
+    set_title = getattr(widget, "setTitle", None)
+    if callable(set_title):
+        set_title(translated)
+    else:
+        widget.setText(translated)
+    widget.setProperty("_desktop_source_text", text)
+    widget.setProperty("_desktop_source_text_rendered", translated)
 
 
 def _selected_send_destinations(
@@ -564,6 +883,104 @@ class DesktopChatArchive:
             }
         except (OSError, ValueError, json.JSONDecodeError) as exc:
             return {"ok": False, "error": f"Could not save chat archive: {exc}"}
+
+    def append_messages(
+        self,
+        session_id: str,
+        messages: list[dict],
+        *,
+        platform: str = "",
+        room_id: str = "",
+        channel_id: str = "",
+        room_name: str = "",
+    ) -> dict:
+        if not isinstance(session_id, str) or not session_id or len(session_id) > 600:
+            return {"ok": False, "error": "Invalid chat session ID."}
+        if not isinstance(messages, list):
+            return {"ok": False, "error": "Chat messages must be a list."}
+        if any(
+            not isinstance(value, str) or len(value) > 500
+            for value in (platform, room_id, channel_id, room_name)
+        ):
+            return {"ok": False, "error": "Invalid room or channel ID."}
+
+        normalized = []
+        for item in messages:
+            if not isinstance(item, dict):
+                return {"ok": False, "error": "Chat messages contain an invalid entry."}
+            record = {}
+            for key in ("timestamp", "author", "text"):
+                value = item.get(key, "")
+                if not isinstance(value, str) or len(value) > 20000:
+                    return {"ok": False, "error": f"Chat message has an invalid {key} field."}
+                record[key] = value
+            message_platform = platform or item.get("platform", "")
+            if not isinstance(message_platform, str) or len(message_platform) > 100:
+                return {"ok": False, "error": "Chat message has an invalid platform field."}
+            record["platform"] = message_platform
+            if record["author"] or record["text"]:
+                normalized.append(record)
+        if not normalized:
+            return {"ok": True, "path": str(self._session_path(session_id))}
+
+        try:
+            with self._lock:
+                if self.path.exists():
+                    archive = self._read()
+                    self._write_sessions(archive["sessions"])
+
+                session_path = self._session_path(session_id)
+                session_archive = self._read_path(session_path)
+                if len(session_archive["sessions"]) > 1:
+                    raise ValueError(
+                        f"Chat archive file {session_path.name} must contain exactly one room."
+                    )
+                session = (
+                    session_archive["sessions"][0]
+                    if session_archive["sessions"]
+                    else None
+                )
+                if session is None:
+                    if (
+                        not session_path.exists()
+                        and len(list(self.sessions_path.glob("*.json")))
+                        >= _MAX_ARCHIVE_SESSIONS
+                    ):
+                        raise ValueError("The chat archive contains too many sessions.")
+                    session = {
+                        "session_id": session_id,
+                        "platform": platform,
+                        "room_id": room_id,
+                        "channel_id": channel_id,
+                        "room_name": room_name,
+                        "started_at": _utc_now(),
+                        "updated_at": "",
+                        "messages": [],
+                    }
+                else:
+                    session["platform"] = platform or session.get("platform", "")
+                    session["room_id"] = room_id or session.get("room_id", "")
+                    session["channel_id"] = channel_id or session.get("channel_id", "")
+                    session["room_name"] = room_name or session.get("room_name", "")
+
+                saved_messages = session.get("messages")
+                if not isinstance(saved_messages, list):
+                    raise ValueError("The chat archive contains an invalid session.")
+                existing = {
+                    _message_key(message): message
+                    for message in saved_messages
+                }
+                for message in normalized:
+                    existing.setdefault(_message_key(message), message)
+                session["messages"] = list(existing.values())[-_MAX_SESSION_MESSAGES:]
+                session["updated_at"] = _utc_now()
+                self._write_path(
+                    session_path,
+                    {"version": 1, "sessions": [session]},
+                )
+            return {"ok": True, "path": str(session_path)}
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            return {"ok": False, "error": f"Could not append chat archive: {exc}"}
 
     def delete_session(self, session_id: str) -> dict:
         if not isinstance(session_id, str) or not session_id or len(session_id) > 600:
@@ -847,36 +1264,23 @@ if QtCore is not None:
 
 
     class _HoverMessageWidget(QtWidgets.QFrame):
-        hoverChanged = QtCore.Signal(bool)
-
         def __init__(self, parent=None):
             super().__init__(parent)
-            self._hover_widgets = []
-            self._hovered = False
             self.setMouseTracking(True)
             self.installEventFilter(self)
 
         def watch_hover(self, widget):
             widget.setMouseTracking(True)
             widget.installEventFilter(self)
-            self._hover_widgets.append(widget)
 
         def eventFilter(self, watched, event):
-            if event.type() in (
-                QtCore.QEvent.Type.Enter,
-                QtCore.QEvent.Type.Leave,
+            if (
+                event.type() == QtCore.QEvent.Type.ToolTip
+                and not _reading_tooltip_allowed(watched)
             ):
-                QtCore.QTimer.singleShot(0, self._update_hover)
+                event.ignore()
+                return True
             return super().eventFilter(watched, event)
-
-        def _update_hover(self):
-            hovered = self.rect().contains(
-                self.mapFromGlobal(QtGui.QCursor.pos())
-            )
-            if hovered != self._hovered:
-                self._hovered = hovered
-                self.hoverChanged.emit(hovered)
-
 
     class _MonitorWorker(QtCore.QThread):
         messages = QtCore.Signal(list)
@@ -956,7 +1360,7 @@ if QtCore is not None:
                 targets = {
                     str(target.get("id", "")): target
                     for target in self._targets_snapshot()
-                    if target.get("id") and target.get("enabled")
+                    if target.get("id")
                 }
                 try:
                     now = time.monotonic()
@@ -1017,7 +1421,7 @@ if QtCore is not None:
                                 status_poll_at[monitor_id] = now
                                 if channel and not video_id:
                                     info = youtube_web.find_live_video(channel)
-                                    new_video_id = info.get("video_id", "") if info.get("live") else ""
+                                    new_video_id = _youtube_channel_video_id(info)
                                     status.update({
                                         "live": bool(info.get("live")),
                                         "room_name": info.get("channel", "") or status.get("room_name", ""),
@@ -1199,8 +1603,10 @@ if QtCore is not None:
             self._joins = []
             self._chat_image_cache = {}
             self._chat_images_pending = set()
-            self._blocked_messages = []
             self._segments = []
+            self._transcription_sessions = []
+            self._transcription_armed_id = None
+            self._transcription_lrc_offsets = {}
             self._worker = None
             self._transcriber = None
             self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=4)
@@ -1212,6 +1618,10 @@ if QtCore is not None:
             self._hotspots = []
             self._thanked_ids = set(self._settings.value("thanked_ids", [], type=list))
             self._active_feed = "chat"
+            self._feed_scroll_paused = {"chat": False, "paid": False}
+            self._feed_paused_messages = {"chat": None, "paid": None}
+            self._feed_message_sequence = 0
+            self._tts_selection_generation = 0
             self._audio_queue = []
             self._audio_buffer = None
             self._translate_enabled = self._settings.value("translate_enabled", False, type=bool)
@@ -1221,12 +1631,19 @@ if QtCore is not None:
             self._notify_live = self._settings.value("notify_live", True, type=bool)
             self._live_states = {}
             self._recorders = {}
+            self._record_enabled_ids = set()
             self._room_titles = {}
             self._viewer_samples = []
+            self._restoring_splitter_sizes = False
+            self._memory_logger = None
+            self._memory_process = None
+            self._memory_timer = None
+            self._memory_start_rss = None
+            self._memory_peak_rss = 0
 
             self.setWindowTitle("Streaming Dashboard — PySide6")
             self.resize(1450, 920)
-            self.setMinimumSize(1000, 650)
+            self.setMinimumSize(720, 600)
             geometry = self._settings.value("window_geometry")
             if isinstance(geometry, QtCore.QByteArray) and not geometry.isEmpty():
                 self.restoreGeometry(geometry)
@@ -1240,6 +1657,7 @@ if QtCore is not None:
                 self._audio_player.mediaStatusChanged.connect(self._audio_status_changed)
             self._load_archive_view()
             self._start_monitor()
+            self._start_memory_monitor()
 
         def _login_context(self):
             return self.user_login.using(self._login_data)
@@ -1303,8 +1721,6 @@ if QtCore is not None:
                     entry["enabled"] = enabled
                     break
             self._save_monitor_targets()
-            if not enabled:
-                self._stop_recording(monitor_id)
             if self._worker:
                 self._worker.update_targets(self._monitor_targets)
             self._refresh_transcription_rooms()
@@ -1354,6 +1770,21 @@ if QtCore is not None:
                 )
                 theme_group.addAction(action)
 
+            self._language_menu = self.menuBar().addMenu("Interface language")
+            self._language_actions = {}
+            language_group = QtGui.QActionGroup(self)
+            language_group.setExclusive(True)
+            for code, label in (("en", "English"), ("zh", "简体中文"), ("ja", "日本語")):
+                action = self._language_menu.addAction(label)
+                action.setCheckable(True)
+                action.setChecked(code == self._ui_language)
+                action.triggered.connect(
+                    lambda checked=False, selected_language=code:
+                    self._set_ui_language(selected_language)
+                )
+                language_group.addAction(action)
+                self._language_actions[code] = action
+
             tabs = QtWidgets.QTabWidget()
             tabs.addTab(self._make_chat_tab(), "Chat")
             tabs.addTab(self._make_monitor_cookies_tab(), "Monitoring / Cookies")
@@ -1361,7 +1792,8 @@ if QtCore is not None:
             tabs.addTab(self._make_filters_tab(), "Moderation")
             tabs.addTab(self._make_obs_tab(), "OBS")
             tabs.addTab(self._make_transcription_tab(), "Transcription")
-            tabs.addTab(self._make_analytics_tab(), "Analytics")
+            analytics_index = tabs.addTab(self._make_analytics_tab(), "Analytics")
+            tabs.setTabVisible(analytics_index, self.config.ANALYTICS_ENABLED)
             tabs.addTab(self._make_archive_tab(), "Saved Chat")
             tabs.setCurrentIndex(
                 min(max(0, self._settings.value("main_tab", 0, type=int)), tabs.count() - 1)
@@ -1369,8 +1801,138 @@ if QtCore is not None:
             tabs.currentChanged.connect(
                 lambda index: self._settings.setValue("main_tab", int(index))
             )
+            tabs.currentChanged.connect(
+                lambda _index: QtWidgets.QToolTip.hideText()
+            )
             self.setCentralWidget(tabs)
             self.statusBar().showMessage("Ready")
+            self._memory_status = QtWidgets.QLabel("RAM: starting")
+            self._memory_status.setToolTip(
+                "Live process memory and app-owned collection metrics."
+            )
+            self.statusBar().addPermanentWidget(self._memory_status)
+            self._memory_log_button = QtWidgets.QToolButton()
+            _set_desktop_widget_text(
+                self._memory_log_button,
+                "Memory log",
+                self._ui_language,
+                self.i18n,
+            )
+            self._memory_log_button.clicked.connect(
+                self._open_memory_log_folder
+            )
+            self.statusBar().addPermanentWidget(self._memory_log_button)
+
+        def _start_memory_monitor(self):
+            try:
+                import psutil
+
+                log_path = _memory_log_path()
+                log_path.parent.mkdir(parents=True, exist_ok=True)
+                logger = logging.getLogger("streaming.desktop.memory")
+                logger.setLevel(logging.INFO)
+                logger.propagate = False
+                resolved_path = str(log_path.resolve())
+                handler = next(
+                    (
+                        item for item in logger.handlers
+                        if getattr(item, "baseFilename", "") == resolved_path
+                    ),
+                    None,
+                )
+                if handler is None:
+                    handler = RotatingFileHandler(
+                        log_path,
+                        maxBytes=5 * 1024 * 1024,
+                        backupCount=3,
+                        encoding="utf-8",
+                    )
+                    handler.setFormatter(
+                        logging.Formatter("%(asctime)s %(message)s")
+                    )
+                    logger.addHandler(handler)
+                self._memory_logger = logger
+                self._memory_process = psutil.Process(os.getpid())
+                self._memory_logger.info(
+                    json.dumps({
+                        "event": "monitor_started",
+                        "sample_interval_seconds": 10,
+                        "log_path": str(log_path),
+                    })
+                )
+                self._memory_timer = QtCore.QTimer(self)
+                self._memory_timer.setInterval(10_000)
+                self._memory_timer.timeout.connect(self._sample_memory_usage)
+                self._memory_timer.start()
+                self._sample_memory_usage()
+            except (ImportError, OSError, RuntimeError) as exc:
+                self._memory_status.setText("RAM monitor unavailable")
+                self._memory_status.setToolTip(str(exc))
+                self._show_error(
+                    f"Could not start the memory monitor: {type(exc).__name__}: {exc}"
+                )
+
+        def _sample_memory_usage(self):
+            import psutil
+
+            if self._memory_logger is None or self._memory_process is None:
+                return
+            try:
+                process_metrics = _memory_process_metrics(
+                    self._memory_process, psutil
+                )
+                collection_metrics = _memory_collection_metrics(self)
+                snapshot = {
+                    "event": "memory_sample",
+                    "timestamp": _utc_now(),
+                    **process_metrics,
+                    **collection_metrics,
+                }
+                app_mb = process_metrics["process_rss_bytes"] / (1024 * 1024)
+                tree_mb = process_metrics["process_tree_rss_bytes"] / (
+                    1024 * 1024
+                )
+                if self._memory_start_rss is None:
+                    self._memory_start_rss = process_metrics["process_rss_bytes"]
+                self._memory_peak_rss = max(
+                    self._memory_peak_rss,
+                    process_metrics["process_rss_bytes"],
+                )
+                snapshot["process_rss_delta_bytes"] = (
+                    process_metrics["process_rss_bytes"] - self._memory_start_rss
+                )
+                snapshot["process_rss_peak_bytes"] = self._memory_peak_rss
+                self._memory_status.setText(
+                    f"RAM {app_mb:.0f} / {tree_mb:.0f} MiB"
+                )
+                metrics = ", ".join(
+                    f"{key}={value}" for key, value in collection_metrics.items()
+                )
+                self._memory_status.setToolTip(
+                    f"App RSS: {app_mb:.1f} MiB\n"
+                    f"App + child processes: {tree_mb:.1f} MiB\n"
+                    f"Since monitor start: "
+                    f"{snapshot['process_rss_delta_bytes'] / (1024 * 1024):+.1f} MiB\n"
+                    f"{metrics}\n"
+                    f"Log: {_memory_log_path()}"
+                )
+                self._memory_logger.info(json.dumps(snapshot, sort_keys=True))
+            except (OSError, psutil.Error, RuntimeError, TypeError, ValueError) as exc:
+                self._memory_status.setText("RAM monitor error")
+                self._memory_status.setToolTip(str(exc))
+                self._memory_logger.exception(
+                    "Memory sampling failed: %s", type(exc).__name__
+                )
+
+        def _open_memory_log_folder(self):
+            folder = _memory_log_path().parent
+            if not folder.is_dir():
+                self._show_error(f"Memory log folder does not exist: {folder}")
+                return
+            if not QtGui.QDesktopServices.openUrl(
+                QtCore.QUrl.fromLocalFile(str(folder))
+            ):
+                self._show_error(f"Could not open memory log folder: {folder}")
 
         def _set_theme(self, theme):
             if theme not in ("light", "dark"):
@@ -1473,7 +2035,14 @@ if QtCore is not None:
         def _make_chat_tab(self):
             widget = QtWidgets.QWidget()
             layout = QtWidgets.QVBoxLayout(widget)
-            splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal)
+            self._feed_splitter = QtWidgets.QSplitter(
+                QtCore.Qt.Orientation.Vertical
+            )
+            self._feed_splitter.setChildrenCollapsible(False)
+            self._chat_splitter = QtWidgets.QSplitter(
+                QtCore.Qt.Orientation.Horizontal
+            )
+            self._chat_splitter.setChildrenCollapsible(False)
             self.chat_list = QtWidgets.QListWidget()
             self.paid_list = QtWidgets.QListWidget()
             self.chat_list.setAlternatingRowColors(True)
@@ -1482,21 +2051,51 @@ if QtCore is not None:
                 view.setWordWrap(True)
                 view.setUniformItemSizes(False)
                 view.setSelectionMode(
-                    QtWidgets.QAbstractItemView.SelectionMode.ExtendedSelection
+                    QtWidgets.QAbstractItemView.SelectionMode.SingleSelection
                 )
             self.chat_list.itemSelectionChanged.connect(lambda: setattr(self, "_active_feed", "chat"))
             self.paid_list.itemSelectionChanged.connect(lambda: setattr(self, "_active_feed", "paid"))
-            splitter.addWidget(self._feed_group("Chat", self.chat_list))
-            splitter.addWidget(self._feed_group("Gifts / Super Chats", self.paid_list))
-            splitter.setSizes([800, 600])
-            splitter.splitterMoved.connect(lambda *_: self._refresh_feeds())
-            layout.addWidget(splitter, 1)
-            join_row = QtWidgets.QHBoxLayout()
+            self.chat_list.itemClicked.connect(
+                lambda item: self._feed_message_clicked("chat", item)
+            )
+            self.paid_list.itemClicked.connect(
+                lambda item: self._feed_message_clicked("paid", item)
+            )
+            self._chat_feed_group = self._feed_group("Chat", self.chat_list)
+            self._paid_feed_group = self._feed_group(
+                "Gifts / Super Chats", self.paid_list
+            )
+            self._chat_splitter.addWidget(self._chat_feed_group)
+            self._chat_splitter.addWidget(self._paid_feed_group)
+            self._restore_splitter_sizes(
+                self._chat_splitter,
+                "chat_splitter_horizontal_sizes",
+                [3, 2],
+            )
+            self._chat_splitter.splitterMoved.connect(
+                lambda *_: self._refresh_feeds()
+            )
+            self._chat_splitter.splitterMoved.connect(
+                lambda *_: self._save_chat_splitter_sizes()
+            )
+            self._feed_splitter.addWidget(self._chat_splitter)
+            self._update_chat_splitter_layout(self.width())
             self.joins_list = QtWidgets.QListWidget()
-            self.joins_list.setMaximumHeight(110)
-            join_row.addWidget(QtWidgets.QLabel("Joins"))
-            join_row.addWidget(self.joins_list, 1)
-            layout.addLayout(join_row)
+            self._joins_feed_group = self._feed_group(
+                "Joins", self.joins_list
+            )
+            self._feed_splitter.addWidget(self._joins_feed_group)
+            self._feed_splitter.setStretchFactor(0, 5)
+            self._feed_splitter.setStretchFactor(1, 1)
+            self._restore_splitter_sizes(
+                self._feed_splitter, "feed_splitter_sizes", [7, 1]
+            )
+            self._feed_splitter.splitterMoved.connect(
+                lambda *_: self._save_splitter_sizes(
+                    "feed_splitter_sizes", self._feed_splitter
+                )
+            )
+            layout.addWidget(self._feed_splitter, 1)
             filters_row = QtWidgets.QHBoxLayout()
             filters_row.addWidget(QtWidgets.QLabel("Chat rooms (one per site):"))
             self.site_visible = {}
@@ -1505,7 +2104,10 @@ if QtCore is not None:
                 check = QtWidgets.QCheckBox(site.title())
                 check.setChecked(True)
                 self._persist_widget(check, f"chat_site_visible_{site}")
-                check.toggled.connect(self._refresh_feeds)
+                check.toggled.connect(
+                    lambda visible, platform=site:
+                    self._chat_site_visibility_changed(platform, visible)
+                )
                 self.site_visible[site] = check
                 filters_row.addWidget(check)
                 selector = QtWidgets.QComboBox()
@@ -1534,6 +2136,7 @@ if QtCore is not None:
             for site in ("youtube", "bilibili", "missevan"):
                 check = QtWidgets.QCheckBox(site.title())
                 check.setChecked(site != "youtube")
+                self._persist_widget(check, f"send_target_{site}")
                 self.send_targets[site] = check
                 send_row.addWidget(check)
             send_row.addWidget(self.send_input, 1)
@@ -1557,10 +2160,10 @@ if QtCore is not None:
             clear_button = QtWidgets.QPushButton("Clear Chat window")
             clear_button.clicked.connect(self._clear_chat_window)
             controls.addWidget(clear_button)
-            skip_speech = QtWidgets.QPushButton("Skip current speech")
+            skip_speech = QtWidgets.QPushButton("Skip speech")
             skip_speech.clicked.connect(lambda: self._stop_speech(clear=False))
             controls.addWidget(skip_speech)
-            stop_speech = QtWidgets.QPushButton("Stop and clear speech queue")
+            stop_speech = QtWidgets.QPushButton("Clear all speech")
             stop_speech.clicked.connect(lambda: self._stop_speech(clear=True))
             controls.addWidget(stop_speech)
             layout.addLayout(controls)
@@ -1568,6 +2171,10 @@ if QtCore is not None:
 
         def _refresh_chat_room_selectors(self):
             selectors = getattr(self, "chat_room_selectors", {})
+            previous_selections = {
+                platform: selector.currentData() or ""
+                for platform, selector in selectors.items()
+            }
             for platform, selector in selectors.items():
                 selected_id = selector.currentData()
                 selector.blockSignals(True)
@@ -1616,11 +2223,17 @@ if QtCore is not None:
                 selector.blockSignals(False)
                 current_id = selector.currentData() or ""
                 self._settings.setValue(f"chat_room_{platform}", current_id)
+            if any(
+                (selector.currentData() or "") != previous_selections.get(platform, "")
+                for platform, selector in selectors.items()
+            ):
+                self._invalidate_chat_speech()
             self._settings.sync()
             if self._settings.status() != QtCore.QSettings.Status.NoError:
                 self._show_error(
                     "Unable to save chat room selections to application settings."
                 )
+            self._retain_selected_feed_messages()
             self._refresh_overlay_room_selectors()
             self._refresh_feeds()
 
@@ -1633,10 +2246,10 @@ if QtCore is not None:
                     )
                 selector.blockSignals(True)
                 selector.clear()
-                entries = self._channels_for_platform(platform, enabled_only=True)
+                entries = self._channels_for_platform(platform)
                 if not entries:
                     selector.addItem(
-                        self.i18n.translate("No monitored room", self._ui_language), ""
+                        self.i18n.translate("No room configured", self._ui_language), ""
                     )
                 for entry in entries:
                     name = self._room_names.get(entry["id"], "").strip()
@@ -1657,6 +2270,7 @@ if QtCore is not None:
 
         def _chat_room_changed(self, platform):
             selector = self.chat_room_selectors[platform]
+            self._invalidate_chat_speech()
             self._settings.setValue(
                 f"chat_room_{platform}", selector.currentData() or ""
             )
@@ -1665,21 +2279,79 @@ if QtCore is not None:
                 self._show_error(
                     "Unable to save chat room selections to application settings."
                 )
+            self._retain_selected_feed_messages()
             self._refresh_feeds()
 
-        def _is_selected_chat_message(self, message):
+        def _selected_chat_room_ids(self):
+            return {
+                platform: str(selector.currentData() or "")
+                for platform, selector in getattr(
+                    self, "chat_room_selectors", {}
+                ).items()
+            }
+
+        def _retain_selected_feed_messages(self):
+            selected_ids = self._selected_chat_room_ids()
+            room_ids = {entry["id"] for entry in self._monitor_targets}
+            limit = (
+                self.max_messages.value()
+                if hasattr(self, "max_messages")
+                else self.config.MAX_CHAT_DISPLAY
+            )
+            self._messages = _retain_selected_room_messages(
+                self._messages, selected_ids, room_ids, limit
+            )
+            self._paid = _retain_selected_room_messages(
+                self._paid, selected_ids, room_ids, limit
+            )
+            self._joins = _retain_selected_room_messages(
+                self._joins, selected_ids, room_ids, limit
+            )
+
+        def _chat_site_visibility_changed(self, platform, visible):
+            if not visible:
+                self._invalidate_chat_speech()
+            self._refresh_feeds()
+
+        def _invalidate_chat_speech(self):
+            self._tts_selection_generation += 1
+            from src.tts import stop_speaking
+
+            stop_speaking(clear=True)
+            self._audio_queue.clear()
+            player = getattr(self, "_audio_player", None)
+            if player is not None:
+                player.stop()
+            buffer = getattr(self, "_audio_buffer", None)
+            if buffer is not None:
+                buffer.close()
+                buffer.deleteLater()
+                self._audio_buffer = None
+
+        def _is_selected_chat_message(self, message, queued_generation=None):
             selected_ids = {
                 platform: str(selector.currentData() or "")
                 for platform, selector in self.chat_room_selectors.items()
             }
-            enabled_ids = {
-                entry["id"] for entry in self._monitor_targets if entry["enabled"]
+            room_ids = {entry["id"] for entry in self._monitor_targets}
+            visible_platforms = {
+                platform
+                for platform, checkbox in self.site_visible.items()
+                if checkbox.isChecked()
             }
-            return _message_matches_selected_chat_room(
-                message, selected_ids, enabled_ids
+            if queued_generation is None:
+                queued_generation = self._tts_selection_generation
+            return _chat_speech_is_current(
+                message,
+                selected_ids,
+                room_ids,
+                visible_platforms,
+                queued_generation,
+                self._tts_selection_generation,
             )
 
         def _clear_chat_window(self):
+            self._invalidate_chat_speech()
             self._messages.clear()
             self._paid.clear()
             self._joins.clear()
@@ -1774,12 +2446,11 @@ if QtCore is not None:
             self.channel_input.clear()
 
         def _remove_monitor_target(self, monitor_id: str):
+            if monitor_id == self._transcription_armed_id:
+                self._stop_transcription()
             self._stop_recording(monitor_id)
             self._recorders.pop(monitor_id, None)
-            if monitor_id in self._record_auto_ids():
-                self._save_record_setting(
-                    "record_auto", sorted(self._record_auto_ids() - {monitor_id})
-                )
+            self._record_enabled_ids.discard(monitor_id)
             self._monitor_targets = [
                 entry for entry in self._monitor_targets if entry["id"] != monitor_id
             ]
@@ -1813,17 +2484,24 @@ if QtCore is not None:
                 detail.setWordWrap(True)
                 detail.setStyleSheet("border: 0;")
                 card_layout.addWidget(detail)
-                connection = QtWidgets.QLabel(
-                    self.i18n.translate(
-                        "Connecting" if entry["enabled"] else "Monitoring off",
-                        self._ui_language,
-                    )
+                connection = QtWidgets.QLabel()
+                connection_source = "Connecting"
+                _set_desktop_widget_text(
+                    connection, connection_source, self._ui_language, self.i18n
                 )
                 connection.setStyleSheet("border: 0;")
                 card_layout.addWidget(connection)
                 controls = QtWidgets.QHBoxLayout()
-                monitor = QtWidgets.QCheckBox(
-                    self.i18n.translate("Monitor", self._ui_language)
+                monitor = QtWidgets.QCheckBox()
+                _set_desktop_widget_text(
+                    monitor, "Allow saving", self._ui_language, self.i18n
+                )
+                monitor.setToolTip(
+                    self.i18n.translate(
+                        "Live chat is received either way. This controls whether "
+                        "messages from this room can be saved.",
+                        self._ui_language,
+                    )
                 )
                 monitor.setChecked(entry["enabled"])
                 monitor.toggled.connect(
@@ -1831,25 +2509,27 @@ if QtCore is not None:
                     self._monitor_target_changed(monitor_id, enabled)
                 )
                 controls.addWidget(monitor)
-                auto_record = None
+                record_toggle = None
                 recording = None
-                if entry["platform"] == "bilibili":
-                    auto_record = QtWidgets.QCheckBox(
-                        self.i18n.translate("Auto record when live", self._ui_language)
+                if entry["platform"] in ("youtube", "bilibili", "missevan"):
+                    record_toggle = QtWidgets.QCheckBox()
+                    _set_desktop_widget_text(
+                        record_toggle, "Record", self._ui_language, self.i18n
                     )
-                    auto_record.setChecked(entry["id"] in self._record_auto_ids())
-                    auto_record.toggled.connect(
+                    record_toggle.setChecked(entry["id"] in self._record_enabled_ids)
+                    record_toggle.toggled.connect(
                         lambda enabled, monitor_id=entry["id"]:
-                        self._set_record_auto(monitor_id, enabled)
+                        self._set_recording(monitor_id, enabled)
                     )
-                    controls.addWidget(auto_record)
+                    controls.addWidget(record_toggle)
                     recording = QtWidgets.QLabel("")
                     recording.setStyleSheet("color: #b42318; border: 0;")
                     recording.setVisible(False)
                     card_layout.addWidget(recording)
                 controls.addStretch(1)
-                remove = QtWidgets.QPushButton(
-                    self.i18n.translate("Remove", self._ui_language)
+                remove = QtWidgets.QPushButton()
+                _set_desktop_widget_text(
+                    remove, "Remove", self._ui_language, self.i18n
                 )
                 remove.clicked.connect(
                     lambda _, monitor_id=entry["id"]:
@@ -1863,7 +2543,7 @@ if QtCore is not None:
                     "detail": detail,
                     "connection": connection,
                     "monitor": monitor,
-                    "auto_record": auto_record,
+                    "record_toggle": record_toggle,
                     "recording": recording,
                 }
             self._layout_channel_cards()
@@ -1893,18 +2573,63 @@ if QtCore is not None:
             if hasattr(self, "channel_cards") and self.channel_grid.count():
                 self._layout_channel_cards()
             if hasattr(self, "chat_list"):
+                self._update_chat_splitter_layout(self.width())
                 QtCore.QTimer.singleShot(80, self._refresh_feeds)
+
+        def _update_chat_splitter_layout(self, width):
+            if not hasattr(self, "_chat_splitter"):
+                return
+            layout_name, order = _chat_splitter_layout(width)
+            if getattr(self, "_chat_splitter_layout_name", None) == layout_name:
+                return
+            self._chat_splitter_layout_name = layout_name
+            orientation = (
+                QtCore.Qt.Orientation.Vertical
+                if layout_name == "vertical"
+                else QtCore.Qt.Orientation.Horizontal
+            )
+            self._restoring_splitter_sizes = True
+            self._chat_splitter.setOrientation(orientation)
+            widgets = {
+                "chat": self._chat_feed_group,
+                "paid": self._paid_feed_group,
+            }
+            for index, name in enumerate(order):
+                self._chat_splitter.insertWidget(index, widgets[name])
+            key = (
+                "chat_splitter_vertical_sizes"
+                if layout_name == "vertical"
+                else "chat_splitter_horizontal_sizes"
+            )
+            defaults = [2, 3] if layout_name == "vertical" else [3, 2]
+            self._restore_splitter_sizes(self._chat_splitter, key, defaults)
+            self._restoring_splitter_sizes = False
+
+        def _restore_splitter_sizes(self, splitter, key, defaults):
+            splitter.setSizes(
+                _saved_splitter_sizes(self._settings, key, defaults)
+            )
+
+        def _save_splitter_sizes(self, key, splitter):
+            if self._restoring_splitter_sizes:
+                return
+            sizes = splitter.sizes()
+            if len(sizes) == 2 and sum(sizes) > 0:
+                self._settings.setValue(key, sizes)
+
+        def _save_chat_splitter_sizes(self):
+            layout_name = self._chat_splitter_layout_name
+            key = (
+                "chat_splitter_vertical_sizes"
+                if layout_name == "vertical"
+                else "chat_splitter_horizontal_sizes"
+            )
+            self._save_splitter_sizes(key, self._chat_splitter)
 
         def _make_settings_tab(self):
             widget = QtWidgets.QWidget()
             layout = QtWidgets.QVBoxLayout(widget)
             language_form = QtWidgets.QFormLayout()
-            self.ui_language = QtWidgets.QComboBox()
-            for code, label in (("en", "English"), ("zh", "简体中文"), ("ja", "日本語")):
-                self.ui_language.addItem(label, code)
-            language_index = self.ui_language.findData(self._ui_language)
-            self.ui_language.setCurrentIndex(language_index if language_index >= 0 else 0)
-            language_form.addRow("Interface language", self.ui_language)
             self.font_size = QtWidgets.QSpinBox()
             self.font_size.setRange(8, 24)
             self.font_size.setValue(self._font_size)
@@ -1913,10 +2638,12 @@ if QtCore is not None:
             decrease_font = QtWidgets.QPushButton("−")
             decrease_font.setAccessibleName("Decrease chat font size")
             decrease_font.setToolTip("Decrease chat font size")
+            decrease_font.setFixedSize(40, 34)
             decrease_font.clicked.connect(self.font_size.stepDown)
             increase_font = QtWidgets.QPushButton("+")
             increase_font.setAccessibleName("Increase chat font size")
             increase_font.setToolTip("Increase chat font size")
+            increase_font.setFixedSize(40, 34)
             increase_font.clicked.connect(self.font_size.stepUp)
             font_control = QtWidgets.QWidget()
             font_layout = QtWidgets.QHBoxLayout(font_control)
@@ -2006,25 +2733,29 @@ if QtCore is not None:
             layout.addWidget(tts_group)
             feature_group = QtWidgets.QGroupBox("Chat display")
             feature_form = QtWidgets.QFormLayout(feature_group)
-            self.show_reading = QtWidgets.QCheckBox("Show translation and reading aids when available")
+            self.show_reading = QtWidgets.QCheckBox("Show pinyin / furigana on hover")
             self.show_reading.setChecked(self._settings.value("show_reading", True, type=bool))
             self.show_reading.toggled.connect(self._set_show_reading)
             feature_form.addRow(self.show_reading)
             self.max_messages = QtWidgets.QSpinBox()
             self.max_messages.setRange(10, 200)
             self.max_messages.setValue(self.config.MAX_CHAT_DISPLAY)
-            feature_form.addRow("Maximum messages per feed", self.max_messages)
+            feature_form.addRow("Maximum chat messages per room", self.max_messages)
             layout.addWidget(feature_group)
             layout.addStretch(1)
             self.translation_toggle.toggled.connect(self._update_translation)
             self.translation_target.currentIndexChanged.connect(self._update_translation)
-            self.ui_language.currentIndexChanged.connect(self._set_ui_language)
             self.tts_toggle.toggled.connect(self._set_tts_enabled)
             self.tts_lang.currentIndexChanged.connect(self._set_tts_language)
             self.translation_target.currentIndexChanged.connect(self._set_translation_target)
-            self.max_messages.valueChanged.connect(lambda value: self._settings.setValue("max_messages", value))
+            self.max_messages.valueChanged.connect(self._set_message_limit)
             self.max_messages.setValue(self._settings.value("max_messages", self.config.MAX_CHAT_DISPLAY, type=int))
             return widget
+
+        def _set_message_limit(self, value):
+            self._settings.setValue("max_messages", value)
+            self._retain_selected_feed_messages()
+            self._refresh_feeds()
 
         def _apply_ui_language(self):
             language = self._ui_language
@@ -2121,22 +2852,31 @@ if QtCore is not None:
                 source = action.property("_desktop_source_text")
                 if source:
                     action.setText(self.i18n.translate(source, language))
+            self._language_menu.setTitle(
+                self.i18n.translate("Interface language", language)
+            )
+            for code, action in self._language_actions.items():
+                action.setChecked(code == language)
             self.cookie_browser.setItemText(
                 0, self.i18n.translate("Paste / import", language)
             )
             self.hotspot_window.setSuffix(self.i18n.translate(" s window", language))
             self._refresh_overlay_room_selectors()
             self._refresh_transcription_rooms()
+            self._refresh_recording_status()
             self.statusBar().showMessage(self.i18n.translate("Ready", language))
 
-        def _set_ui_language(self, *_):
-            language = self.ui_language.currentData()
+        def _set_ui_language(self, language):
             if language not in self.i18n.UI_LANGUAGES:
                 return
             self._ui_language = language
             self._settings.setValue("ui_language", language)
+            self._settings.sync()
+            if self._settings.status() != QtCore.QSettings.Status.NoError:
+                self._show_error("Unable to save the interface language setting.")
             self._apply_ui_language()
             self._apply_font_size()
+            self._refresh_monitor_cards()
 
         def _apply_font_size(self):
             system_font = QtGui.QFont(self._base_font)
@@ -2442,6 +3182,9 @@ if QtCore is not None:
             stop.clicked.connect(self._stop_transcription)
             row.addWidget(start)
             row.addWidget(stop)
+            clear = QtWidgets.QPushButton("Clear all transcripts")
+            clear.clicked.connect(self._clear_transcriptions)
+            row.addWidget(clear)
             layout.addLayout(row)
             self.transcription_status = QtWidgets.QLabel("Idle")
             layout.addWidget(self.transcription_status)
@@ -2456,11 +3199,19 @@ if QtCore is not None:
         def _make_recording_settings(self):
             from src import bili_recorder
 
-            group = QtWidgets.QGroupBox("Bilibili recording")
+            group = QtWidgets.QGroupBox()
+            _set_desktop_widget_text(
+                group, "Live recording", self._ui_language, self.i18n
+            )
             form = QtWidgets.QFormLayout(group)
-            intro = QtWidgets.QLabel(
-                "Tick \u201cAuto record when live\u201d on a Bilibili room to save its stream "
-                "as FLV (like BililiveRecorder). Recording stops when the room goes offline."
+            intro = QtWidgets.QLabel()
+            _set_desktop_widget_text(
+                intro,
+                "Turn on Record on a YouTube, Bilibili, or MissEvan room card to record its live stream. "
+                "YouTube and MissEvan recordings are MKV; Bilibili recordings are FLV. "
+                "Recording stops when the room goes offline. FFmpeg is required.",
+                self._ui_language,
+                self.i18n,
             )
             intro.setWordWrap(True)
             form.addRow(intro)
@@ -2499,9 +3250,13 @@ if QtCore is not None:
                     "record_quality", int(self.record_quality.currentData())
                 )
             )
-            form.addRow("Preferred quality", self.record_quality)
-            self.record_danmaku = QtWidgets.QCheckBox(
-                "Save danmaku, Super Chats and gifts to an XML file next to each video"
+            form.addRow("Preferred Bilibili quality", self.record_quality)
+            self.record_danmaku = QtWidgets.QCheckBox()
+            _set_desktop_widget_text(
+                self.record_danmaku,
+                "Save Bilibili danmaku, Super Chats and gifts to an XML file next to each video",
+                self._ui_language,
+                self.i18n,
             )
             self.record_danmaku.setChecked(
                 self._settings.value("record_danmaku", True, type=bool)
@@ -2538,63 +3293,116 @@ if QtCore is not None:
                 return
             QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromLocalFile(str(folder)))
 
-        def _record_auto_ids(self):
-            return set(self._settings.value("record_auto", [], type=list) or [])
-
-        def _set_record_auto(self, monitor_id, enabled):
-            auto_ids = self._record_auto_ids()
-            if enabled:
-                auto_ids.add(monitor_id)
-            else:
-                auto_ids.discard(monitor_id)
-            self._save_record_setting("record_auto", sorted(auto_ids))
+        def _set_recording(self, monitor_id, enabled):
             entry = next(
                 (t for t in self._monitor_targets if t["id"] == monitor_id), None
             )
-            if enabled and entry:
-                self._auto_record(entry, self._live_states.get(monitor_id, False))
-            elif not enabled:
+            if not enabled:
+                self._record_enabled_ids.discard(monitor_id)
                 self._stop_recording(monitor_id)
-
-        def _auto_record(self, entry, live):
-            monitor_id = entry["id"]
-            recorder = self._recorders.get(monitor_id)
-            if (
-                live
-                and entry["enabled"]
-                and monitor_id in self._record_auto_ids()
-                and not (recorder and recorder.is_running)
-            ):
+                return
+            if not entry:
+                self._show_error("Select a configured room before recording.")
+                self._refresh_monitor_cards()
+                return
+            self._record_enabled_ids.add(monitor_id)
+            if self._live_states.get(monitor_id, False):
                 self._start_recording(monitor_id)
 
         def _start_recording(self, monitor_id):
-            from src import bili_recorder, bilibili
+            from src import bili_recorder, bilibili, missevan, missevan_recorder
 
             entry = next(
                 (t for t in self._monitor_targets if t["id"] == monitor_id), None
             )
-            if not entry or entry["platform"] != "bilibili":
+            if not entry or entry["platform"] not in (
+                "youtube", "bilibili", "missevan"
+            ):
                 return
             existing = self._recorders.get(monitor_id)
             if existing and existing.is_running:
                 return
-            room_id = bilibili.parse_room_id(entry["target"])
+            platform = entry["platform"]
+            if platform == "youtube":
+                from src import youtube, youtube_recorder
+
+                video_state = (
+                    self._worker._youtube.get(monitor_id, {})
+                    if self._worker else {}
+                )
+                video_id = str(
+                    video_state.get("video_id")
+                    or youtube.extract_video_id(entry["target"])
+                    or ""
+                )
+                if not video_id:
+                    self._show_error(
+                        "The selected YouTube room has no live video to record yet."
+                    )
+                    self._refresh_monitor_cards()
+                    return
+                folder = self.record_folder.text().strip() or str(_ROOT / "recordings")
+                try:
+                    recorder = youtube_recorder.YouTubeRecorder(
+                        video_id,
+                        folder,
+                        source_resolver=lambda: youtube_recorder.resolve_live_source(
+                            str(
+                                (
+                                    self._worker._youtube.get(monitor_id, {}).get("video_id")
+                                    if self._worker else ""
+                                )
+                                or video_id
+                            )
+                        ),
+                        name=self._room_names.get(monitor_id, ""),
+                        title=self._room_titles.get(monitor_id, ""),
+                    )
+                    self._recorders[monitor_id] = recorder
+                    recorder.start()
+                    self._record_enabled_ids.add(monitor_id)
+                    self._refresh_recording_status()
+                except Exception as exc:
+                    self._show_error(f"Could not start YouTube recording: {exc}")
+                    self._refresh_monitor_cards()
+                return
+
+            room_id = (
+                bilibili.parse_room_id(entry["target"])
+                if platform == "bilibili"
+                else missevan.parse_room_id(entry["target"])
+            )
             if not room_id:
-                self._show_error("Invalid Bilibili room URL or ID.")
+                self._show_error(f"Invalid {platform.title()} room URL or ID.")
+                self._refresh_monitor_cards()
                 return
             folder = self.record_folder.text().strip() or str(_ROOT / "recordings")
-            recorder = bili_recorder.BilibiliRecorder(
-                room_id,
-                folder,
-                quality=int(self.record_quality.currentData() or 10000),
-                cookies=self._login_data.get("bilibili") or {},
-                name=self._room_names.get(monitor_id, ""),
-                title=self._room_titles.get(monitor_id, ""),
-                save_danmaku=self.record_danmaku.isChecked(),
-            )
-            self._recorders[monitor_id] = recorder
-            recorder.start()
-            self._refresh_recording_status()
+            try:
+                if platform == "bilibili":
+                    recorder = bili_recorder.BilibiliRecorder(
+                        room_id,
+                        folder,
+                        quality=int(self.record_quality.currentData() or 10000),
+                        cookies=self._login_data.get("bilibili") or {},
+                        name=self._room_names.get(monitor_id, ""),
+                        title=self._room_titles.get(monitor_id, ""),
+                        save_danmaku=self.record_danmaku.isChecked(),
+                    )
+                else:
+                    recorder = missevan_recorder.MissEvanRecorder(
+                        room_id,
+                        folder,
+                        source_resolver=lambda: missevan.get_live_audio_url(room_id),
+                        name=self._room_names.get(monitor_id, ""),
+                        title=self._room_titles.get(monitor_id, ""),
+                    )
+                self._recorders[monitor_id] = recorder
+                recorder.start()
+                self._record_enabled_ids.add(monitor_id)
+                self._refresh_recording_status()
+            except Exception as exc:
+                self._show_error(f"Could not start {platform.title()} recording: {exc}")
+                self._refresh_monitor_cards()
 
         def _stop_recording(self, monitor_id):
             recorder = self._recorders.get(monitor_id)
@@ -2630,10 +3438,17 @@ if QtCore is not None:
                 label = card.get("recording")
                 if label is None:
                     continue
+                recorder = self._recorders.get(monitor_id)
                 text = self._recording_status_text(monitor_id)
                 if label.text() != text:
                     label.setText(text)
-                recorder = self._recorders.get(monitor_id)
+                record_toggle = card.get("record_toggle")
+                if record_toggle is not None:
+                    is_armed = monitor_id in self._record_enabled_ids
+                    if record_toggle.isChecked() != is_armed:
+                        record_toggle.blockSignals(True)
+                        record_toggle.setChecked(is_armed)
+                        record_toggle.blockSignals(False)
                 state = recorder.snapshot() if recorder else {}
                 tooltip = state.get("error") or state.get("file", "")
                 if label.toolTip() != tooltip:
@@ -2811,11 +3626,23 @@ if QtCore is not None:
                     pass
                 previous = self._live_states.get(monitor_id)
                 self._live_states[monitor_id] = live
+                if monitor_id == self._transcription_armed_id:
+                    if live and previous is not True:
+                        self._begin_transcription(entry)
+                    elif not live and previous is True and self._transcriber:
+                        self._transcriber.stop()
+                recording_action = _recording_status_action(
+                    previous,
+                    live,
+                    monitor_id in self._record_enabled_ids,
+                )
+                if recording_action == "start":
+                    self._start_recording(monitor_id)
+                elif recording_action == "stop":
+                    self._stop_recording(monitor_id)
                 room_title = str(info.get("title") or "").strip()
                 if room_title:
                     self._room_titles[monitor_id] = room_title
-                if entry["platform"] == "bilibili":
-                    self._auto_record(entry, live)
                 if previous is False and live and self.notify_live_check.isChecked():
                     self._notify(f"{entry['platform'].title()} is live", name)
                 if live:
@@ -2831,13 +3658,12 @@ if QtCore is not None:
                         count=viewers,
                     )
                 card["detail"].setText(detail)
-                connection = (
-                    info.get("connection", "Connecting")
-                    if entry["enabled"]
-                    else "Monitoring off"
-                )
-                card["connection"].setText(
-                    self.i18n.translate(connection, self._ui_language)
+                connection = info.get("connection", "Connecting")
+                _set_desktop_widget_text(
+                    card["connection"],
+                    connection,
+                    self._ui_language,
+                    self.i18n,
                 )
                 card["connection"].setToolTip(info.get("error", ""))
                 if connection.startswith("Connected"):
@@ -2852,47 +3678,142 @@ if QtCore is not None:
             self.live_status.setText(
                 "Live: " + (", ".join(live_channels) if live_channels else "No active streams detected")
             )
-            self._viewer_samples.append((time.time(), dict(viewers_by_platform)))
-            self._viewer_samples = self._viewer_samples[-2000:]
+            if self.config.ANALYTICS_ENABLED:
+                self._viewer_samples.append((time.time(), dict(viewers_by_platform)))
+                self._viewer_samples = self._viewer_samples[-2000:]
             if room_names_changed:
                 self._refresh_chat_room_selectors()
                 self._refresh_transcription_rooms()
                 self._refresh_archive_session_labels()
 
+        def _append_messages_to_archive(self, messages):
+            messages_by_target = defaultdict(list)
+            targets_by_id = {}
+            for message in messages:
+                if message.get("type") == "enter":
+                    continue
+                entry = _monitored_target_for_message(
+                    message, self._monitor_targets
+                )
+                if entry is None:
+                    continue
+                messages_by_target[entry["id"]].append({
+                    "timestamp": str(message.get("timestamp", "")),
+                    "platform": str(message.get("platform", "")).lower(),
+                    "author": str(message.get("author", "")),
+                    "text": str(message.get("text", "")),
+                })
+                targets_by_id[entry["id"]] = entry
+
+            errors = []
+            for monitor_id, room_messages in messages_by_target.items():
+                entry = targets_by_id[monitor_id]
+                platform = entry["platform"]
+                configured_target = entry["target"]
+                if platform == "youtube":
+                    channel_id, room_id = configured_target, ""
+                else:
+                    from src import bilibili, missevan
+                    room_id = (
+                        bilibili.parse_room_id(configured_target)
+                        if platform == "bilibili"
+                        else missevan.parse_room_id(configured_target)
+                    )
+                    channel_id = ""
+                identity = channel_id or room_id
+                if not identity:
+                    errors.append(
+                        f"Could not save {platform.title()} messages: enter a valid "
+                        "room or channel ID in Stream Monitoring."
+                    )
+                    continue
+                result = self._archive.append_messages(
+                    f"{platform}:{identity}",
+                    room_messages,
+                    platform=platform,
+                    room_id=room_id,
+                    channel_id=channel_id,
+                    room_name=self._room_names.get(monitor_id, ""),
+                )
+                if not result.get("ok"):
+                    errors.append(result["error"])
+
+            if errors:
+                self._show_error(" ".join(errors))
+
         def _accept_messages(self, messages):
             from src import gifts, translate
-            from src import highlights
             from src.tts import is_gift, is_paid, is_emoji_only, strip_emoji, format_announcement
 
-            allowed, blocked = self._filter.filter_messages(messages)
-            self._blocked_messages.extend(blocked)
+            if self.config.ANALYTICS_ENABLED:
+                from src import highlights
+
+            allowed, _blocked = self._filter.filter_messages(messages)
+            selected_ids = self._selected_chat_room_ids()
+            room_ids = {entry["id"] for entry in self._monitor_targets}
             for message in messages:
                 recorder = self._recorders.get(message.get("_monitor_id", ""))
-                if recorder is not None and recorder.is_running and not message.get("history"):
+                if (
+                    recorder is not None
+                    and recorder.is_running
+                    and not message.get("history")
+                    and callable(getattr(recorder, "add_danmaku", None))
+                ):
                     recorder.add_danmaku(message)
             for message in allowed:
                 msg = dict(message)
                 msg["_arrived"] = time.time()
+                self._feed_message_sequence += 1
+                msg["_desktop_feed_id"] = str(self._feed_message_sequence)
+                selected_room = _message_matches_selected_chat_room(
+                    msg, selected_ids, room_ids
+                )
                 if msg.get("type") == "enter":
-                    self._joins.append(msg)
-                    self._joins = self._joins[-200:]
+                    if selected_room:
+                        self._joins.append(msg)
+                        self._joins = _limit_messages_per_room(
+                            self._joins, self.max_messages.value()
+                        )
                     if (
-                        self._tts_enabled
+                        selected_room
+                        and self._tts_enabled
                         and self.tts_joins.isChecked()
                         and self._is_selected_chat_message(msg)
                     ):
                         rate, volume, lang = self.tts_rate.value(), self._tts_volume_value(), self._tts_language
                         author = msg.get("author", "")
+                        generation = self._tts_selection_generation
+
+                        def speak_join_if_current(
+                            author=author,
+                            rate=rate,
+                            volume=volume,
+                            lang=lang,
+                            message=msg,
+                            queued_generation=generation,
+                        ):
+                            if not self._is_selected_chat_message(
+                                message, queued_generation
+                            ):
+                                return None
+                            return self._speak_join(author, rate, volume, lang)
+
                         self._run_task(
-                            lambda: self._speak_join(author, rate, volume, lang),
-                            self._play_audio_bytes,
+                            speak_join_if_current,
+                            lambda audio, message=msg, queued_generation=generation:
+                            self._play_audio_bytes(audio)
+                            if self._is_selected_chat_message(
+                                message, queued_generation
+                            )
+                            else None,
                         )
                     continue
-                self._activity.append((time.time(), msg))
-                self._hotspot_events.append(
-                    highlights.log_entry(msg, is_paid(msg) or is_gift(msg), time.time())
-                )
-                if self._translate_enabled and msg.get("text"):
+                if self.config.ANALYTICS_ENABLED:
+                    self._activity.append((time.time(), msg))
+                    self._hotspot_events.append(
+                        highlights.log_entry(msg, is_paid(msg) or is_gift(msg), time.time())
+                    )
+                if selected_room and self._translate_enabled and msg.get("text"):
                     target, text = self._translate_target, msg["text"]
                     translate.prefetch([text], target)
 
@@ -2909,10 +3830,11 @@ if QtCore is not None:
                         resolve_translation,
                         lambda translated, msg=msg: self._translation_ready(msg, translated),
                     )
-                if is_paid(msg) or is_gift(msg):
-                    self._paid.append(msg)
-                else:
-                    self._messages.append(msg)
+                if selected_room:
+                    if is_paid(msg) or is_gift(msg):
+                        self._paid.append(msg)
+                    else:
+                        self._messages.append(msg)
                 if (
                     not msg.get("history")
                     and self._tts_enabled
@@ -2929,27 +3851,70 @@ if QtCore is not None:
                         translated_speech = self.tts_translate.isChecked() and self._translate_enabled and not is_gift(msg)
                         skip_name = self.tts_skip_name.isChecked()
                         author = msg.get("author", "")
-                        self._run_task(
-                            lambda text=text, rate=rate, volume=volume, lang=lang, paid=paid,
-                            target=target, translated_speech=translated_speech, skip_name=skip_name,
-                            author=author, message=msg: self._speak_message(
-                                text, rate, volume, lang, paid, target, translated_speech,
-                                skip_name, author, message
-                            ),
-                            self._play_audio_bytes,
+                        self._queue_chat_speech(
+                            text,
+                            rate,
+                            volume,
+                            lang,
+                            paid,
+                            target,
+                            translated_speech,
+                            skip_name,
+                            author,
+                            msg,
                         )
-            self._messages = self._messages[-self.max_messages.value():]
-            self._paid = self._paid[-1000:]
+            self._messages = _limit_messages_per_room(
+                self._messages, self.max_messages.value()
+            )
+            self._paid = _limit_messages_per_room(
+                self._paid, self.max_messages.value()
+            )
             self._refresh_feeds()
             self._sync_obs_chat()
             if allowed:
-                self._save_archive()
+                self._append_messages_to_archive(allowed)
 
         def _translation_ready(self, message, translated):
             if translated:
                 message["translation"] = translated
                 self._refresh_feeds()
-                self._save_archive()
+
+        def _queue_chat_speech(
+            self,
+            text,
+            rate,
+            volume,
+            lang,
+            paid,
+            target,
+            translate_message,
+            skip_name,
+            author,
+            message,
+        ):
+            generation = self._tts_selection_generation
+
+            def speak_if_current():
+                if generation != self._tts_selection_generation:
+                    return None
+                return self._speak_message(
+                    text,
+                    rate,
+                    volume,
+                    lang,
+                    paid,
+                    target,
+                    translate_message,
+                    skip_name,
+                    author,
+                    message,
+                )
+
+            def play_if_current(audio):
+                if self._is_selected_chat_message(message, generation):
+                    self._play_audio_bytes(audio)
+
+            self._run_task(speak_if_current, play_if_current)
 
         def _speak_message(self, text, rate, volume, lang, paid, target, translate_message, skip_name, author, message):
             from src import translate
@@ -3003,10 +3968,10 @@ if QtCore is not None:
                     self._audio_buffer = None
                 self._play_next_audio()
 
-        def _message_visible_in_chat(self, message, selected_ids, enabled_ids):
+        def _message_visible_in_chat(self, message, selected_ids, room_ids):
             platform = str(message.get("platform", "")).lower()
             return (
-                selected_ids.get(platform, "") in enabled_ids
+                selected_ids.get(platform, "") in room_ids
                 and (
                     message.get("_monitor_id") == selected_ids.get(platform, "")
                     if message.get("_monitor_id")
@@ -3020,9 +3985,7 @@ if QtCore is not None:
 
         def _visible_chat_messages(self, feed=None):
             feed = feed or self._active_feed
-            enabled_ids = {
-                entry["id"] for entry in self._monitor_targets if entry["enabled"]
-            }
+            room_ids = {entry["id"] for entry in self._monitor_targets}
             selected_ids = {
                 platform: selector.currentData() or ""
                 for platform, selector in getattr(
@@ -3034,7 +3997,7 @@ if QtCore is not None:
                 message
                 for message in feed_messages
                 if self._message_visible_in_chat(
-                    message, selected_ids, enabled_ids
+                    message, selected_ids, room_ids
                 )
             ]
             return sorted(messages, key=lambda message: message.get("_arrived", 0))
@@ -3065,6 +4028,26 @@ if QtCore is not None:
 
         def _copy_visible_chat(self, feed=None):
             self._copy_messages(self._visible_chat_messages(feed))
+
+        def _feed_message_clicked(self, feed, item):
+            view = self.paid_list if feed == "paid" else self.chat_list
+            message = item.data(QtCore.Qt.ItemDataRole.UserRole)
+            message_id = message.get("_desktop_feed_id")
+            paused, paused_message = _feed_scroll_click_state(
+                self._feed_scroll_paused[feed],
+                self._feed_paused_messages[feed],
+                message_id,
+            )
+            self._feed_scroll_paused[feed] = paused
+            self._feed_paused_messages[feed] = paused_message
+            if paused:
+                view.setCurrentItem(
+                    item,
+                    QtCore.QItemSelectionModel.SelectionFlag.ClearAndSelect,
+                )
+            else:
+                view.clearSelection()
+                view.scrollToBottom()
 
         def _refresh_feeds(self):
             chat_messages = self._visible_chat_messages("chat")
@@ -3144,19 +4127,28 @@ if QtCore is not None:
             from src import emotes
             from src import reading
 
+            feed = "paid" if view is self.paid_list else "chat"
+            paused = self._feed_scroll_paused[feed]
+            paused_message_id = self._feed_paused_messages[feed]
+            cursor_position = QtGui.QCursor.pos()
+            cursor_viewport_position = view.viewport().mapFromGlobal(cursor_position)
+            hovered_item = view.itemAt(cursor_viewport_position)
+            hovered_message_id = (
+                hovered_item.data(QtCore.Qt.ItemDataRole.UserRole).get(
+                    "_desktop_feed_id"
+                )
+                if hovered_item is not None
+                else None
+            )
+            selected_indices = _selected_feed_indices(
+                messages,
+                [{"_desktop_feed_id": paused_message_id}]
+                if paused and paused_message_id is not None
+                else [],
+            )
+            scroll_bar = view.verticalScrollBar()
+            scroll_position = scroll_bar.value()
             view.clear()
-            base_font = QtGui.QFont(view.font())
-            reading_font = QtGui.QFont(base_font)
-            # Qt renders <small> one size step down (÷1.2).
-            reading_font.setPointSizeF(max(1.0, base_font.pointSizeF() / 1.2))
-            base_metrics = QtGui.QFontMetricsF(base_font)
-            reading_metrics = QtGui.QFontMetricsF(reading_font)
-
-            def measure_ruby(value, is_reading):
-                metrics = reading_metrics if is_reading else base_metrics
-                return metrics.horizontalAdvance(value.replace(" ", "\u00a0"))
-
-            ruby_width = max(1, view.viewport().width() - 16)
             for msg in messages:
                 stamp = _format_chat_timestamp(msg.get("timestamp", ""))
                 prefix = f"{stamp}  [{msg.get('platform', '').upper()}]  {msg.get('author', '?')}"
@@ -3204,6 +4196,25 @@ if QtCore is not None:
                     elif msg.get("membership"):
                         prefix += f"  ({html.escape(str(msg['membership']))})"
                 message_text = str(msg.get("text", ""))
+                if (
+                    str(msg.get("platform", "")).lower() == "bilibili"
+                    and msg.get("type") == "gift"
+                ):
+                    message_text = _localize_bilibili_gift_text(
+                        message_text, self._ui_language, self.i18n
+                    )
+                author = str(msg.get("author", "?"))
+                reading_tooltip = ""
+                if self.show_reading.isChecked():
+                    author_reading = reading.with_readings(author)
+                    message_reading = reading.with_readings(message_text)
+                    if author_reading != author or message_reading != message_text:
+                        reading_tooltip = self.i18n.translate(
+                            "Username: {name}\nMessage: {message}",
+                            self._ui_language,
+                            name=author_reading,
+                            message=message_reading,
+                        )
                 message_emotes = msg.get("emotes") or {}
                 replacements = {
                     code: emotes.safe_chat_image_url(url)
@@ -3229,17 +4240,7 @@ if QtCore is not None:
                             f'alt="{html.escape(part, quote=True)}" title="{html.escape(part, quote=True)}">'
                         )
                     else:
-                        rendered_parts.append(
-                            reading.ruby_html(
-                                part,
-                                "auto",
-                                max_width=ruby_width,
-                                font_size=view.font().pointSizeF(),
-                                measure=measure_ruby,
-                            )
-                            if self.show_reading.isChecked()
-                            else html.escape(part).replace("\n", "<br>")
-                        )
+                        rendered_parts.append(_plain_chat_html(part))
                 body = "".join(rendered_parts)
                 text = f"<b>{html.escape(prefix)}{membership_badge_markup}{fan_medal_markup}</b><br>{body}"
                 sticker_url = emotes.safe_chat_image_url(msg.get("sticker_url", ""))
@@ -3253,18 +4254,7 @@ if QtCore is not None:
                     )
                 if msg.get("translation"):
                     translated_text = str(msg["translation"])
-                    if self.show_reading.isChecked():
-                        rendered_translation = reading.ruby_html(
-                            translated_text,
-                            "auto",
-                            max_width=ruby_width,
-                            font_size=view.font().pointSizeF(),
-                            measure=measure_ruby,
-                        )
-                    else:
-                        rendered_translation = html.escape(translated_text).replace(
-                            "\n", "<br>"
-                        )
+                    rendered_translation = _plain_chat_html(translated_text)
                     text += f"<br>🌐 {rendered_translation}"
                 price = gifts.gift_price_label(msg) if msg.get("value") else ""
                 if price:
@@ -3280,78 +4270,82 @@ if QtCore is not None:
                 label.setTextFormat(QtCore.Qt.TextFormat.RichText)
                 label.setWordWrap(True)
                 label.setText(text)
+                label.setToolTip(reading_tooltip)
                 row_layout.addWidget(label)
                 row.watch_hover(label)
 
-                action_bar = QtWidgets.QWidget()
-                action_layout = QtWidgets.QHBoxLayout(action_bar)
-                action_layout.setContentsMargins(0, 0, 0, 0)
-                action_layout.setSpacing(4)
-                action_bar.setVisible(False)
                 platform = str(msg.get("platform", "")).lower()
                 is_paid_message = view is self.paid_list
-                for action_name in _message_action_names(
-                    platform, is_paid_message
-                ):
-                    button = QtWidgets.QToolButton()
-                    button.setText(action_name)
-                    button.setToolTip(f"{action_name} this message")
-                    button.setAutoRaise(True)
-                    if action_name == "Block":
-                        callback = self._block_selected_message
-                    elif action_name == "Read":
-                        callback = self._replay_selected_message
-                    elif action_name == "Thank":
-                        callback = self._thank_selected_message
-                    elif action_name == "Mute":
-                        callback = self._mute_selected_user
-                    else:
-                        callback = None
-                    if callback:
-                        button.clicked.connect(
-                            lambda _checked=False, handler=callback, message=msg:
-                            handler(message=message)
-                        )
-                    else:
-                        button.clicked.connect(
-                            lambda _checked=False, message=msg:
-                            self._copy_messages([message])
-                        )
-                    action_layout.addWidget(button)
-                    row.watch_hover(button)
-                action_layout.addStretch(1)
-                row_layout.addWidget(action_bar)
-                row.watch_hover(action_bar)
                 row._chat_label = label
+                for widget in (row, label):
+                    widget.setContextMenuPolicy(
+                        QtCore.Qt.ContextMenuPolicy.CustomContextMenu
+                    )
+                    widget.customContextMenuRequested.connect(
+                        lambda position, message=msg, source=widget, paid=is_paid_message:
+                        self._show_message_actions_menu(
+                            message, source.mapToGlobal(position), paid
+                        )
+                    )
                 view.addItem(item)
                 view.setItemWidget(item, row)
-                item_index = QtCore.QPersistentModelIndex(
-                    view.indexFromItem(item)
-                )
-                row.hoverChanged.connect(
-                    lambda hovered, toolbar=action_bar, row_widget=row,
-                    persistent_index=item_index, feed_view=view:
-                    self._set_message_actions_visible(
-                        hovered,
-                        toolbar,
-                        row_widget,
-                        persistent_index,
-                        feed_view,
-                    )
-                )
             self._resize_feed_items(view)
-            view.scrollToBottom()
+            if paused:
+                for index in selected_indices:
+                    view.item(index).setSelected(True)
+                view.doItemsLayout()
+                scroll_bar.setValue(scroll_position)
+            else:
+                view.scrollToBottom()
+            if _reading_tooltip_allowed(view) and hovered_message_id is not None:
+                for index in range(view.count()):
+                    item = view.item(index)
+                    message = item.data(QtCore.Qt.ItemDataRole.UserRole)
+                    if message.get("_desktop_feed_id") != hovered_message_id:
+                        continue
+                    row = view.itemWidget(item)
+                    if row is None:
+                        break
+                    label = row._chat_label
+                    if not _reading_tooltip_allowed(label) or not label.rect().contains(
+                        label.mapFromGlobal(cursor_position)
+                    ):
+                        break
+                    tooltip = label.toolTip()
+                    if tooltip:
+                        QtWidgets.QToolTip.showText(
+                            cursor_position,
+                            tooltip,
+                            label,
+                        )
+                    break
 
-        def _set_message_actions_visible(self, visible, toolbar, row, item_index, view):
-            if not item_index.isValid():
-                return
-            item = view.itemFromIndex(item_index)
-            if item is None:
-                return
-            toolbar.setVisible(visible)
-            row.adjustSize()
-            item.setSizeHint(row.sizeHint())
-            view.doItemsLayout()
+        def _show_message_actions_menu(self, message, position, paid):
+            menu = QtWidgets.QMenu(self)
+            callbacks = {
+                "Block": self._block_selected_message,
+                "Read": self._replay_selected_message,
+                "Thank": self._thank_selected_message,
+                "Mute": self._mute_selected_user,
+            }
+            for action_name in _message_action_names(
+                str(message.get("platform", "")).lower(), paid
+            ):
+                action = menu.addAction(
+                    self.i18n.translate(action_name, self._ui_language)
+                )
+                callback = callbacks.get(action_name)
+                if callback is None:
+                    action.triggered.connect(
+                        lambda _checked=False, selected=message:
+                        self._copy_messages([selected])
+                    )
+                else:
+                    action.triggered.connect(
+                        lambda _checked=False, handler=callback, selected=message:
+                        handler(message=selected)
+                    )
+            menu.exec(position)
 
         def _resize_feed_items(self, view):
             width = max(1, view.viewport().width() - 8)
@@ -4737,7 +5731,7 @@ if QtCore is not None:
             )
             self.transcribe_room.blockSignals(True)
             self.transcribe_room.clear()
-            self.transcribe_room.addItem(self.i18n.translate("Select a monitored room", self._ui_language), "")
+            self.transcribe_room.addItem(self.i18n.translate("Select a room", self._ui_language), "")
             for entry in entries:
                 target = entry["target"]
                 name = self._room_names.get(entry["id"], "").strip()
@@ -4760,12 +5754,12 @@ if QtCore is not None:
             self.transcribe_room.blockSignals(False)
             self._transcribe_room_platform = platform
             self.transcribe_room.setToolTip(
-                "Select exactly one enabled monitored room to transcribe."
+                "Select a room; transcription can start when it goes live."
             )
             if self.transcribe_room.count() == 1:
                 self.transcribe_room.setEnabled(False)
                 self.transcription_status.setText(
-                    "Add and enable a monitored room before starting transcription."
+                    "Add a room before starting transcription."
                 )
             else:
                 self.transcribe_room.setEnabled(True)
@@ -4788,8 +5782,6 @@ if QtCore is not None:
                     )
 
         def _start_transcription(self):
-            from src import transcription
-            from src import bilibili, missevan
             platform = self.transcribe_site.currentData()
             monitor_id = str(self.transcribe_room.currentData() or "")
             target = _selected_transcription_room(
@@ -4797,9 +5789,48 @@ if QtCore is not None:
             )
             if not target:
                 self.transcription_status.setText(
-                    "Select an enabled monitored room to transcribe."
+                    "Select a room to transcribe."
                 )
                 return
+            path, selected_filter = QtWidgets.QFileDialog.getSaveFileName(
+                self,
+                self.i18n.translate("Choose transcript file", self._ui_language),
+                str(_ROOT / "recordings" / "transcription.txt"),
+                "Text files (*.txt);;LRC files (*.lrc)",
+            )
+            if not path:
+                return
+            destination = Path(path)
+            if not destination.suffix:
+                destination = destination.with_suffix(
+                    ".lrc" if selected_filter == "LRC files (*.lrc)" else ".txt"
+                )
+            try:
+                self._transcription_lrc_offset = max(
+                    _existing_lrc_offset(destination),
+                    self._transcription_lrc_offsets.get(
+                        destination.resolve(), 0
+                    ),
+                )
+            except (OSError, UnicodeError) as exc:
+                self.transcription_status.setText(
+                    f"Could not read transcript file: {exc}"
+                )
+                return
+            self._stop_transcription()
+            self._transcription_armed_id = monitor_id
+            self._transcription_destination = destination
+            if not self._live_states.get(monitor_id, False):
+                self.transcription_status.setText(
+                    self.i18n.translate("Waiting for room to go live", self._ui_language)
+                )
+                return
+            self._begin_transcription(target)
+
+        def _begin_transcription(self, target):
+            from src import transcription, bilibili, missevan
+
+            platform = target["platform"]
             if platform == "youtube":
                 youtube_state = (
                     self._worker._youtube.get(target["id"], {})
@@ -4827,13 +5858,20 @@ if QtCore is not None:
             try:
                 if self._transcriber and self._transcriber.is_running:
                     self._transcriber.stop()
-                self._segments = []
-                self.transcription_output.clear()
                 self._transcriber = transcription.LiveTranscriber(
                     platform, source_id, resolver, self._translate_target,
                     self.transcribe_model.currentText(), self.transcribe_translation.isChecked(),
                 )
                 self._transcriber.start()
+                self._transcription_sessions.append(
+                    {
+                        "worker": self._transcriber,
+                        "skip": 0,
+                        "appended": 0,
+                        "path": self._transcription_destination,
+                        "lrc_offset": self._transcription_lrc_offset,
+                    }
+                )
                 room_name = self._room_names.get(target["id"], target["target"])
                 self.transcription_status.setText(
                     f"Starting transcription for {room_name}…"
@@ -4842,24 +5880,67 @@ if QtCore is not None:
                 self.transcription_status.setText(str(exc))
 
         def _stop_transcription(self):
+            self._transcription_armed_id = None
             if self._transcriber:
                 self._transcriber.stop()
+
+        def _clear_transcriptions(self):
+            for session in self._transcription_sessions:
+                session["skip"] = len(session["worker"].snapshot()["segments"])
+            self._segments = []
+            self.transcription_output.clear()
 
         def _poll_transcription(self):
             if not self._transcriber:
                 return
             snapshot = self._transcriber.snapshot()
+            waiting = (
+                self._transcription_armed_id is not None
+                and not self._live_states.get(self._transcription_armed_id, False)
+            )
             self.transcription_status.setText(
+                self.i18n.translate("Waiting for room to go live", self._ui_language)
+                if waiting else
                 snapshot["status"] + (f": {snapshot['error']}" if snapshot["error"] else "")
             )
-            segments = snapshot["segments"]
-            if len(segments) != len(self._segments):
+            append_error = ""
+            for session in self._transcription_sessions:
+                worker_segments = session["worker"].snapshot()["segments"]
+                appended = session.get("appended", 0)
+                for index in range(appended, len(worker_segments)):
+                    try:
+                        _append_transcription_segment(
+                            session["path"],
+                            worker_segments[index],
+                            session.get("lrc_offset", 0),
+                        )
+                    except (OSError, ValueError) as exc:
+                        append_error = f"Could not append transcript: {exc}"
+                        break
+                    if session["path"].suffix.lower() == ".lrc":
+                        seconds = worker_segments[index].get("start_seconds")
+                        if isinstance(seconds, (int, float)) and math.isfinite(seconds):
+                            next_offset = session.get("lrc_offset", 0) + seconds + 8
+                            path_key = session["path"].resolve()
+                            self._transcription_lrc_offsets[path_key] = max(
+                                self._transcription_lrc_offsets.get(path_key, 0),
+                                next_offset,
+                            )
+                    session["appended"] = index + 1
+                if append_error:
+                    break
+            if append_error:
+                self.transcription_status.setText(append_error)
+            segments = [
+                segment
+                for session in self._transcription_sessions
+                for segment in session["worker"].snapshot()["segments"][session["skip"]:]
+            ]
+            if segments != self._segments:
                 self._segments = segments
-                self.transcription_output.setPlainText("\n\n".join(
-                    f"[{item.get('time', '')}] {item.get('original', '')}"
-                    + (f"\n🌐 {item.get('translated')}" if item.get("translated") else "")
-                    for item in segments
-                ))
+                self.transcription_output.setPlainText(
+                    _format_transcription(segments)
+                )
                 self.transcription_output.verticalScrollBar().setValue(
                     self.transcription_output.verticalScrollBar().maximum()
                 )
@@ -4965,6 +6046,13 @@ if QtCore is not None:
                     label,
                     session["session_id"],
                 )
+            saved_session_id = self._settings.value(
+                "archive_session", "", type=str
+            )
+            if saved_session_id:
+                saved_index = self.archive_sessions.findData(saved_session_id)
+                if saved_index >= 0:
+                    self.archive_sessions.setCurrentIndex(saved_index)
             self.archive_sessions.blockSignals(False)
             self._show_archive_session()
             self.archive_path_label.setText(
@@ -5028,6 +6116,8 @@ if QtCore is not None:
                 self.archive_table.setRowCount(0)
                 return
             session_id = self.archive_sessions.currentData()
+            if session_id:
+                self._settings.setValue("archive_session", str(session_id))
             session = next((item for item in self._saved_archive["sessions"] if item["session_id"] == session_id), None)
             messages = session.get("messages", []) if session else []
             self.archive_table.setRowCount(len(messages))
@@ -5145,6 +6235,16 @@ if QtCore is not None:
                     "text": str(msg.get("text", "")),
                 })
 
+            if not messages_by_target:
+                self.statusBar().showMessage(
+                    self.i18n.translate(
+                        "Enable saving for a room before saving its chat.",
+                        self._ui_language,
+                    ),
+                    5000,
+                )
+                return
+
             errors = []
             saved_any = False
             for monitor_id, messages in messages_by_target.items():
@@ -5191,8 +6291,26 @@ if QtCore is not None:
             if saved_any and refresh_view:
                 self._load_archive_view()
 
+        def changeEvent(self, event):
+            if event.type() == QtCore.QEvent.Type.WindowDeactivate:
+                QtWidgets.QToolTip.hideText()
+            super().changeEvent(event)
+
         def closeEvent(self, event):
+            if self._memory_timer:
+                self._memory_timer.stop()
+                self._sample_memory_usage()
+            if self._memory_logger:
+                self._memory_logger.info(
+                    json.dumps({"event": "monitor_stopped"})
+                )
             self._settings.setValue("window_geometry", self.saveGeometry())
+            if hasattr(self, "_feed_splitter"):
+                self._save_splitter_sizes(
+                    "feed_splitter_sizes", self._feed_splitter
+                )
+            if hasattr(self, "_chat_splitter_layout_name"):
+                self._save_chat_splitter_sizes()
             self._settings.sync()
             if self._transcriber:
                 self._transcriber.stop()

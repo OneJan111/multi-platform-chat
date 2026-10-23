@@ -20,7 +20,7 @@ class DesktopArchiveMonitorScopeTests(unittest.TestCase):
             },
         ]
 
-    def test_only_the_matching_enabled_monitored_room_can_be_saved(self):
+    def test_only_the_matching_room_with_saving_enabled_can_be_saved(self):
         target = _monitored_target_for_message(
             {
                 "platform": "bilibili",
@@ -31,7 +31,7 @@ class DesktopArchiveMonitorScopeTests(unittest.TestCase):
 
         self.assertEqual(target["target"], "101")
 
-    def test_disabled_or_removed_room_is_not_saved(self):
+    def test_room_without_saving_enabled_or_removed_room_is_not_saved(self):
         for monitor_id in ("bilibili:202", "bilibili:removed"):
             with self.subTest(monitor_id=monitor_id):
                 self.assertIsNone(

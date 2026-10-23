@@ -5,6 +5,32 @@ from src.youtube_web import _parse_action
 
 
 class YouTubeWebChatTests(unittest.TestCase):
+    def test_channel_live_page_returns_nearest_scheduled_stream(self):
+        from src import youtube_web as w
+
+        response = Mock(
+            status_code=200,
+            text=(
+                '<meta property="og:title" content="Channel">'
+                '<link rel="canonical" href="https://www.youtube.com/watch?v=scheduled01">'
+                'var ytInitialPlayerResponse = {'
+                '"videoDetails":{"videoId":"scheduled01","title":"Next stream",'
+                '"author":"Channel","isUpcoming":true},'
+                '"playabilityStatus":{"liveStreamability":{'
+                '"liveStreamabilityRenderer":{"offlineSlate":{'
+                '"liveStreamOfflineSlateRenderer":{"scheduledStartTime":"1792767600"}'
+                '}}}}};'
+            ),
+        )
+        with patch.object(w._session, "get", return_value=response):
+            info = w.find_live_video("https://www.youtube.com/@channel")
+
+        self.assertEqual(info["video_id"], "scheduled01")
+        self.assertTrue(info["upcoming"])
+        self.assertFalse(info["live"])
+        self.assertEqual(info["title"], "Next stream")
+        self.assertTrue(info["scheduled_start"].endswith("Z"))
+
     def test_parses_paid_sticker_ticker_action(self):
         message = _parse_action({
             "addLiveChatTickerItemAction": {

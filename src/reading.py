@@ -4,6 +4,7 @@ from __future__ import annotations
 import html
 import re
 from functools import lru_cache
+from typing import Callable
 
 try:
     from pypinyin import Style, pinyin
@@ -28,6 +29,7 @@ MODES: dict[str, str] = {
 
 _HAN_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]+")
 _KANA_RE = re.compile(r"[\u3040-\u30ff]")
+_UNBREAKABLE_RE = re.compile(r"[0-9A-Za-z\u00c0-\u024f'\u2019]+|.", re.S)
 
 
 def _esc(s: str) -> str:
@@ -90,6 +92,17 @@ def has_han(text: str) -> bool:
     return bool(_HAN_RE.search(text or ""))
 
 
+def with_readings(text: str, mode: str = "auto") -> str:
+    """Return plain text with annotated readings in parentheses for tooltips."""
+    annotated = segments(text, mode)
+    if not annotated:
+        return text
+    return "".join(
+        f"{base}（{reading}）" if reading else base
+        for base, reading in annotated
+    )
+
+
 @lru_cache(maxsize=512)
 def annotate_html(text: str, mode: str = "auto") -> str:
     """
@@ -136,8 +149,13 @@ def ruby_html(
     *,
     max_width: int | None = None,
     font_size: float = 13,
+    measure: Callable[[str, bool], float] | None = None,
 ) -> str:
-    """Return escaped rich text with each reading centered above its matching base text."""
+    """Return escaped rich text with each reading centered above its matching base text.
+
+    `measure(text, is_reading)` returns real pixel widths; without it widths are estimated
+    from `font_size`.
+    """
     annotated = segments(text, mode)
     if not annotated:
         return _esc(text).replace("\n", "<br>")
@@ -149,10 +167,16 @@ def ruby_html(
 
     def append_cell(base: str, reading: str) -> None:
         nonlocal row_width
-        cell_width = max(
-            len(base) * font_size,
-            len(reading) * font_size * 0.62,
-        ) + 4
+        if measure is not None:
+            cell_width = max(
+                measure(base, False),
+                measure(reading, True) if reading else 0.0,
+            ) + 1
+        else:
+            cell_width = max(
+                len(base) * font_size,
+                len(reading) * font_size * 0.62,
+            ) + 4
         if (
             width_limit
             and rows[-1]
@@ -167,13 +191,14 @@ def ruby_html(
         if reading:
             append_cell(base, reading)
             continue
-        for char in base:
-            if char == "\n":
+        # Latin words/numbers stay in one cell so lines don't break mid-word.
+        for token in _UNBREAKABLE_RE.findall(base):
+            if token == "\n":
                 if rows[-1]:
                     rows.append([])
                     row_width = 0.0
             else:
-                append_cell(char, "")
+                append_cell(token, "")
 
     rendered_rows = []
     for row in rows:
@@ -189,10 +214,11 @@ def ruby_html(
             "</td>"
             for base, _ in row
         )
-        rendered_rows.append(f"<tr>{reading_cells}</tr><tr>{text_cells}</tr>")
+        rendered_rows.append(
+            '<table cellspacing="0" cellpadding="0" border="0">'
+            f"<tr>{reading_cells}</tr><tr>{text_cells}</tr>"
+            "</table>"
+        )
 
-    return (
-        '<table cellspacing="0" cellpadding="0" border="0">'
-        f"{''.join(rendered_rows)}"
-        "</table>"
-    )
+    # One table per wrapped line, so a line's columns aren't stretched to match another's.
+    return "".join(rendered_rows)

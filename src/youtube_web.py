@@ -477,7 +477,7 @@ def channel_url(value: str) -> str:
 
 def find_live_video(channel: str) -> dict:
     """
-    Check whether a channel is live right now, via its public /live page.
+    Find the live stream or nearest scheduled stream via the public /live page.
     Returns {"video_id", "live", "upcoming", "title", "channel", "error"}; video_id is "" when offline.
     """
     result = {"video_id": "", "live": False, "upcoming": False, "title": "", "channel": "", "error": ""}
@@ -504,6 +504,16 @@ def find_live_video(channel: str) -> dict:
     result["channel"] = details.get("author", "") or result["channel"]
     result["live"] = bool(details.get("isLive"))
     result["upcoming"] = bool(details.get("isUpcoming"))
+    scheduled_start = (
+        player.get("playabilityStatus", {}).get("liveStreamability", {})
+        .get("liveStreamabilityRenderer", {}).get("offlineSlate", {})
+        .get("liveStreamOfflineSlateRenderer", {}).get("scheduledStartTime")
+    )
+    if scheduled_start:
+        try:
+            result["scheduled_start"] = _iso(str(int(scheduled_start) * 1_000_000))
+        except (TypeError, ValueError):
+            result["scheduled_start"] = ""
     return result
 
 
