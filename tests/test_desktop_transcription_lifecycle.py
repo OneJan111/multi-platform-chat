@@ -9,6 +9,56 @@ import desktop_app
 
 @unittest.skipIf(desktop_app.QtWidgets is None, "PySide6 is not installed")
 class TranscriptionLifecycleTests(unittest.TestCase):
+    def test_startup_notifies_once_for_room_already_live(self):
+        monitor_id = "youtube:channel"
+        target = {
+            "id": monitor_id,
+            "platform": "youtube",
+            "target": "https://www.youtube.com/@channel",
+            "enabled": True,
+        }
+        live_info = {
+            "live": True,
+            "room_name": "Channel",
+            "title": "Already live",
+        }
+        window = SimpleNamespace(
+            _monitor_cards={monitor_id: {
+                "title": Mock(), "detail": Mock(), "connection": Mock(),
+            }},
+            _monitor_targets=[target],
+            _room_names={},
+            _room_titles={},
+            _live_states={},
+            _transcription_armed_id=None,
+            _record_enabled_ids=set(),
+            _recorders={},
+            _worker=None,
+            _viewer_samples=[],
+            _ui_language="en",
+            _refresh_chat_room_selectors=Mock(),
+            _refresh_transcription_rooms=Mock(),
+            _refresh_archive_session_labels=Mock(),
+            config=SimpleNamespace(ANALYTICS_ENABLED=False),
+            notify_live_check=Mock(),
+            _notify_live_stream=Mock(),
+            live_status=Mock(),
+            i18n=SimpleNamespace(
+                translate=lambda text, language, **kwargs: text.format(**kwargs)
+            ),
+        )
+
+        desktop_app._DesktopWindow._update_statuses(
+            window, {monitor_id: live_info}
+        )
+        desktop_app._DesktopWindow._update_statuses(
+            window, {monitor_id: live_info}
+        )
+
+        window._notify_live_stream.assert_called_once_with(
+            target, live_info, ""
+        )
+
     def test_live_status_starts_armed_room_only_on_transition(self):
         monitor_id = "bilibili:123"
         target = {"id": monitor_id, "platform": "bilibili",
@@ -21,7 +71,7 @@ class TranscriptionLifecycleTests(unittest.TestCase):
             _live_states={monitor_id: False}, _transcription_armed_id=monitor_id,
             _begin_transcription=Mock(), _transcriber=Mock(),
             _record_enabled_ids=set(), _stop_recording=Mock(),
-            notify_live_check=Mock(), _notify=Mock(), live_status=Mock(),
+            notify_live_check=Mock(), _notify_live_stream=Mock(), live_status=Mock(),
             _viewer_samples=[], _ui_language="en",
             config=SimpleNamespace(ANALYTICS_ENABLED=False),
             i18n=SimpleNamespace(translate=lambda text, language, **kwargs: text),

@@ -585,6 +585,7 @@ OBS に何も表示されない場合は、ダッシュボードのプログラ�
     "🔔 Desktop notifications on": ("🔔 桌面通知已开启", "🔔 デスクトップ通知オン"),
     "{site} is live": ("{site} 开播了", "{site} が配信を開始しました"),
     "{site} is live: {title}": ("{site} 开播了：{title}", "{site} が配信を開始しました: {title}"),
+    "Open live stream": ("打开直播间", "ライブ配信を開く"),
     "Tick at least one site to send to.": ("请至少勾选一个发送平台。", "送信先を1つ以上選択してください。"),
     "Sent to {site} ✓": ("已发送到 {site} ✓", "{site} に送信しました ✓"),
     "Send a message": ("发送弹幕和留言", "コメントを送信"),

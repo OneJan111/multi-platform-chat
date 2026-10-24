@@ -1,0 +1,18 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Run Rust Desktop App",
+			"type": "shell",
+			"command": "cargo",
+			"args": [
+				"run",
+				"--manifest-path",
+				"rust-desktop\\Cargo.toml"
+			],
+			"isBackground": true,
+			"problemMatcher": [],
+			"group": "build"
+		}
+	]
+}

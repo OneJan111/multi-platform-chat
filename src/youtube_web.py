@@ -502,6 +502,8 @@ def find_live_video(channel: str) -> dict:
     result["video_id"] = canonical.group(1)
     result["title"] = details.get("title", "")
     result["channel"] = details.get("author", "") or result["channel"]
+    thumbs = details.get("thumbnail", {}).get("thumbnails", [])
+    result["thumbnail"] = thumbs[min(1, len(thumbs) - 1)]["url"] if thumbs else ""
     result["live"] = bool(details.get("isLive"))
     result["upcoming"] = bool(details.get("isUpcoming"))
     scheduled_start = (

@@ -15,7 +15,8 @@ class YouTubeWebChatTests(unittest.TestCase):
                 '<link rel="canonical" href="https://www.youtube.com/watch?v=scheduled01">'
                 'var ytInitialPlayerResponse = {'
                 '"videoDetails":{"videoId":"scheduled01","title":"Next stream",'
-                '"author":"Channel","isUpcoming":true},'
+                '"author":"Channel","isUpcoming":true,'
+                '"thumbnail":{"thumbnails":[{"url":"https://i.ytimg.com/vi/scheduled01/mqdefault.jpg"}]}},'
                 '"playabilityStatus":{"liveStreamability":{'
                 '"liveStreamabilityRenderer":{"offlineSlate":{'
                 '"liveStreamOfflineSlateRenderer":{"scheduledStartTime":"1792767600"}'
@@ -30,6 +31,10 @@ class YouTubeWebChatTests(unittest.TestCase):
         self.assertFalse(info["live"])
         self.assertEqual(info["title"], "Next stream")
         self.assertTrue(info["scheduled_start"].endswith("Z"))
+        self.assertEqual(
+            info["thumbnail"],
+            "https://i.ytimg.com/vi/scheduled01/mqdefault.jpg",
+        )
 
     def test_parses_paid_sticker_ticker_action(self):
         message = _parse_action({

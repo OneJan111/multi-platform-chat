@@ -24,7 +24,9 @@ def safe_image_url(url) -> str:
     return url
 
 
-_BADGE_HOSTS = ("hdslb.com", "ggpht.com", "googleusercontent.com", "maoercdn.com")
+_BADGE_HOSTS = (
+    "hdslb.com", "ggpht.com", "googleusercontent.com", "maoercdn.com", "ytimg.com"
+)
 
 
 def safe_badge_url(url) -> str:

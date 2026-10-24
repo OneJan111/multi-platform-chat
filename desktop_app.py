@@ -222,6 +222,7 @@ _DESKTOP_STRINGS: dict[str, tuple[str, str]] = {
     "Dark": ("深色", "ダーク"),
     "Add translations to overlay": ("在叠加层中添加翻译", "オーバーレイに翻訳を追加"),
     "Record": ("录制", "録画"),
+    "Open live stream": ("打开直播间", "ライブ配信を開く"),
     "Bilibili recording": ("B站录制", "Bilibili 録画"),
     "Live recording": ("直播录制", "ライブ録画"),
     "Turn on Record on a YouTube, Bilibili, or MissEvan room card to record its live stream. "
@@ -386,6 +387,76 @@ def _saved_session_room_label(session: dict) -> str:
         "session_id", ""
     )
     return str(session.get("room_name") or identity)
+
+
+def _live_notification_details(
+    entry: dict, info: dict, video_id: str = ""
+) -> dict[str, str]:
+    platform = str(entry.get("platform", "")).lower()
+    target = str(entry.get("target", "")).strip()
+    platform_name = {
+        "youtube": "YouTube",
+        "bilibili": "Bilibili",
+        "missevan": "MissEvan",
+    }.get(platform, platform.title())
+    room_name = str(info.get("room_name") or target or platform_name)
+    stream_title = str(info.get("title") or "").strip()
+    if platform == "youtube":
+        from src import youtube
+
+        resolved_video_id = video_id or youtube.extract_video_id(target)
+        url = (
+            f"https://www.youtube.com/watch?v={resolved_video_id}"
+            if resolved_video_id else target
+        )
+    elif platform == "bilibili":
+        from src import bilibili
+
+        room_id = bilibili.parse_room_id(target)
+        url = f"https://live.bilibili.com/{room_id}" if room_id else target
+    elif platform == "missevan":
+        from src import missevan
+
+        room_id = missevan.parse_room_id(target)
+        url = f"https://fm.missevan.com/live/{room_id}" if room_id else target
+    else:
+        url = target
+    from src import emotes
+
+    thumbnail = emotes.safe_chat_image_url(
+        info.get("thumbnail") or info.get("cover") or ""
+    )
+    return {
+        "channel": room_name,
+        "platform": platform_name,
+        "detail": stream_title or f"{platform_name} live stream",
+        "url": url,
+        "thumbnail": thumbnail,
+    }
+
+
+def _download_live_notification_image(url: str) -> bytes:
+    from src import emotes
+    import requests
+
+    safe_url = emotes.safe_chat_image_url(url)
+    if not safe_url:
+        return b""
+    with requests.get(safe_url, timeout=(4, 8), stream=True) as response:
+        response.raise_for_status()
+        content_length = response.headers.get("Content-Length")
+        if content_length and int(content_length) > 5 * 1024 * 1024:
+            raise ValueError("Live notification image exceeds 5 MiB.")
+        chunks = []
+        total = 0
+        for chunk in response.iter_content(64 * 1024):
+            if not chunk:
+                continue
+            total += len(chunk)
+            if total > 5 * 1024 * 1024:
+                raise ValueError("Live notification image exceeds 5 MiB.")
+            chunks.append(chunk)
+    return b"".join(chunks)
 
 
 def _format_message_for_copy(message: dict) -> str:
@@ -1427,6 +1498,7 @@ if QtCore is not None:
                                         "room_name": info.get("channel", "") or status.get("room_name", ""),
                                         "title": info.get("title", ""),
                                         "viewers": info.get("viewers", ""),
+                                        "thumbnail": info.get("thumbnail", ""),
                                         "error": info.get("error", ""),
                                     })
                                     if new_video_id != state["video_id"]:
@@ -1439,6 +1511,7 @@ if QtCore is not None:
                                         "room_name": info.get("channel", "") or status.get("room_name", ""),
                                         "title": info.get("title", ""),
                                         "viewers": info.get("viewers", ""),
+                                        "thumbnail": info.get("thumbnail", ""),
                                         "error": info.get("error", ""),
                                     })
                                     if video_id != state["video_id"]:
@@ -1495,6 +1568,8 @@ if QtCore is not None:
                                     "room_name": info.get("uname", "") or status.get("room_name", ""),
                                     "title": info.get("title", ""),
                                     "viewers": info.get("online", info.get("viewers", "")),
+                                    "thumbnail": info.get("cover", ""),
+                                    "avatar": info.get("face", ""),
                                     "error": info.get("error", ""),
                                 })
                             module = bilibili if platform == "bilibili" else missevan
@@ -3643,8 +3718,12 @@ if QtCore is not None:
                 room_title = str(info.get("title") or "").strip()
                 if room_title:
                     self._room_titles[monitor_id] = room_title
-                if previous is False and live and self.notify_live_check.isChecked():
-                    self._notify(f"{entry['platform'].title()} is live", name)
+                if previous is not True and live and self.notify_live_check.isChecked():
+                    video_id = (
+                        self._worker._youtube.get(monitor_id, {}).get("video_id", "")
+                        if entry["platform"] == "youtube" and self._worker else ""
+                    )
+                    self._notify_live_stream(entry, info, video_id)
                 if live:
                     live_channels.append(name)
                 detail = f"ID {entry['target']}"
@@ -5171,14 +5250,151 @@ if QtCore is not None:
             self._notify_live = enabled
             self._settings.setValue("notify_live", enabled)
 
-        def _notify(self, title, detail):
-            if not hasattr(self, "_tray"):
-                self._tray = QtWidgets.QSystemTrayIcon(
-                    self.style().standardIcon(QtWidgets.QStyle.StandardPixmap.SP_ComputerIcon), self
+        def _notify_live_stream(self, entry, info, video_id=""):
+            details = _live_notification_details(entry, info, video_id)
+            if not details["url"].startswith("https://"):
+                self._show_error("Could not create a safe live stream link for this notification.")
+                return
+
+            previous = getattr(self, "_live_notification", None)
+            if previous is not None:
+                previous.close()
+
+            notification = QtWidgets.QWidget(
+                None,
+                QtCore.Qt.WindowType.Tool
+                | QtCore.Qt.WindowType.FramelessWindowHint
+                | QtCore.Qt.WindowType.WindowStaysOnTopHint,
+            )
+            notification.setAttribute(
+                QtCore.Qt.WidgetAttribute.WA_ShowWithoutActivating
+            )
+            notification.setObjectName("liveNotification")
+            notification.setFixedWidth(380)
+            notification.setStyleSheet(
+                "#liveNotification { background: #20212a; color: #f5f5f7; "
+                "border: 1px solid #454654; border-radius: 12px; }"
+                "QLabel { border: 0; }"
+                "QPushButton { color: #f5f5f7; background: #343540; "
+                "border: 1px solid #555663; border-radius: 7px; padding: 8px; }"
+                "QPushButton:hover { background: #41424f; }"
+            )
+            layout = QtWidgets.QVBoxLayout(notification)
+            layout.setContentsMargins(16, 13, 16, 14)
+            layout.setSpacing(9)
+
+            header = QtWidgets.QHBoxLayout()
+            icon = QtWidgets.QLabel()
+            icon.setPixmap(
+                self.style().standardIcon(
+                    QtWidgets.QStyle.StandardPixmap.SP_MediaPlay
+                ).pixmap(22, 22)
+            )
+            header.addWidget(icon)
+            app_name = QtWidgets.QLabel("Streaming Dashboard")
+            app_name.setStyleSheet("font-size: 10pt;")
+            header.addWidget(app_name, 1)
+            close_button = QtWidgets.QToolButton()
+            close_button.setText("×")
+            close_button.setStyleSheet(
+                "QToolButton { color: #d3d4da; border: 0; font-size: 18pt; "
+                "padding: 0 4px; }"
+            )
+            close_button.clicked.connect(notification.close)
+            header.addWidget(close_button)
+            layout.addLayout(header)
+
+            live_title = self.i18n.translate(
+                "{site} is live",
+                self._ui_language,
+                site=details["channel"],
+            )
+            title_label = QtWidgets.QLabel(live_title)
+            title_label.setWordWrap(True)
+            title_label.setStyleSheet("font-size: 13pt; font-weight: 600;")
+            layout.addWidget(title_label)
+            detail_label = QtWidgets.QLabel(
+                f"{details['platform']} · {details['detail']}"
+            )
+            detail_label.setWordWrap(True)
+            detail_label.setStyleSheet("color: #c6c7ce;")
+            layout.addWidget(detail_label)
+
+            image_label = QtWidgets.QLabel()
+            image_label.setFixedSize(346, 170)
+            image_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+            image_label.setStyleSheet(
+                "background: #171820; border-radius: 4px;"
+            )
+            image_label.setVisible(False)
+            layout.addWidget(image_label, 0, QtCore.Qt.AlignmentFlag.AlignHCenter)
+
+            open_button = QtWidgets.QPushButton(
+                self.i18n.translate("Open live stream", self._ui_language)
+            )
+            open_button.clicked.connect(
+                lambda: self._open_live_notification_url(
+                    details["url"], notification
                 )
-                self._tray.setToolTip("Streaming Dashboard")
-                self._tray.show()
-            self._tray.showMessage(title, detail or "The stream has started.", QtWidgets.QSystemTrayIcon.MessageIcon.Information, 10000)
+            )
+            layout.addWidget(open_button)
+
+            self._live_notification = notification
+            notification.show()
+            screen = self.screen() or QtWidgets.QApplication.primaryScreen()
+            if screen is not None:
+                available = screen.availableGeometry()
+                notification.adjustSize()
+                notification.move(
+                    available.right() - notification.width() - 16,
+                    available.bottom() - notification.height() - 16,
+                )
+            timer = QtCore.QTimer(notification)
+            timer.setSingleShot(True)
+            timer.timeout.connect(notification.close)
+            timer.start(20_000)
+            self._live_notification_timer = timer
+
+            if details["thumbnail"]:
+                self._run_task(
+                    lambda: _download_live_notification_image(details["thumbnail"]),
+                    lambda image_data: self._set_live_notification_image(
+                        notification, image_label, image_data
+                    ),
+                )
+
+        def _set_live_notification_image(self, notification, image_label, image_data):
+            if notification is not getattr(self, "_live_notification", None) or not image_data:
+                return
+            pixmap = QtGui.QPixmap()
+            if not pixmap.loadFromData(image_data):
+                self._show_error("Could not display the live stream preview image.")
+                return
+            scaled = pixmap.scaled(
+                image_label.size(),
+                QtCore.Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+                QtCore.Qt.TransformationMode.SmoothTransformation,
+            )
+            x = max(0, (scaled.width() - image_label.width()) // 2)
+            y = max(0, (scaled.height() - image_label.height()) // 2)
+            image_label.setPixmap(
+                scaled.copy(x, y, image_label.width(), image_label.height())
+            )
+            image_label.setVisible(True)
+            notification.adjustSize()
+            screen = self.screen() or QtWidgets.QApplication.primaryScreen()
+            if screen is not None:
+                available = screen.availableGeometry()
+                notification.move(
+                    available.right() - notification.width() - 16,
+                    available.bottom() - notification.height() - 16,
+                )
+
+        def _open_live_notification_url(self, url, notification):
+            if not QtGui.QDesktopServices.openUrl(QtCore.QUrl(url)):
+                self._show_error("Could not open the live stream link.")
+                return
+            notification.close()
 
         def _stop_speech(self, clear):
             from src.tts import stop_speaking
