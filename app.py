@@ -7,10 +7,13 @@ Run with:
 from __future__ import annotations
 
 import base64
+from concurrent.futures import Future, ThreadPoolExecutor
 import html as html_lib
 import json
+import logging
 import os
 import re
+import threading
 import time
 import zlib
 from datetime import datetime, timezone
@@ -113,6 +116,21 @@ st.markdown(
     line-height: 1.4;
     word-break: break-word;
 }
+.chat-row { display: flex; align-items: flex-start; gap: 8px; }
+.chat-avatar {
+    display: block;
+    flex: 0 0 32px;
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    object-fit: cover;
+    background: color-mix(in srgb, currentColor 12%, transparent);
+    text-align: center;
+    line-height: 32px;
+    font-size: 0.85em;
+    font-weight: 700;
+}
+.chat-content { min-width: 0; flex: 1 1 auto; }
 body { --send-composer-left: 16px; }
 /* Float the native sidebar without reserving space in the main layout. */
 [data-testid="stSidebar"] {
@@ -1130,6 +1148,7 @@ def _render_message(msg: dict, key_prefix: str = "", thank: bool = False):
     author = _author_html(msg.get("author", ""))
     text = msg.get("text", "")
     text_html = _message_text_html(msg, text)
+    avatar_html = _message_avatar_html(msg, _message_avatar_url(msg))
     gift_price = gifts.gift_price_label(msg)
     if gift_price:
         text_html += f'<span class="gift-price"> · {html_lib.escape(gift_price)}</span>'
@@ -1150,12 +1169,13 @@ def _render_message(msg: dict, key_prefix: str = "", thank: bool = False):
             translation_html = f'<div class="chat-translation">🌐 {body}</div>'
     html = (
         f'<div class="chat-bubble {bubble}">'
+        f'<div class="chat-row">{avatar_html}<div class="chat-content">'
         f'{badges}'
         f'<span class="chat-time" style="color:color-mix(in srgb, currentColor 60%, transparent);'
         f'font-size:0.85em;">[{ts}]</span> '
         f'<strong class="chat-author">{author}</strong>'
         f'<div class="chat-text">{text_html}</div>'
-        f"{translation_html}"
+        f"{translation_html}</div></div>"
         f"</div>"
     )
     if thank:
@@ -1204,6 +1224,75 @@ def _block_user(msg: dict):
 
 
 _PLATFORM_NAMES = {"youtube": "YouTube", "bilibili": "Bilibili", "missevan": "MissEvan"}
+
+
+_AVATAR_LOCK = threading.Lock()
+_BILIBILI_AVATAR_CACHE: dict[str, str] = {}
+_BILIBILI_AVATAR_PENDING: dict[str, Future[str]] = {}
+_BILIBILI_AVATAR_FAILURES: dict[str, float] = {}
+
+
+@st.cache_resource
+def _bilibili_avatar_executor() -> ThreadPoolExecutor:
+    return ThreadPoolExecutor(max_workers=4, thread_name_prefix="bilibili-avatar")
+
+
+def _message_avatar_url(message: dict) -> str:
+    platform = str(message.get("platform", "")).lower()
+    safe_url = emotes.safe_image_url if platform == "bilibili" else emotes.safe_badge_url
+    url = safe_url(message.get("avatar", ""))
+    if url or platform != "bilibili":
+        return url
+
+    uid = str(message.get("author_id", "")).strip()
+    if not uid.isdigit() or int(uid) <= 0:
+        return ""
+
+    now = time.monotonic()
+    with _AVATAR_LOCK:
+        for pending_uid, future in list(_BILIBILI_AVATAR_PENDING.items()):
+            if not future.done():
+                continue
+            del _BILIBILI_AVATAR_PENDING[pending_uid]
+            try:
+                avatar = emotes.safe_image_url(future.result())
+            except Exception:
+                logging.getLogger(__name__).exception(
+                    "Could not fetch Bilibili avatar for uid %s", pending_uid
+                )
+                avatar = ""
+            if avatar:
+                if len(_BILIBILI_AVATAR_CACHE) >= 500:
+                    _BILIBILI_AVATAR_CACHE.pop(next(iter(_BILIBILI_AVATAR_CACHE)))
+                _BILIBILI_AVATAR_CACHE[pending_uid] = avatar
+                _BILIBILI_AVATAR_FAILURES.pop(pending_uid, None)
+            else:
+                _BILIBILI_AVATAR_FAILURES[pending_uid] = now
+
+        avatar = _BILIBILI_AVATAR_CACHE.get(uid)
+        if avatar:
+            return avatar
+        if (
+            uid not in _BILIBILI_AVATAR_PENDING
+            and now - _BILIBILI_AVATAR_FAILURES.get(uid, 0) >= 300
+            and len(_BILIBILI_AVATAR_PENDING) < 8
+        ):
+            _BILIBILI_AVATAR_PENDING[uid] = _bilibili_avatar_executor().submit(
+                bili.get_user_avatar, uid
+            )
+    return ""
+
+
+def _message_avatar_html(message: dict, avatar_url: str) -> str:
+    name = str(message.get("author") or "?")
+    escaped_name = html_lib.escape(name, quote=True)
+    if avatar_url:
+        return (
+            f'<img class="chat-avatar" src="{html_lib.escape(avatar_url, quote=True)}" '
+            f'alt="{escaped_name}" title="{escaped_name}" referrerpolicy="no-referrer">'
+        )
+    initial = html_lib.escape(name[:1].upper())
+    return f'<span class="chat-avatar" title="{escaped_name}">{initial}</span>'
 
 
 def _browser_tts() -> bool:
