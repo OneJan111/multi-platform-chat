@@ -471,6 +471,28 @@ def _format_message_for_copy(message: dict) -> str:
     return line
 
 
+def _chat_event_card_colors(message: dict) -> tuple[str, str, str] | None:
+    message_type = str(message.get("type", "")).lower()
+    if message_type in {"superchat", "superchatevent", "superstickerevent"}:
+        return "#f4dfaa", "#5a3d20", "#dfbd70"
+    if message_type in {"gift", "membershipgiftingevent", "giftmembershipreceivedevent"}:
+        return "#eadcf2", "#49335a", "#c7a8d8"
+    if message_type == "newsponsorevent":
+        return "#dceaf6", "#29445f", "#a9c8e2"
+    return None
+
+
+def _message_avatar_url(message: dict, bilibili_avatars: dict) -> str:
+    from src import emotes
+
+    url = message.get("avatar", "")
+    if not url and str(message.get("platform", "")).lower() == "bilibili":
+        url = bilibili_avatars.get(str(message.get("author_id", "")), "")
+    if str(message.get("platform", "")).lower() == "bilibili":
+        return emotes.safe_image_url(url)
+    return emotes.safe_badge_url(url)
+
+
 def _message_action_names(platform: str, paid: bool = False) -> tuple[str, ...]:
     actions = ["Block", "Read"]
     if paid:
@@ -1678,6 +1700,9 @@ if QtCore is not None:
             self._joins = []
             self._chat_image_cache = {}
             self._chat_images_pending = set()
+            self._bilibili_avatar_cache = {}
+            self._bilibili_avatars_pending = set()
+            self._bilibili_avatar_failures = {}
             self._segments = []
             self._transcription_sessions = []
             self._transcription_armed_id = None
@@ -1698,6 +1723,7 @@ if QtCore is not None:
             self._feed_message_sequence = 0
             self._tts_selection_generation = 0
             self._audio_queue = []
+            self._tts_task_slots = threading.BoundedSemaphore(config.TTS_TASK_LIMIT)
             self._audio_buffer = None
             self._translate_enabled = self._settings.value("translate_enabled", False, type=bool)
             self._translate_target = self._settings.value("translate_target", "en", type=str)
@@ -1705,6 +1731,7 @@ if QtCore is not None:
             self._tts_language = self._settings.value("tts_language", "auto", type=str)
             self._notify_live = self._settings.value("notify_live", True, type=bool)
             self._live_states = {}
+            self._live_notifications = []
             self._recorders = {}
             self._record_enabled_ids = set()
             self._room_titles = {}
@@ -3877,7 +3904,7 @@ if QtCore is not None:
                                 return None
                             return self._speak_join(author, rate, volume, lang)
 
-                        self._run_task(
+                        self._run_tts_task(
                             speak_join_if_current,
                             lambda audio, message=msg, queued_generation=generation:
                             self._play_audio_bytes(audio)
@@ -3993,7 +4020,21 @@ if QtCore is not None:
                 if self._is_selected_chat_message(message, generation):
                     self._play_audio_bytes(audio)
 
-            self._run_task(speak_if_current, play_if_current)
+            self._run_tts_task(speak_if_current, play_if_current)
+
+        def _run_tts_task(self, function, callback):
+            if not self._tts_task_slots.acquire(blocking=False):
+                self.statusBar().showMessage(
+                    "TTS task queue full; skipped incoming speech.", 5000
+                )
+                return
+            try:
+                self._run_task(
+                    function, callback, on_finished=self._tts_task_slots.release
+                )
+            except RuntimeError:
+                self._tts_task_slots.release()
+                raise
 
         def _speak_message(self, text, rate, volume, lang, paid, target, translate_message, skip_name, author, message):
             from src import translate
@@ -4026,6 +4067,11 @@ if QtCore is not None:
         def _play_audio_bytes(self, audio):
             if not audio:
                 return
+            if len(self._audio_queue) >= self.config.TTS_AUDIO_QUEUE_LIMIT:
+                self._audio_queue.pop(0)
+                self.statusBar().showMessage(
+                    "TTS audio queue full; dropped oldest waiting audio.", 5000
+                )
             self._audio_queue.append(bytes(audio))
             if self._audio_player.playbackState() == QtMultimedia.QMediaPlayer.PlaybackState.StoppedState:
                 self._play_next_audio()
@@ -4096,6 +4142,15 @@ if QtCore is not None:
             )
 
         def _copy_selected_chat(self, feed=None):
+            focused_widget = QtWidgets.QApplication.focusWidget()
+            if (
+                isinstance(focused_widget, QtWidgets.QLabel)
+                and focused_widget.hasSelectedText()
+            ):
+                QtWidgets.QApplication.clipboard().setText(
+                    focused_widget.selectedText()
+                )
+                return
             feed = feed or self._active_feed
             view = self.paid_list if feed == "paid" else self.chat_list
             messages = [
@@ -4149,6 +4204,7 @@ if QtCore is not None:
             from src import emotes
 
             urls = set()
+            missing_avatars = set()
             for message in messages:
                 message_emotes = message.get("emotes") or {}
                 if isinstance(message_emotes, dict):
@@ -4159,9 +4215,57 @@ if QtCore is not None:
                 sticker_url = emotes.safe_chat_image_url(message.get("sticker_url", ""))
                 if sticker_url:
                     urls.add(sticker_url)
+                avatar_url = _message_avatar_url(
+                    message, self._bilibili_avatar_cache
+                )
+                if avatar_url:
+                    urls.add(avatar_url)
+                elif (
+                    not message.get("avatar")
+                    and str(message.get("platform", "")).lower() == "bilibili"
+                ):
+                    author_id = str(message.get("author_id", "")).strip()
+                    if (
+                        author_id.isdigit()
+                        and author_id not in self._bilibili_avatar_cache
+                        and author_id not in self._bilibili_avatars_pending
+                        and time.monotonic()
+                        - self._bilibili_avatar_failures.get(author_id, 0)
+                        >= 300
+                    ):
+                        missing_avatars.add(author_id)
                 membership_icon = emotes.safe_badge_url(message.get("membership_icon", ""))
                 if membership_icon:
                     urls.add(membership_icon)
+            if missing_avatars:
+                avatar_batch = sorted(missing_avatars)[:8]
+                self._bilibili_avatars_pending.update(avatar_batch)
+
+                def fetch_avatars():
+                    from concurrent.futures import ThreadPoolExecutor
+                    from src import bilibili
+
+                    with ThreadPoolExecutor(max_workers=4) as pool:
+                        return list(pool.map(
+                            lambda uid: (uid, bilibili.get_user_avatar(uid)),
+                            avatar_batch,
+                        ))
+
+                def avatars_downloaded(results):
+                    for uid, url in results:
+                        self._bilibili_avatars_pending.discard(uid)
+                        if url:
+                            if len(self._bilibili_avatar_cache) >= 500:
+                                self._bilibili_avatar_cache.pop(
+                                    next(iter(self._bilibili_avatar_cache))
+                                )
+                            self._bilibili_avatar_cache[uid] = url
+                            self._bilibili_avatar_failures.pop(uid, None)
+                        else:
+                            self._bilibili_avatar_failures[uid] = time.monotonic()
+                    self._refresh_feeds()
+
+                self._run_task(fetch_avatars, avatars_downloaded)
             pending = urls - self._chat_image_cache.keys() - self._chat_images_pending
             if not pending:
                 return
@@ -4341,21 +4445,79 @@ if QtCore is not None:
                 item = QtWidgets.QListWidgetItem()
                 item.setData(QtCore.Qt.ItemDataRole.UserRole, msg)
                 row = _HoverMessageWidget()
-                row_layout = QtWidgets.QVBoxLayout(row)
-                row_layout.setContentsMargins(4, 3, 4, 3)
-                row_layout.setSpacing(2)
+                card_colors = _chat_event_card_colors(msg)
+                if card_colors:
+                    background, foreground, border = card_colors
+                    row.setStyleSheet(
+                        "QFrame { "
+                        f"background-color: {background}; "
+                        f"color: {foreground}; "
+                        f"border: 1px solid {border}; "
+                        "border-radius: 8px; }"
+                    )
+                row_layout = QtWidgets.QHBoxLayout(row)
+                row_layout.setContentsMargins(6, 4, 6, 4)
+                row_layout.setSpacing(8)
+                avatar = QtWidgets.QLabel()
+                avatar.setFixedSize(40, 40)
+                avatar.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+                avatar.setStyleSheet(
+                    "QLabel { background-color: #75839a; color: white; "
+                    "border-radius: 20px; font-weight: bold; }"
+                )
+                avatar_url = _message_avatar_url(
+                    msg, self._bilibili_avatar_cache
+                )
+                avatar_image = self._chat_image_cache.get(avatar_url)
+                avatar_loaded = False
+                if avatar_image:
+                    pixmap = QtGui.QPixmap()
+                    if pixmap.loadFromData(avatar_image[1]):
+                        scaled = pixmap.scaled(
+                            avatar.size(),
+                            QtCore.Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+                            QtCore.Qt.TransformationMode.SmoothTransformation,
+                        )
+                        x = (scaled.width() - avatar.width()) // 2
+                        y = (scaled.height() - avatar.height()) // 2
+                        square = scaled.copy(
+                            x, y, avatar.width(), avatar.height()
+                        )
+                        circular = QtGui.QPixmap(avatar.size())
+                        circular.fill(QtCore.Qt.GlobalColor.transparent)
+                        painter = QtGui.QPainter(circular)
+                        painter.setRenderHint(
+                            QtGui.QPainter.RenderHint.Antialiasing
+                        )
+                        path = QtGui.QPainterPath()
+                        path.addEllipse(0, 0, avatar.width(), avatar.height())
+                        painter.setClipPath(path)
+                        painter.drawPixmap(0, 0, square)
+                        painter.end()
+                        avatar.setPixmap(circular)
+                        avatar_loaded = True
+                if not avatar_loaded:
+                    avatar.setText(str(msg.get("author", "?"))[:1].upper())
+                avatar.setToolTip(str(msg.get("author", "?")))
+                row_layout.addWidget(avatar, 0, QtCore.Qt.AlignmentFlag.AlignTop)
                 label = QtWidgets.QLabel()
                 label.setFont(view.font())
                 label.setTextFormat(QtCore.Qt.TextFormat.RichText)
+                label.setTextInteractionFlags(
+                    QtCore.Qt.TextInteractionFlag.TextSelectableByMouse
+                    | QtCore.Qt.TextInteractionFlag.TextSelectableByKeyboard
+                )
                 label.setWordWrap(True)
                 label.setText(text)
                 label.setToolTip(reading_tooltip)
-                row_layout.addWidget(label)
+                row_layout.addWidget(label, 1)
                 row.watch_hover(label)
+                row.watch_hover(avatar)
 
                 platform = str(msg.get("platform", "")).lower()
                 is_paid_message = view is self.paid_list
                 row._chat_label = label
+                row._chat_avatar = avatar
                 for widget in (row, label):
                     widget.setContextMenuPolicy(
                         QtCore.Qt.ContextMenuPolicy.CustomContextMenu
@@ -4435,7 +4597,7 @@ if QtCore is not None:
                     continue
                 row.setFixedWidth(width)
                 label = row._chat_label
-                label.setFixedWidth(max(1, width - 8))
+                label.setFixedWidth(max(1, width - 68))
                 row.adjustSize()
                 item.setSizeHint(row.sizeHint())
 
@@ -5204,7 +5366,7 @@ if QtCore is not None:
             with self._login_context():
                 return function()
 
-        def _run_task(self, function, callback=None):
+        def _run_task(self, function, callback=None, *, on_finished=None):
             bridge = _TaskBridge(self)
             self._task_bridges = getattr(self, "_task_bridges", [])
             self._task_bridges.append(bridge)
@@ -5214,12 +5376,18 @@ if QtCore is not None:
                 except Exception as exc:
                     value, error = None, exc
                 bridge.finished.emit(value, error)
-            bridge.finished.connect(lambda value, error: self._task_finished(bridge, value, error, callback))
+            bridge.finished.connect(
+                lambda value, error: self._task_finished(
+                    bridge, value, error, callback, on_finished
+                )
+            )
             self._executor.submit(function).add_done_callback(completed)
 
-        def _task_finished(self, bridge, value, error, callback):
+        def _task_finished(self, bridge, value, error, callback, on_finished=None):
             if bridge in self._task_bridges:
                 self._task_bridges.remove(bridge)
+            if on_finished:
+                on_finished()
             if error:
                 self._show_error(f"{type(error).__name__}: {error}")
             elif callback:
@@ -5256,10 +5424,6 @@ if QtCore is not None:
                 self._show_error("Could not create a safe live stream link for this notification.")
                 return
 
-            previous = getattr(self, "_live_notification", None)
-            if previous is not None:
-                previous.close()
-
             notification = QtWidgets.QWidget(
                 None,
                 QtCore.Qt.WindowType.Tool
@@ -5268,6 +5432,9 @@ if QtCore is not None:
             )
             notification.setAttribute(
                 QtCore.Qt.WidgetAttribute.WA_ShowWithoutActivating
+            )
+            notification.setAttribute(
+                QtCore.Qt.WidgetAttribute.WA_DeleteOnClose
             )
             notification.setObjectName("liveNotification")
             notification.setFixedWidth(380)
@@ -5300,7 +5467,9 @@ if QtCore is not None:
                 "QToolButton { color: #d3d4da; border: 0; font-size: 18pt; "
                 "padding: 0 4px; }"
             )
-            close_button.clicked.connect(notification.close)
+            close_button.clicked.connect(
+                lambda: self._close_live_notification(notification)
+            )
             header.addWidget(close_button)
             layout.addLayout(header)
 
@@ -5339,21 +5508,15 @@ if QtCore is not None:
             )
             layout.addWidget(open_button)
 
-            self._live_notification = notification
+            self._live_notifications.append(notification)
+            self._position_live_notifications()
             notification.show()
-            screen = self.screen() or QtWidgets.QApplication.primaryScreen()
-            if screen is not None:
-                available = screen.availableGeometry()
-                notification.adjustSize()
-                notification.move(
-                    available.right() - notification.width() - 16,
-                    available.bottom() - notification.height() - 16,
-                )
             timer = QtCore.QTimer(notification)
             timer.setSingleShot(True)
-            timer.timeout.connect(notification.close)
+            timer.timeout.connect(
+                lambda: self._close_live_notification(notification)
+            )
             timer.start(20_000)
-            self._live_notification_timer = timer
 
             if details["thumbnail"]:
                 self._run_task(
@@ -5363,8 +5526,47 @@ if QtCore is not None:
                     ),
                 )
 
+        def _close_live_notification(self, notification):
+            notifications = getattr(self, "_live_notifications", [])
+            if notification not in notifications:
+                return
+            notifications.remove(notification)
+            notification.close()
+            self._position_live_notifications()
+
+        def _position_live_notifications(self):
+            notifications = getattr(self, "_live_notifications", [])
+            screen = self.screen() or QtWidgets.QApplication.primaryScreen()
+            if screen is None:
+                return
+            available = screen.availableGeometry()
+            bottom = available.bottom() - 16
+            for notification in reversed(notifications):
+                notification.setScreen(screen)
+                notification.ensurePolished()
+                layout = notification.layout()
+                layout.invalidate()
+                layout.activate()
+                width = notification.width()
+                height = (
+                    layout.totalHeightForWidth(width)
+                    if layout.hasHeightForWidth()
+                    else layout.totalSizeHint().height()
+                )
+                height = max(height, layout.totalMinimumSize().height())
+                notification.setGeometry(
+                    available.right() - notification.width() - 16,
+                    bottom - height,
+                    width,
+                    height,
+                )
+                bottom -= height + 8
+
         def _set_live_notification_image(self, notification, image_label, image_data):
-            if notification is not getattr(self, "_live_notification", None) or not image_data:
+            if (
+                notification not in getattr(self, "_live_notifications", [])
+                or not image_data
+            ):
                 return
             pixmap = QtGui.QPixmap()
             if not pixmap.loadFromData(image_data):
@@ -5376,25 +5578,18 @@ if QtCore is not None:
                 QtCore.Qt.TransformationMode.SmoothTransformation,
             )
             x = max(0, (scaled.width() - image_label.width()) // 2)
-            y = max(0, (scaled.height() - image_label.height()) // 2)
+            y = max(0, (scaled.height() - image_label.height()) // 2            )
             image_label.setPixmap(
                 scaled.copy(x, y, image_label.width(), image_label.height())
             )
             image_label.setVisible(True)
-            notification.adjustSize()
-            screen = self.screen() or QtWidgets.QApplication.primaryScreen()
-            if screen is not None:
-                available = screen.availableGeometry()
-                notification.move(
-                    available.right() - notification.width() - 16,
-                    available.bottom() - notification.height() - 16,
-                )
+            self._position_live_notifications()
 
         def _open_live_notification_url(self, url, notification):
             if not QtGui.QDesktopServices.openUrl(QtCore.QUrl(url)):
                 self._show_error("Could not open the live stream link.")
                 return
-            notification.close()
+            self._close_live_notification(notification)
 
         def _stop_speech(self, clear):
             from src.tts import stop_speaking

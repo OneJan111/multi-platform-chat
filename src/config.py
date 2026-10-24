@@ -75,6 +75,18 @@ OVERLAY_PUBLIC_URL: str = os.getenv("OVERLAY_PUBLIC_URL", "").strip().rstrip("/"
 ANALYTICS_ENABLED: bool = os.getenv("ANALYTICS_ENABLED", "false").strip().lower() == "true"
 TRANSCRIPTION_ENABLED: bool = os.getenv("TRANSCRIPTION_ENABLED", "false").strip().lower() == "true"
 TTS_USE_GTTS: bool = os.getenv("TTS_USE_GTTS", "false").lower() == "true"
+TTS_QUEUE_LIMIT: int = int(os.getenv("TTS_QUEUE_LIMIT", "20"))
+TTS_PRIORITY_QUEUE_LIMIT: int = int(os.getenv("TTS_PRIORITY_QUEUE_LIMIT", "50"))
+TTS_TASK_LIMIT: int = int(os.getenv("TTS_TASK_LIMIT", "20"))
+TTS_AUDIO_QUEUE_LIMIT: int = int(os.getenv("TTS_AUDIO_QUEUE_LIMIT", "20"))
+for _tts_limit_name, _tts_limit_value in (
+    ("TTS_QUEUE_LIMIT", TTS_QUEUE_LIMIT),
+    ("TTS_PRIORITY_QUEUE_LIMIT", TTS_PRIORITY_QUEUE_LIMIT),
+    ("TTS_TASK_LIMIT", TTS_TASK_LIMIT),
+    ("TTS_AUDIO_QUEUE_LIMIT", TTS_AUDIO_QUEUE_LIMIT),
+):
+    if _tts_limit_value < 1:
+        raise ValueError(f"{_tts_limit_name} must be at least 1")
 RENDER_CHAT_IMAGES: bool = os.getenv("RENDER_CHAT_IMAGES", "true").strip().lower() == "true"
 CHAT_TRANSLATION_DISPLAY_MODE: str = os.getenv(
     "CHAT_TRANSLATION_DISPLAY_MODE", "immediate"

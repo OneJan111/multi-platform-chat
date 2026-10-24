@@ -72,11 +72,17 @@ The template only contains placeholder values (`your-…`, `xxx`). **Replace the
 | `OVERLAY_PUBLIC_URL` | Overlay address shown in the 🎬 OBS tab (e.g. `http://203.0.113.5:8502` or a reverse-proxy URL) | auto |
 | `ANALYTICS_ENABLED` | `false` hides the Analytics page/tab and stops collecting viewer history, activity and hotspot data in both apps | `false` |
 | `TTS_USE_GTTS` | `true` = online gTTS, `false` = offline pyttsx3 | `false` |
+| `TTS_QUEUE_LIMIT` | Offline normal chat/join queue limit; drops oldest waiting message when full | `20` |
+| `TTS_PRIORITY_QUEUE_LIMIT` | Offline gifts / Super Chats queue limit; drops oldest waiting priority message when full | `50` |
+| `TTS_TASK_LIMIT` | Desktop pending and running speech-generation task limit; skips incoming speech when full | `20` |
+| `TTS_AUDIO_QUEUE_LIMIT` | Desktop online audio waiting for playback; drops oldest waiting audio when full | `20` |
 | `CHAT_POLL_INTERVAL` | Chat refresh interval in seconds | `5` |
+| `ROOM_STATUS_POLL_INTERVAL` | Live-status, title and viewer-count polling interval in seconds for desktop and browser apps, including YouTube channel monitoring. Minimum `1`; restart after changing. Live alerts are triggered when a poll detects a live stream. | `60` |
 | `CHAT_TRANSLATION_DISPLAY_MODE` | `immediate` shows chat right away and adds translations when ready; `wait` shows each message when its translation is ready | `immediate` |
 | `LOGIN_SECRET` | Key that encrypts each user's logins in their browser. Changing it logs everyone out | random, in `.login_secret` |
 
 > ⚠️ `.env` and `.login_secret` contain secrets and are listed in `.gitignore`. Never commit or share them.
+> TTS queue limits must be positive integers; restart after changing. Audio limits count clips, not bytes. Currently playing audio is not included in the waiting queue.
 > For Streamlit Community Cloud, set `LOGIN_SECRET = "your-long-random-secret"` in the app's **Secrets** settings. Locally, you can put the same TOML entry in `.streamlit/secrets.toml`. The `.env`/environment value takes precedence; if neither is set, the app generates `.login_secret`.
 >
 > Translation tries Index-Translate first and automatically falls back to Google. Set `INDEX_TRANSLATE_API_BASE=` to disable Index-Translate and use Google directly. The built-in streaming glossary protects known terms from being changed by either translator. Translation sends chat text to the provider; use the translation toggle only if you are comfortable with that.

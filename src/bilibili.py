@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
+import logging
 import re
 import threading
 import time
@@ -30,6 +31,8 @@ from src.config import (
     BILIBILI_SHORT_LINK_ORIGIN,
     BILIBILI_WEB_ORIGIN,
 )
+
+log = logging.getLogger(__name__)
 
 try:
     from bilibili_api import Credential, live, user
@@ -1137,3 +1140,25 @@ def get_user_stats(uid: int) -> dict:
         }
     except Exception:
         return {}
+
+
+def get_user_avatar(uid) -> str:
+    """Return a user's trusted Bilibili avatar URL."""
+    try:
+        uid = int(uid)
+    except (TypeError, ValueError):
+        return ""
+    if uid <= 0:
+        return ""
+    if not BILIBILI_LIB_OK:
+        log.warning("Cannot fetch Bilibili avatar for uid %s without bilibili-api-python", uid)
+        return ""
+    try:
+        profile = _run(
+            user.User(uid=uid, credential=_credential()).get_user_info()
+        )
+    except Exception:
+        log.warning("Could not fetch Bilibili avatar for uid %s", uid, exc_info=True)
+        return ""
+    face = profile.get("face", "") if isinstance(profile, dict) else ""
+    return emotes.safe_image_url(face)

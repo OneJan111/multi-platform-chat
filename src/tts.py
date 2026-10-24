@@ -7,7 +7,7 @@ import logging
 import re
 import threading
 
-from src.config import TTS_USE_GTTS
+from src.config import TTS_PRIORITY_QUEUE_LIMIT, TTS_QUEUE_LIMIT, TTS_USE_GTTS
 
 log = logging.getLogger(__name__)
 _lock = threading.Lock()
@@ -253,8 +253,8 @@ def speak_async(text: str, rate: int = 150, volume: float = 1.0, lang: str = "au
 # pyttsx3 shares one engine per process and fails with "run loop already started"
 # if two threads speak at once, so all speech goes through a single worker.
 # Two lanes: gifts / Super Chats ("priority") are always spoken before normal chat.
-_MAX_QUEUE = 20
-_MAX_PRIORITY_QUEUE = 50
+_MAX_QUEUE = TTS_QUEUE_LIMIT
+_MAX_PRIORITY_QUEUE = TTS_PRIORITY_QUEUE_LIMIT
 _priority_q: "collections.deque[tuple[str, int, float, str]]" = collections.deque()
 _normal_q: "collections.deque[tuple[str, int, float, str]]" = collections.deque()
 _cond = threading.Condition()
@@ -271,6 +271,7 @@ def _enqueue(text: str, rate: int, volume: float, lang: str, priority: bool = Fa
         lane, limit = (_priority_q, _MAX_PRIORITY_QUEUE) if priority else (_normal_q, _MAX_QUEUE)
         while len(lane) >= limit:  # chat is faster than speech: drop the oldest
             lane.popleft()
+            log.warning("TTS %s queue full; dropped oldest message", "priority" if priority else "normal")
         lane.append((text, rate, volume, lang))
         _cond.notify()
 

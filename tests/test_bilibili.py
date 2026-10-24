@@ -8,6 +8,41 @@ from src.bilibili import DanmakuListener, _decode_interact_word_v2, _decode_send
 
 
 class BilibiliSendTests(unittest.TestCase):
+    def test_get_user_avatar_normalizes_trusted_profile_face(self):
+        profile = {"face": "http://i0.hdslb.com/bfs/face/avatar.png"}
+        api_user = Mock()
+        api_user.get_user_info.return_value = "profile coroutine"
+        with patch.object(bili, "BILIBILI_LIB_OK", True), \
+                patch.object(bili.user, "User", return_value=api_user) as user_type, \
+                patch.object(bili, "_credential", return_value="credential") as credential, \
+                patch.object(bili, "_run", return_value=profile) as run:
+            avatar = bili.get_user_avatar("42")
+
+        self.assertEqual(
+            avatar, "https://i0.hdslb.com/bfs/face/avatar.png"
+        )
+        user_type.assert_called_once_with(uid=42, credential="credential")
+        credential.assert_called_once_with()
+        run.assert_called_once_with("profile coroutine")
+
+    def test_get_user_avatar_rejects_invalid_uid_and_untrusted_face(self):
+        with patch.object(bili, "BILIBILI_LIB_OK", True), \
+                patch.object(bili.user, "User") as user_type, \
+                patch.object(
+                    bili, "_run", return_value={"face": "https://example.com/avatar.png"}
+                ):
+            self.assertEqual(bili.get_user_avatar("not-a-uid"), "")
+            self.assertEqual(bili.get_user_avatar("42"), "")
+
+        user_type.assert_called_once()
+
+    def test_get_user_avatar_reports_missing_api_library(self):
+        with patch.object(bili, "BILIBILI_LIB_OK", False), \
+                patch.object(bili.user, "User") as user_type:
+            self.assertEqual(bili.get_user_avatar("42"), "")
+
+        user_type.assert_not_called()
+
     def test_waits_between_consecutive_sends_for_same_user_and_room(self):
         with patch.object(bili, "_cookie_values", return_value=("session", "", "", "42")), \
                 patch.object(bili.time, "monotonic", side_effect=[10.0, 10.0]), \

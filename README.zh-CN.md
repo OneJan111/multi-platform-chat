@@ -67,7 +67,12 @@ pip install -r requirements.txt
 | `OVERLAY_PUBLIC_URL` | 在 🎬 OBS 标签页中显示的叠加层地址（例如 `http://203.0.113.5:8502` 或反向代理地址） | 自动 |
 | `ANALYTICS_ENABLED` | 设为 `false` 可隐藏两个应用中的数据分析页面/标签，并停止收集观众历史、活动和热点数据 | `false` |
 | `TTS_USE_GTTS` | `true` = 在线 gTTS，`false` = 离线 pyttsx3 | `false` |
+| `TTS_QUEUE_LIMIT` | 离线普通弹幕和进房播报队列上限；满时丢弃最早的等待消息 | `20` |
+| `TTS_PRIORITY_QUEUE_LIMIT` | 离线礼物和 Super Chat 优先队列上限；满时丢弃最早的优先消息 | `50` |
+| `TTS_TASK_LIMIT` | 桌面版运行中及等待中的语音生成任务总上限；满时跳过新播报 | `20` |
+| `TTS_AUDIO_QUEUE_LIMIT` | 桌面版在线音频待播放队列上限；满时丢弃最早的待播放音频 | `20` |
 | `CHAT_POLL_INTERVAL` | 弹幕刷新间隔（秒） | `5` |
+| `ROOM_STATUS_POLL_INTERVAL` | 桌面版和浏览器版的直播状态、标题及观众数轮询间隔（秒），也用于 YouTube 频道监控。最小为 `1`，修改后需重启。轮询检测到开播时触发通知。 | `60` |
 | `CHAT_TRANSLATION_DISPLAY_MODE` | 翻译显示方式：`immediate` 立即显示弹幕，译文就绪后补上；`wait` 等译文就绪后再显示弹幕 | `immediate` |
 | `LOGIN_SECRET` | 加密每个用户保存在浏览器中的登录信息的密钥。更改后所有人都会被登出 | 随机生成，保存在 `.login_secret` |
 

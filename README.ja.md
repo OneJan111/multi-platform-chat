@@ -69,7 +69,12 @@ pip install -r requirements.txt
 | `OVERLAY_PUBLIC_URL` | 🎬 OBS タブに表示するオーバーレイのアドレス（例：`http://203.0.113.5:8502` やリバースプロキシの URL） | 自動 |
 | `ANALYTICS_ENABLED` | `false` にすると両アプリの分析ページ/タブを非表示にし、視聴者数の履歴、アクティビティ、ホットスポットデータの収集を停止します | `false` |
 | `TTS_USE_GTTS` | `true` = オンラインの gTTS、`false` = オフラインの pyttsx3 | `false` |
+| `TTS_QUEUE_LIMIT` | オフラインの通常チャット・入室通知の待機上限。満杯時は最も古いメッセージを破棄 | `20` |
+| `TTS_PRIORITY_QUEUE_LIMIT` | オフラインのギフト・Super Chat の待機上限。満杯時は最も古い優先メッセージを破棄 | `50` |
+| `TTS_TASK_LIMIT` | デスクトップの実行中・待機中の音声生成タスク上限。満杯時は新しい読み上げをスキップ | `20` |
+| `TTS_AUDIO_QUEUE_LIMIT` | デスクトップのオンライン音声の再生待ち上限。満杯時は最も古い待機音声を破棄 | `20` |
 | `CHAT_POLL_INTERVAL` | チャットの更新間隔（秒） | `5` |
+| `ROOM_STATUS_POLL_INTERVAL` | デスクトップ版・ブラウザ版の配信状態、タイトル、視聴者数の確認間隔（秒）。YouTube チャンネルの監視にも適用。最小 `1`。変更後は再起動が必要です。配信通知は確認時に配信を検出すると表示されます。 | `60` |
 | `CHAT_TRANSLATION_DISPLAY_MODE` | `immediate` = チャットをすぐ表示し、翻訳完了後に訳文を追加；`wait` = 翻訳完了後にメッセージを表示 | `immediate` |
 | `LOGIN_SECRET` | 各ユーザーのブラウザに保存されるログイン情報を暗号化するキー。変更すると全員がログアウトされます | ランダム、`.login_secret` に保存 |
 
