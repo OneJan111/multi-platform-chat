@@ -82,6 +82,16 @@ class DesktopLiveNotificationTests(unittest.TestCase):
             )
             app.processEvents()
             notification = window._live_notifications[0]
+            title = ("A long stream title that wraps onto multiple lines " * 4).strip()
+            title_label = next(
+                label for label in notification.findChildren(
+                    desktop_app._ElidedLabel
+                )
+                if label.toolTip() == title
+            )
+            self.assertFalse(title_label.wordWrap())
+            self.assertEqual(title_label.toolTip(), title)
+            self.assertNotEqual(title_label.text(), title)
             layout = notification.layout()
             self.assertGreaterEqual(
                 notification.height(),

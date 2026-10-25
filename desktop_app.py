@@ -44,6 +44,14 @@ def _chat_splitter_layout(width: int) -> tuple[str, tuple[str, str]]:
     return "horizontal", ("chat", "paid")
 
 
+def _monitor_card_columns(width: int) -> int:
+    if width < 640:
+        return 1
+    if width < 1020:
+        return 2
+    return 3
+
+
 def _youtube_channel_video_id(info: dict) -> str:
     if info.get("live") or info.get("upcoming"):
         return str(info.get("video_id", ""))
@@ -1481,6 +1489,43 @@ if QtCore is not None:
                 return True
             return super().eventFilter(watched, event)
 
+
+    class _ElidedLabel(QtWidgets.QLabel):
+        def __init__(self, text="", parent=None):
+            super().__init__(parent)
+            self._full_text = ""
+            self.setWordWrap(False)
+            self.setFullText(text)
+
+        @property
+        def fullText(self):
+            return self._full_text
+
+        def setFullText(self, text):
+            self._full_text = str(text or "")
+            self.setToolTip(self._full_text)
+            self.setAccessibleName(self._full_text)
+            self._update_elided_text()
+
+        def resizeEvent(self, event):
+            super().resizeEvent(event)
+            self._update_elided_text()
+
+        def changeEvent(self, event):
+            super().changeEvent(event)
+            if event.type() == QtCore.QEvent.Type.FontChange:
+                self._update_elided_text()
+
+        def _update_elided_text(self):
+            visible = self.fontMetrics().elidedText(
+                self._full_text,
+                QtCore.Qt.TextElideMode.ElideRight,
+                max(0, self.contentsRect().width()),
+            )
+            if self.text() != visible:
+                super().setText(visible)
+
+
     class _MonitorWorker(QtCore.QThread):
         messages = QtCore.Signal(list)
         statuses = QtCore.Signal(dict)
@@ -2259,6 +2304,14 @@ if QtCore is not None:
         def _make_monitor_cookies_tab(self):
             content = QtWidgets.QWidget()
             layout = QtWidgets.QVBoxLayout(content)
+            layout.setSizeConstraint(
+                QtWidgets.QLayout.SizeConstraint.SetNoConstraint
+            )
+            content.setMinimumWidth(0)
+            content.setSizePolicy(
+                QtWidgets.QSizePolicy.Policy.Ignored,
+                QtWidgets.QSizePolicy.Policy.Preferred,
+            )
             monitor_tab = self._make_monitor_tab()
             cookies_tab = self._make_cookies_tab()
             layout.addWidget(monitor_tab, 1)
@@ -2267,6 +2320,9 @@ if QtCore is not None:
             layout.addWidget(cookies_tab)
             scroll_area = QtWidgets.QScrollArea()
             scroll_area.setWidgetResizable(True)
+            scroll_area.setHorizontalScrollBarPolicy(
+                QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+            )
             scroll_area.setWidget(content)
             return scroll_area
 
@@ -2334,11 +2390,13 @@ if QtCore is not None:
                 )
             )
             layout.addWidget(self._feed_splitter, 1)
-            filters_row = QtWidgets.QHBoxLayout()
-            filters_row.addWidget(QtWidgets.QLabel("Chat rooms (one per site):"))
+            filters_layout = QtWidgets.QGridLayout()
+            filters_layout.addWidget(
+                QtWidgets.QLabel("Chat rooms (one per site):"), 0, 0, 1, 3
+            )
             self.site_visible = {}
             self.chat_room_selectors = {}
-            for site in ("youtube", "bilibili", "missevan"):
+            for column, site in enumerate(("youtube", "bilibili", "missevan")):
                 check = QtWidgets.QCheckBox(site.title())
                 check.setChecked(True)
                 self._persist_widget(check, f"chat_site_visible_{site}")
@@ -2347,9 +2405,13 @@ if QtCore is not None:
                     self._chat_site_visibility_changed(platform, visible)
                 )
                 self.site_visible[site] = check
-                filters_row.addWidget(check)
+                filters_layout.addWidget(check, 1, column)
                 selector = QtWidgets.QComboBox()
-                selector.setMinimumWidth(150)
+                selector.setMinimumWidth(0)
+                selector.setSizePolicy(
+                    QtWidgets.QSizePolicy.Policy.Expanding,
+                    QtWidgets.QSizePolicy.Policy.Fixed,
+                )
                 selector.setToolTip(
                     self.i18n.translate(
                         "Choose the {site} room shown in chat",
@@ -2361,10 +2423,9 @@ if QtCore is not None:
                     lambda _, platform=site: self._chat_room_changed(platform)
                 )
                 self.chat_room_selectors[site] = selector
-                filters_row.addWidget(selector)
+                filters_layout.addWidget(selector, 2, column)
             self._refresh_chat_room_selectors()
-            filters_row.addStretch(1)
-            layout.addLayout(filters_row)
+            layout.addLayout(filters_layout)
 
             send_row = QtWidgets.QHBoxLayout()
             self.send_input = QtWidgets.QLineEdit()
@@ -2624,6 +2685,11 @@ if QtCore is not None:
             layout.addLayout(add_row)
 
             self.channel_cards = QtWidgets.QWidget()
+            self.channel_cards.setMinimumWidth(0)
+            self.channel_cards.setSizePolicy(
+                QtWidgets.QSizePolicy.Policy.Ignored,
+                QtWidgets.QSizePolicy.Policy.Preferred,
+            )
             self.channel_grid = QtWidgets.QGridLayout(self.channel_cards)
             self.channel_grid.setContentsMargins(0, 0, 0, 0)
             self.channel_grid.setHorizontalSpacing(12)
@@ -2709,17 +2775,23 @@ if QtCore is not None:
             for index, entry in enumerate(self._monitor_targets):
                 card = QtWidgets.QFrame()
                 card.setObjectName("monitorChannelCard")
-                card.setMinimumHeight(145)
+                card.setMinimumWidth(0)
+                card.setMinimumHeight(120)
+                card.setSizePolicy(
+                    QtWidgets.QSizePolicy.Policy.Expanding,
+                    QtWidgets.QSizePolicy.Policy.Preferred,
+                )
                 card.setFrameShape(QtWidgets.QFrame.Shape.StyledPanel)
                 card_layout = QtWidgets.QVBoxLayout(card)
-                title = QtWidgets.QLabel(
+                title = _ElidedLabel(
                     f"{entry['platform'].title()} · {entry['target']}"
                 )
-                title.setWordWrap(True)
                 title.setStyleSheet("font-size: 13pt; font-weight: 600; border: 0;")
                 card_layout.addWidget(title)
-                detail = QtWidgets.QLabel("")
-                detail.setWordWrap(True)
+                stream_title = _ElidedLabel()
+                stream_title.setStyleSheet("border: 0;")
+                card_layout.addWidget(stream_title)
+                detail = _ElidedLabel()
                 detail.setStyleSheet("border: 0;")
                 card_layout.addWidget(detail)
                 connection = QtWidgets.QLabel()
@@ -2778,6 +2850,7 @@ if QtCore is not None:
                 self._monitor_cards[entry["id"]] = {
                     "widget": card,
                     "title": title,
+                    "stream_title": stream_title,
                     "detail": detail,
                     "connection": connection,
                     "monitor": monitor,
@@ -2793,7 +2866,7 @@ if QtCore is not None:
                 return
             while self.channel_grid.count():
                 self.channel_grid.takeAt(0)
-            columns = 3
+            columns = _monitor_card_columns(self.channel_cards.width())
             for column in range(columns):
                 self.channel_grid.setColumnStretch(column, 1)
             for row in range(len(self._monitor_cards) + 2):
@@ -2810,6 +2883,7 @@ if QtCore is not None:
             super().resizeEvent(event)
             if hasattr(self, "channel_cards") and self.channel_grid.count():
                 self._layout_channel_cards()
+                QtCore.QTimer.singleShot(0, self._layout_channel_cards)
             if hasattr(self, "chat_list"):
                 self._update_chat_splitter_layout(self.width())
                 QtCore.QTimer.singleShot(80, self._refresh_feeds)
@@ -3877,8 +3951,8 @@ if QtCore is not None:
                     room_names_changed = True
                 name = room_name or entry["target"]
                 title = f"{entry['platform'].title()} · {name}"
-                if card["title"].text() != title:
-                    card["title"].setText(title)
+                if card["title"].fullText != title:
+                    card["title"].setFullText(title)
                 viewers = info.get("viewers", "")
                 live = bool(info.get("live"))
                 try:
@@ -3904,6 +3978,7 @@ if QtCore is not None:
                 room_title = str(info.get("title") or "").strip()
                 if room_title:
                     self._room_titles[monitor_id] = room_title
+                card["stream_title"].setFullText(room_title)
                 if previous is not True and live and self.notify_live_check.isChecked():
                     video_id = (
                         self._worker._youtube.get(monitor_id, {}).get("video_id", "")
@@ -3913,17 +3988,14 @@ if QtCore is not None:
                 if live:
                     live_channels.append(name)
                 detail = f"ID {entry['target']}"
-                room_title = str(info.get("title") or "").strip()
-                if room_title and room_title != room_name:
-                    detail += f" · {room_title}"
                 if viewers not in ("", None):
                     detail += self.i18n.translate(
                         " · {count} viewers",
                         self._ui_language,
                         count=viewers,
                     )
-                if card["detail"].text() != detail:
-                    card["detail"].setText(detail)
+                if card["detail"].fullText != detail:
+                    card["detail"].setFullText(detail)
                 connection = info.get("connection", "Connecting")
                 _set_desktop_widget_text(
                     card["connection"],
@@ -5733,12 +5805,18 @@ if QtCore is not None:
             title_label.setWordWrap(True)
             title_label.setStyleSheet("font-size: 13pt; font-weight: 600;")
             layout.addWidget(title_label)
-            detail_label = QtWidgets.QLabel(
-                f"{details['platform']} · {details['detail']}"
+            detail_row = QtWidgets.QHBoxLayout()
+            platform_label = QtWidgets.QLabel(f"{details['platform']} ·")
+            platform_label.setStyleSheet("color: #c6c7ce;")
+            detail_row.addWidget(platform_label)
+            stream_title_label = _ElidedLabel(details["detail"])
+            stream_title_label.setStyleSheet("color: #c6c7ce;")
+            stream_title_label.setSizePolicy(
+                QtWidgets.QSizePolicy.Policy.Ignored,
+                QtWidgets.QSizePolicy.Policy.Fixed,
             )
-            detail_label.setWordWrap(True)
-            detail_label.setStyleSheet("color: #c6c7ce;")
-            layout.addWidget(detail_label)
+            detail_row.addWidget(stream_title_label, 1)
+            layout.addLayout(detail_row)
 
             image_label = QtWidgets.QLabel()
             image_label.setFixedSize(346, 170)

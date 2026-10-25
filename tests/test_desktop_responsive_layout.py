@@ -1,8 +1,10 @@
 import unittest
 
+import desktop_app
 from desktop_app import (
     _CHAT_LAYOUT_BREAKPOINT,
     _chat_splitter_layout,
+    _monitor_card_columns,
     _saved_splitter_sizes,
     _youtube_channel_video_id,
 )
@@ -29,6 +31,31 @@ class DesktopResponsiveLayoutTests(unittest.TestCase):
             _chat_splitter_layout(_CHAT_LAYOUT_BREAKPOINT),
             ("horizontal", ("chat", "paid")),
         )
+
+    def test_monitor_cards_use_fewer_columns_at_minimal_width(self):
+        self.assertEqual(_monitor_card_columns(639), 1)
+        self.assertEqual(_monitor_card_columns(640), 2)
+        self.assertEqual(_monitor_card_columns(1019), 2)
+        self.assertEqual(_monitor_card_columns(1020), 3)
+
+    @unittest.skipIf(desktop_app.QtWidgets is None, "PySide6 is not installed")
+    def test_stream_title_elides_to_one_line_and_keeps_full_tooltip(self):
+        app = desktop_app.QtWidgets.QApplication.instance()
+        if app is None:
+            app = desktop_app.QtWidgets.QApplication([])
+        label = desktop_app._ElidedLabel()
+        title = "A very long stream title that does not fit"
+        label.resize(90, 24)
+        label.setFullText(title)
+        label.show()
+        app.processEvents()
+
+        self.assertNotEqual(label.text(), title)
+        self.assertEqual(label.toolTip(), title)
+
+        label.resize(800, 24)
+        app.processEvents()
+        self.assertEqual(label.text(), title)
 
     def test_splitter_preferences_are_restored_when_valid(self):
         settings = _Settings({"join_sizes": [5, 2]})

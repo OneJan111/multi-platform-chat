@@ -24,7 +24,8 @@ class TranscriptionLifecycleTests(unittest.TestCase):
         }
         window = SimpleNamespace(
             _monitor_cards={monitor_id: {
-                "title": Mock(), "detail": Mock(), "connection": Mock(),
+                "title": Mock(), "stream_title": Mock(), "detail": Mock(),
+                "connection": Mock(),
             }},
             _monitor_targets=[target],
             _room_names={},
@@ -65,7 +66,8 @@ class TranscriptionLifecycleTests(unittest.TestCase):
                   "target": "123", "enabled": False}
         window = SimpleNamespace(
             _monitor_cards={monitor_id: {
-                "title": Mock(), "detail": Mock(), "connection": Mock(),
+                "title": Mock(), "stream_title": Mock(), "detail": Mock(),
+                "connection": Mock(),
             }},
             _monitor_targets=[target], _room_names={}, _room_titles={},
             _live_states={monitor_id: False}, _transcription_armed_id=monitor_id,
