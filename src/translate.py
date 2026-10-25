@@ -1,7 +1,8 @@
-"""Chat translation via Index-Translate, with Google as fallback.
+"""Chat translation via Index-Translate, OpenAI-compatible APIs, or Google.
 
 Translations run in a background thread pool and are cached, so Streamlit reruns never
 block on the network: `get_translation` returns None until the result is ready.
+Index-Translate falls back to Google; OpenAI-compatible API mode never falls back.
 """
 from __future__ import annotations
 
@@ -19,7 +20,9 @@ from src.config import (
     GOOGLE_TRANSLATE_URL,
     INDEX_TRANSLATE_API_BASE,
     INDEX_TRANSLATE_MODEL,
+    TRANSLATION_PROVIDER,
 )
+from src import openai_compatible_translate
 
 log = logging.getLogger(__name__)
 _RETRY_AFTER = 60.0  # seconds before retrying a failed translation
@@ -113,8 +116,16 @@ def translate_batch(texts: list[str], target: str, timeout: float = 10.0) -> lis
     protected = [slang.protect(text, target) for text in texts]
     request_texts = [text for text, _ in protected]
     results = None
+    if TRANSLATION_PROVIDER == "openai_compatible":
+        results = openai_compatible_translate.translate_batch(request_texts, target)
+    elif TRANSLATION_PROVIDER == "google":
+        results = _fallback_translate_batch(request_texts, target, timeout)
     with _lock:
-        try_index = INDEX_TRANSLATE_API_BASE and time.monotonic() >= _index_retry_until
+        try_index = (
+            TRANSLATION_PROVIDER == "index"
+            and INDEX_TRANSLATE_API_BASE
+            and time.monotonic() >= _index_retry_until
+        )
     if try_index:
         try:
             results = _index_translate_batch(request_texts, target, _INDEX_TIMEOUT)
@@ -162,7 +173,7 @@ def _worker(keys: list[tuple[str, str]]) -> None:
             now = time.time()
             for key in keys:
                 _failed[key] = now
-        log.exception("Translation failed using Index-Translate and Google Translate.")
+        log.exception("Translation failed using the configured translation provider.")
     finally:
         with _lock:
             _pending.difference_update(keys)

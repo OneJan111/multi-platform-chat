@@ -20,7 +20,7 @@
 | 🎁 **礼物和醒目留言** | 礼物（包括免费礼物）、醒目留言（Super Chat）、Super Sticker、会员和付费提问显示在单独的一栏。已知礼物价格显示在礼物旁，标题会按币种显示收到金额总和，不会换算或混加币种。YouTube 赠送会员会显示赠送者的购买记录（“赠送了 10 个会员”）和每位领取者（“收到了 … 赠送的会员”）。B站 🧧 红包会显示发送者、价格和内容，开奖后显示中奖者。领取者和中奖者会列出但不会朗读。每一条都可以标记为 🙏 *已感谢*（变灰），或点击 *全部标为已感谢*。 |
 | 👋 **进场** | 宽屏时，进入直播间的观众显示在礼物下方的单独列表中；窄屏单排时只在弹幕中显示最新进入的一位，不显示其他进场列表和控件。 |
 | 🛡️ **管理** | 点击任意消息上的 🚫 即可屏蔽该用户。屏蔽用户、关键词与正则过滤以及白名单保存在 `chat_filters.json` 中，重启后仍然有效。 |
-| 🌐 **翻译** | 在侧边栏启动翻译后，弹幕和实时转录中与所选目标语言不同的内容都会翻译成该语言。支持中文（简体/繁体）、英语、日语和韩语。优先使用免费的 Index-Translate，失败时自动回退到 Google。内置直播术语表会覆盖“舰长”“醒目留言”“上舰”“弹幕”等词的机器翻译。 |
+| 🌐 **翻译** | 在侧边栏启动翻译后，弹幕和实时转录中与所选目标语言不同的内容都会翻译成该语言。支持中文（简体/繁体）、英语、日语和韩语。可在 `.env` 中选择 Index-Translate、LM Studio 等本地或托管的 OpenAI 兼容 API，或 Google。Index-Translate 失败时会回退到 Google；兼容 API 模式只使用配置的 API。内置直播术语表会覆盖常见直播词汇的机器翻译。 |
 | 🎙️ **实时转录** | 每次可转录一个正在监听的 YouTube、Bilibili 或猫耳直播。运行时，最近三条转录会显示在弹幕和礼物两栏上方的全宽吸顶面板中。语音识别使用本地 faster-whisper；所选模型会在首次使用时下载。需要 FFmpeg。启动翻译后，只有识别语言与所选目标语言不同时才翻译转录内容。 |
 | 🔤 **注音** | 在醒目留言文字、礼物名和用户名上方显示拼音 / 振假名注音，方便主播念出来；日语译文加振假名，醒目留言和礼物的中文译文加拼音。 |
 | 💾 **记住设置** | 你的设置（朗读、翻译、消息顺序、文字大小、OBS 叠加层选项、语言、时区等）保存在当前浏览器中，下次打开时自动恢复。弹幕区布局会根据屏幕宽度自动切换。房间号、直播链接和弹幕不会保存；登录使用单独的 Cookie。 |
@@ -57,6 +57,10 @@ pip install -r requirements.txt
 | `YOUTUBE_CHANNEL` | 直播监控标签页中默认的 YouTube 频道链接（或直播链接）；点击 *开始监听* 即可监视 | `https://www.youtube.com/@Ya-chan` |
 | `BILIBILI_ROOM_ID` | 默认 B站直播间 | — |
 | `MISSEVAN_ROOM_ID` | 默认猫耳FM 直播间 | `869215180` |
+| `TRANSLATION_PROVIDER` | 翻译后端：`index`、`openai_compatible` 或 `google` | `index` |
+| `OPENAI_COMPATIBLE_TRANSLATE_API_BASE` | OpenAI 兼容 API 地址（包含 `/v1`；LM Studio 示例：`http://localhost:1234/v1`） | `http://localhost:1234/v1` |
+| `OPENAI_COMPATIBLE_TRANSLATE_MODEL` | API 接受的准确模型标识 | `local-model` |
+| `OPENAI_COMPATIBLE_TRANSLATE_API_KEY` | API 密钥；本地服务可能不需要，托管服务通常需要 | — |
 | `INDEX_TRANSLATE_API_BASE` | Index-Translate 兼容 API 地址；留空可禁用并直接使用 Google | `https://index-translate.bilibili.com/v1` |
 | `INDEX_TRANSLATE_MODEL` | Index-Translate 模型 | `Index-Translate-35B-A3B` |
 | `OBS_HOST` | OBS WebSocket 主机 | `localhost` |
@@ -66,19 +70,22 @@ pip install -r requirements.txt
 | `OVERLAY_PORT` | 弹幕叠加层端口 | `8502` |
 | `OVERLAY_PUBLIC_URL` | 在 🎬 OBS 标签页中显示的叠加层地址（例如 `http://203.0.113.5:8502` 或反向代理地址） | 自动 |
 | `ANALYTICS_ENABLED` | 设为 `false` 可隐藏两个应用中的数据分析页面/标签，并停止收集观众历史、活动和热点数据 | `false` |
+| `MEMORY_TRACE_ENABLED` | 桌面版 Python 内存分配追踪；每 10 秒记录追踪大小，每 60 秒记录增长最多的源代码位置。会增加 CPU 和 RAM 开销；修改后重启，诊断结束后关闭。 | `false` |
 | `TTS_USE_GTTS` | `true` = 在线 gTTS，`false` = 离线 pyttsx3 | `false` |
 | `TTS_QUEUE_LIMIT` | 离线普通弹幕和进房播报队列上限；满时丢弃最早的等待消息 | `20` |
 | `TTS_PRIORITY_QUEUE_LIMIT` | 离线礼物和 Super Chat 优先队列上限；满时丢弃最早的优先消息 | `50` |
 | `TTS_TASK_LIMIT` | 桌面版运行中及等待中的语音生成任务总上限；满时跳过新播报 | `20` |
 | `TTS_AUDIO_QUEUE_LIMIT` | 桌面版在线音频待播放队列上限；满时丢弃最早的待播放音频 | `20` |
+| `SIMPLE_CHAT_POLL_INTERVAL` | `simple_app.py` 和 `simple_server_app.py` 的聊天轮询及界面刷新间隔（秒），最小值为 `1` | `15` |
+| `SIMPLE_STATUS_POLL_INTERVAL` | 精简版直播状态和频道检查间隔（秒），最小值为 `1` | `60` |
 | `CHAT_POLL_INTERVAL` | 弹幕刷新间隔（秒） | `5` |
-| `ROOM_STATUS_POLL_INTERVAL` | 桌面版和浏览器版的直播状态、标题及观众数轮询间隔（秒），也用于 YouTube 频道监控。最小为 `1`，修改后需重启。轮询检测到开播时触发通知。 | `60` |
+| `ROOM_STATUS_POLL_INTERVAL` | 桌面版状态检查及浏览器版状态数据缓存间隔（秒），也用于 YouTube 频道监控。最小为 `1`，修改后需重启。主界面的状态和转录面板不再后台定时刷新，而是在用户交互或应用正常重新运行时更新；开播通知也不再后台检查。 | `60` |
 | `CHAT_TRANSLATION_DISPLAY_MODE` | 翻译显示方式：`immediate` 立即显示弹幕，译文就绪后补上；`wait` 等译文就绪后再显示弹幕 | `immediate` |
 | `LOGIN_SECRET` | 加密每个用户保存在浏览器中的登录信息的密钥。更改后所有人都会被登出 | 随机生成，保存在 `.login_secret` |
 
 > ⚠️ `.env` 和 `.login_secret` 包含机密信息，已列入 `.gitignore`。切勿提交或分享。
 >
-> 翻译优先使用 Index-Translate，不可用或返回无效结果时会回退到 Google。在 `.env` 中设置 `INDEX_TRANSLATE_API_BASE=` 可禁用 Index-Translate。启用翻译会把弹幕文本发送给翻译服务。
+> 默认优先使用 Index-Translate，不可用或返回无效结果时会回退到 Google。要使用 LM Studio 或托管的 OpenAI 兼容模型，请设置 `TRANSLATION_PROVIDER=openai_compatible`，并配置 API 地址、模型标识，以及服务需要时的 API 密钥。兼容 API 模式只向配置的 API 发送文本，不会回退到其他服务。
 >
 > `CHAT_TRANSLATION_DISPLAY_MODE` 可设为 `immediate` 或 `wait`，修改 `.env` 后重启 Web app 生效。`wait` 模式下，翻译失败或目标语言改变时会显示原文，不会丢弃弹幕。
 
@@ -97,6 +104,16 @@ pip install -r requirements.txt
 ```
 
 精简版仍在侧边栏提供翻译和浏览器文字转语音设置。
+聊天和礼物卡片会在有头像时显示用户头像；无法获取头像时显示用户名称首字母。
+所有已配置频道均未开播时会继续检查状态；任一频道开播后停止状态检查，但聊天和礼物仍会继续更新。重启监控程序可恢复状态检查。
+
+如需在 Streamlit 服务器运行期间将完整聊天和礼物记录保存在内存中，请运行：
+
+```powershell
+.\.venv\Scripts\python.exe -m streamlit run simple_server_app.py
+```
+
+首次打开应用后，即使所有浏览器会话断开，后台仍会继续轮询。任一已配置频道开播后，状态检查会停止，但仍会继续收集该直播间的聊天；重启服务器后才会恢复状态检查。连接到同一服务器的浏览器会话共享这些记录；服务器停止后记录会被清除。
 
 可在 `.env` 中配置新会话的默认值（参见 `env.template`）：
 
@@ -159,10 +176,10 @@ Windows 完成安装后，可双击 [Start_Simple_Monitor.bat](Start_Simple_Moni
 - 滚动弹幕时，实时转录预览会吸顶显示；普通弹幕保留时间戳，隐藏会员文字标签，弱化用户名并突出弹幕正文。
 - 窄屏单排会隐藏独立的进场列表和相关控件，只在弹幕中显示最新进入的一位。
 - 列表上方的 YouTube / Bilibili / 猫耳FM 复选框用于显示或隐藏各网站的消息。
-- 只有弹幕列表会按 `CHAT_POLL_INTERVAL` 秒自动刷新（默认 5 秒）；轮询不会重新运行其他标签页和上方控件。侧边栏的 *最多显示消息数* 限制屏幕上保留的弹幕条数。
+- 只有聊天标签页中的弹幕/礼物信息片段会按 `CHAT_POLL_INTERVAL` 秒后台刷新（默认 5 秒）。状态和转录面板仅在用户交互或应用正常重新运行时更新；开播通知不再后台检查。聊天定时器不会重新运行其他标签页和上方控件。侧边栏的 *最多显示消息数* 限制屏幕上保留的弹幕条数。
 - 侧边栏的 *🗑️ 清空弹幕记录* 会清空弹幕和进场，但保留礼物和醒目留言，以免漏掉还需要感谢的人。
 
-启用翻译后，程序优先使用 Index-Translate，服务不可用或响应无效时会自动回退到 Google。内置直播术语表会覆盖“舰长”“醒目留言”“上舰”“弹幕”等词的机器翻译。将 `.env` 中的 `INDEX_TRANSLATE_API_BASE` 设为空可关闭 Index-Translate、直接使用 Google。启用翻译会把弹幕文本发送给翻译服务。
+启用翻译后，默认优先使用 Index-Translate，服务不可用或响应无效时会自动回退到 Google。若要使用 LM Studio 或托管模型 API，请在 `.env` 中设置 `TRANSLATION_PROVIDER=openai_compatible`，并配置 API 地址、模型标识和（如需要）API 密钥；此模式只使用配置的 API，不会回退到其他服务。内置直播术语表会覆盖常见直播词汇的机器翻译。
 
 ### 礼物和醒目留言
 
@@ -177,7 +194,7 @@ Windows 完成安装后，可双击 [Start_Simple_Monitor.bat](Start_Simple_Moni
 
 实验性实时转录默认隐藏。在 `.env` 中设置 `TRANSCRIPTION_ENABLED=true` 并重启仪表板，即可显示转录入口和实时预览；设为 `false` 可再次隐藏。弹幕翻译不受此开关影响。
 
-在侧边栏选择目标语言并开启 **启动翻译**。开启后，弹幕和转录中与目标语言不同的内容都会翻译成该语言。程序优先使用 Index-Translate；服务不可用或结果无效时会回退到 Google。内置直播术语表会覆盖“舰长”“醒目留言”“上舰”“弹幕”等词的机器翻译。若想直接使用 Google，可在 `.env` 中将 `INDEX_TRANSLATE_API_BASE` 设为空。需要翻译的弹幕和转录文本会发送给翻译服务。
+在侧边栏选择目标语言并开启 **启动翻译**。开启后，弹幕和转录中与目标语言不同的内容都会翻译成该语言。默认优先使用 Index-Translate；服务不可用或结果无效时会回退到 Google。使用 LM Studio 或托管模型 API 时，将 `TRANSLATION_PROVIDER` 设为 `openai_compatible`，并配置 API 地址、模型标识及（如需要）API 密钥；托管 API 只接收发送到该配置服务的文本，不会回退到其他云服务。若未设置通用配置，旧的 `LM_STUDIO_TRANSLATE_*` 变量仍可使用。内置直播术语表会覆盖常见直播词汇的机器翻译。
 
 ### 屏蔽用户
 

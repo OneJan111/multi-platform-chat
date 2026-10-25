@@ -5,6 +5,103 @@ from src.youtube_web import _parse_action
 
 
 class YouTubeWebChatTests(unittest.TestCase):
+    def test_auth_headers_use_selected_youtube_channel(self):
+        from src import user_login, youtube_web as w
+
+        with user_login.using({"youtube_page_id": "brand-id"}):
+            headers = w._auth_headers({"SAPISID": "cookie"})
+
+        self.assertEqual(headers["X-Goog-AuthUser"], "0")
+        self.assertEqual(headers["X-Goog-PageId"], "brand-id")
+
+    def test_verify_login_uses_default_google_authuser(self):
+        from src import youtube_web as w
+
+        response = Mock(status_code=200, text='{"accountName":{"simpleText":"Account"}}')
+        session = Mock()
+        session.post.return_value = response
+        with patch.object(w, "_auth_session", return_value=session):
+            result = w.verify_login({"SAPISID": "cookie"})
+
+        self.assertEqual(result, {"is_login": True, "name": "Account"})
+        self.assertEqual(session.post.call_args.kwargs["headers"]["X-Goog-AuthUser"], "0")
+
+    def test_verify_login_reads_account_name_from_flexible_response_json(self):
+        from src import youtube_web as w
+
+        response = Mock(
+            status_code=200,
+            text="{}",
+        )
+        response.json.return_value = {
+            "contents": {
+                "accountMenuRenderer": {
+                    "header": {
+                        "activeAccountHeaderRenderer": {
+                            "accountName": {
+                                "runs": [{"text": "Second "}, {"text": "Google account"}],
+                            },
+                        },
+                    },
+                },
+            },
+        }
+        session = Mock()
+        session.post.return_value = response
+        with patch.object(w, "_auth_session", return_value=session):
+            result = w.verify_login({"SAPISID": "cookie"})
+
+        self.assertEqual(result, {"is_login": True, "name": "Second Google account"})
+
+    def test_lists_youtube_accounts_and_brand_channels_from_account_endpoint(self):
+        from src import youtube_web as w
+
+        response = Mock(status_code=200)
+        response.json.return_value = {
+            "contents": [
+                {"accountItem": {
+                    "accountName": {"simpleText": "Primary"},
+                    "channelHandle": {"simpleText": "@primary"},
+                    "serviceEndpoint": {
+                        "selectActiveIdentityEndpoint": {
+                            "supportedTokens": [
+                                {"pageIdToken": {"pageId": "UC-primary"}},
+                                {"accountStateToken": {"hasChannel": True}},
+                            ],
+                        },
+                    },
+                }},
+                {"accountItem": {
+                    "accountName": {"simpleText": "Second"},
+                    "channelHandle": {"simpleText": "@second"},
+                    "serviceEndpoint": {
+                        "selectActiveIdentityEndpoint": {
+                            "supportedTokens": [
+                                {"pageIdToken": {"pageId": "UC-second"}},
+                                {"accountStateToken": {"hasChannel": True}},
+                            ],
+                        },
+                    },
+                }},
+            ],
+        }
+        session = Mock()
+        session.post.return_value = response
+        with patch.object(w, "_auth_session", return_value=session):
+            result = w.list_channels({"SAPISID": "cookie"})
+
+        self.assertEqual(
+            result["channels"],
+            [
+                {"name": "Primary", "handle": "@primary", "page_id": "UC-primary", "selected": False},
+                {"name": "Second", "handle": "@second", "page_id": "UC-second", "selected": False},
+            ],
+        )
+        self.assertNotIn("X-Goog-PageId", session.post.call_args.kwargs["headers"])
+        self.assertTrue(
+            session.post.call_args.kwargs["json"]["accountReadMask"]["returnPersonaAccounts"]
+        )
+
     def test_channel_live_page_returns_nearest_scheduled_stream(self):
         from src import youtube_web as w
 

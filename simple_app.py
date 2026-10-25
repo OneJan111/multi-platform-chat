@@ -8,6 +8,7 @@ from __future__ import annotations
 import base64
 import html
 import json
+import os
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -18,15 +19,21 @@ import streamlit as st
 
 from src import bilibili as bili
 from src import browser_cookies as bc
+from src import chat_avatars
 from src import config as app_config
 from src import emotes
 from src import gifts as gift_utils
 from src import i18n
 from src import missevan as me
+from src.server_chat_history import ServerChatHistory, ServerChatPoller
 from src import translate as tr
 from src import youtube as yt
 from src import youtube_web as ytw
-from src.config import CHAT_POLL_INTERVAL, MAX_CHAT_DISPLAY, ROOM_STATUS_POLL_INTERVAL
+from src.config import (
+    MAX_CHAT_DISPLAY,
+    SIMPLE_CHAT_POLL_INTERVAL,
+    SIMPLE_STATUS_POLL_INTERVAL,
+)
 from src.tts import (
     LANGUAGES as TTS_LANGUAGES,
     format_announcement,
@@ -55,7 +62,45 @@ def _configured_platforms() -> dict[str, str]:
 
 _SOURCES = _configured_platforms()
 _PLATFORM_NAMES = {"youtube": "YouTube", "bilibili": "Bilibili", "missevan": "MissEvan"}
-_STATUS_INTERVAL = max(1, ROOM_STATUS_POLL_INTERVAL)
+_STATUS_INTERVAL = SIMPLE_STATUS_POLL_INTERVAL
+_SERVER_HISTORY_ENABLED = os.getenv("SIMPLE_SERVER_HISTORY") == "1"
+
+
+@st.cache_resource
+def _server_history() -> ServerChatHistory:
+    return ServerChatHistory()
+
+
+@st.cache_resource
+def _server_poller() -> ServerChatPoller:
+    return ServerChatPoller(_server_history(), _SOURCES)
+
+
+def _chat_messages() -> list[dict]:
+    if not _SERVER_HISTORY_ENABLED:
+        return st.session_state["simple_chat"]
+    return _server_history().chat()
+
+
+def _gift_messages() -> list[dict]:
+    if not _SERVER_HISTORY_ENABLED:
+        return st.session_state["simple_gifts"]
+    return _server_history().gifts()
+
+
+def _profit_totals() -> dict[str, float]:
+    if not _SERVER_HISTORY_ENABLED:
+        return st.session_state["simple_profit_totals"]
+    return _server_history().profit_totals()
+
+
+def _append_server_message(msg: dict, *, is_gift_message: bool) -> bool:
+    return _server_history().append(msg, is_gift=is_gift_message)
+
+
+def _server_message_key(msg: dict) -> str:
+    message_id = msg.get("id") or msg.get("_simple_arrived")
+    return f"{msg.get('platform', '')}:{message_id}"
 
 
 def _page_language() -> str:
@@ -93,6 +138,10 @@ def _track_live_status(site: str, live: bool, title: str = "") -> None:
     states = st.session_state["simple_live_states"]
     previous = states.get(site)
     states[site] = live
+    if live:
+        st.session_state["simple_status_polling_paused"] = True
+        if _SERVER_HISTORY_ENABLED:
+            _server_poller().pause_status_polling()
     if previous is False and live and st.session_state["simple_notify_live"]:
         states.setdefault("_notifications", []).append({
             "site": _PLATFORM_NAMES[site],
@@ -101,10 +150,16 @@ def _track_live_status(site: str, live: bool, title: str = "") -> None:
 
 
 def _init_state() -> None:
+    if _SERVER_HISTORY_ENABLED and "simple_server_seen_ids" not in st.session_state:
+        st.session_state["simple_server_seen_ids"] = {
+            _server_message_key(msg)
+            for msg in (*_chat_messages(), *_gift_messages())
+        }
     defaults = {
         "simple_chat": [],
         "simple_gifts": [],
         "simple_profit_totals": {},
+        "simple_server_seen_ids": set(),
         "simple_last_poll": 0.0,
         "simple_last_status": 0.0,
         "simple_yt_channel": "",
@@ -123,6 +178,7 @@ def _init_state() -> None:
         "simple_me_error": "",
         "simple_room_status": {},
         "simple_live_states": {},
+        "simple_status_polling_paused": False,
         "simple_notify_live": app_config.SIMPLE_NOTIFY_LIVE,
         "simple_tts_queue": [],
         "simple_tts_pending": [],
@@ -153,7 +209,8 @@ def _init_state() -> None:
 
     if "bilibili" in _SOURCES and not _SOURCES["bilibili"]:
         st.session_state["simple_bili_error"] = "The configured Bilibili room ID is invalid."
-    elif "bilibili" in _SOURCES and st.session_state["simple_bili_listener"] is None \
+    elif "bilibili" in _SOURCES and not _SERVER_HISTORY_ENABLED \
+            and st.session_state["simple_bili_listener"] is None \
             and not st.session_state["simple_bili_error"]:
         listener = bili.DanmakuListener(_SOURCES["bilibili"])
         if listener.start():
@@ -165,7 +222,8 @@ def _init_state() -> None:
 
     if "missevan" in _SOURCES and not _SOURCES["missevan"]:
         st.session_state["simple_me_error"] = "The configured MissEvan room ID is invalid."
-    elif "missevan" in _SOURCES and st.session_state["simple_me_listener"] is None \
+    elif "missevan" in _SOURCES and not _SERVER_HISTORY_ENABLED \
+            and st.session_state["simple_me_listener"] is None \
             and not st.session_state["simple_me_error"]:
         listener = me.MissEvanListener(_SOURCES["missevan"])
         if listener.start():
@@ -175,6 +233,9 @@ def _init_state() -> None:
 
 
 _init_state()
+if _SERVER_HISTORY_ENABLED and _SOURCES:
+    if _server_poller().status_polling_paused:
+        st.session_state["simple_status_polling_paused"] = True
 
 
 def _import_bilibili_cookie() -> None:
@@ -208,6 +269,10 @@ def _import_bilibili_cookie() -> None:
     st.session_state["simple_bili_cookie"] = ""
 
     if _SOURCES.get("bilibili"):
+        if _SERVER_HISTORY_ENABLED:
+            _server_poller().restart_bilibili()
+            st.session_state["simple_bili_error"] = ""
+            return
         old_listener = st.session_state["simple_bili_listener"]
         if old_listener:
             _accept_messages(old_listener.pop_messages())
@@ -419,15 +484,20 @@ def _accept_messages(messages: list[dict], *, is_backlog: bool = False) -> None:
         if msg.get("type") == "enter":
             continue
         msg.setdefault("_simple_arrived", time.time_ns())
-        if is_paid(msg) or is_gift(msg):
+        gift_message = is_paid(msg) or is_gift(msg)
+        if _SERVER_HISTORY_ENABLED:
+            if not _append_server_message(msg, is_gift_message=gift_message):
+                continue
+        elif gift_message:
             st.session_state["simple_gifts"].append(msg)
             _record_profit(msg)
         else:
             st.session_state["simple_chat"].append(msg)
         if not is_backlog and not msg.get("history"):
             _queue_speech(msg)
-    st.session_state["simple_chat"] = st.session_state["simple_chat"][-MAX_CHAT_DISPLAY:]
-    st.session_state["simple_gifts"] = st.session_state["simple_gifts"][-MAX_CHAT_DISPLAY:]
+    if not _SERVER_HISTORY_ENABLED:
+        st.session_state["simple_chat"] = st.session_state["simple_chat"][-MAX_CHAT_DISPLAY:]
+        st.session_state["simple_gifts"] = st.session_state["simple_gifts"][-MAX_CHAT_DISPLAY:]
 
 
 def _record_profit(msg: dict) -> None:
@@ -444,8 +514,26 @@ def _record_profit(msg: dict) -> None:
 
 
 def _poll_messages() -> None:
+    if _SERVER_HISTORY_ENABLED:
+        seen_ids = st.session_state["simple_server_seen_ids"]
+        for msg in (*_chat_messages(), *_gift_messages()):
+            message_key = _server_message_key(msg)
+            if message_key in seen_ids:
+                continue
+            seen_ids.add(message_key)
+            if not msg.get("history"):
+                _queue_speech(msg)
+        if st.session_state["simple_translation_enabled"]:
+            texts = [
+                msg.get("text", "")
+                for msg in (*_chat_messages()[-80:], *_gift_messages()[-80:])
+                if msg.get("text")
+            ]
+            tr.prefetch(texts, _translation_target())
+        _flush_tts_pending()
+        return
     now = time.monotonic()
-    if now - st.session_state["simple_last_poll"] < CHAT_POLL_INTERVAL:
+    if now - st.session_state["simple_last_poll"] < SIMPLE_CHAT_POLL_INTERVAL:
         return
     st.session_state["simple_last_poll"] = now
 
@@ -469,7 +557,7 @@ def _poll_messages() -> None:
     if st.session_state["simple_translation_enabled"]:
         texts = [
             msg.get("text", "")
-            for msg in (*st.session_state["simple_chat"][-80:], *st.session_state["simple_gifts"][-80:])
+            for msg in (*_chat_messages()[-80:], *_gift_messages()[-80:])
             if msg.get("text")
         ]
         tr.prefetch(texts, _translation_target())
@@ -606,7 +694,8 @@ def _feed_messages_html(messages: list[dict], browser_timezone: str) -> str:
     if not messages:
         return f'<div class="simple-feed-empty">{html.escape(_t("Waiting for messages…"))}</div>'
     cards = []
-    for msg in reversed(messages[-MAX_CHAT_DISPLAY:]):
+    visible_messages = messages if _SERVER_HISTORY_ENABLED else messages[-MAX_CHAT_DISPLAY:]
+    for msg in reversed(visible_messages):
         platform = _PLATFORM_NAMES.get(msg.get("platform", ""), msg.get("platform", ""))
         raw_text = str(msg.get("text", ""))
         text = (
@@ -621,6 +710,10 @@ def _feed_messages_html(messages: list[dict], browser_timezone: str) -> str:
         )
         stamp = _format_message_time(str(msg.get("timestamp", "")), browser_timezone)
         header = html.escape(f"{platform} · {msg.get('author', '')}" + (f" · {stamp}" if stamp else ""))
+        avatar_url = chat_avatars.message_avatar_url(
+            msg, bili.get_user_avatar, emotes.safe_image_url, emotes.safe_badge_url
+        )
+        avatar = chat_avatars.avatar_html(msg, avatar_url, "simple-feed-avatar")
         amount = gift_utils.amount_label(msg) if is_paid(msg) or is_gift(msg) else ""
         amount_html = (
             f'<div class="simple-feed-price">{html.escape(amount)}</div>'
@@ -633,8 +726,10 @@ def _feed_messages_html(messages: list[dict], browser_timezone: str) -> str:
                 translated = f'<div class="simple-feed-translated">{html.escape(result)}</div>'
         cards.append(
             '<article class="simple-feed-card">'
+            f'<div class="simple-feed-row">{avatar}<div class="simple-feed-content">'
             f'<div class="simple-feed-meta">{header}</div>'
-            f'<div class="simple-feed-text">{text}</div>{amount_html}{translated}</article>'
+            f'<div class="simple-feed-text">{text}</div>{amount_html}{translated}'
+            '</div></div></article>'
         )
     return "".join(cards)
 
@@ -644,13 +739,13 @@ def _render_feeds() -> None:
         browser_timezone = st.context.timezone
     except (AttributeError, RuntimeError):
         browser_timezone = ""
-    totals = st.session_state["simple_profit_totals"]
+    totals = _profit_totals()
     summary = " · ".join(
         gift_utils.format_amount(currency, amount)
         for currency, amount in sorted(totals.items())
     ) or "—"
-    gifts_html = _feed_messages_html(st.session_state["simple_gifts"], browser_timezone)
-    chat_html = _feed_messages_html(st.session_state["simple_chat"], browser_timezone)
+    gifts_html = _feed_messages_html(_gift_messages(), browser_timezone)
+    chat_html = _feed_messages_html(_chat_messages(), browser_timezone)
     st.html(
         """
         <style>
@@ -692,6 +787,21 @@ def _render_feeds() -> None:
             padding: .5rem;
             margin: .25rem 0;
         }
+        .simple-feed-row { display: flex; align-items: flex-start; gap: .5rem; }
+        .simple-feed-avatar {
+            display: block;
+            flex: 0 0 2rem;
+            width: 2rem;
+            height: 2rem;
+            border-radius: 50%;
+            object-fit: cover;
+            background: color-mix(in srgb, currentColor 12%, transparent);
+            text-align: center;
+            line-height: 2rem;
+            font-size: .85em;
+            font-weight: 700;
+        }
+        .simple-feed-content { min-width: 0; flex: 1 1 auto; }
         .simple-feed-meta { font-size: .8rem; opacity: .7; margin-bottom: .25rem; }
         .simple-feed-text { white-space: pre-wrap; overflow-wrap: anywhere; }
         .simple-feed-price { font-size: .9rem; font-weight: 600; color: #42d392; }
@@ -705,6 +815,8 @@ def _render_feeds() -> None:
         }
         </style>
         """
+    )
+    st.markdown(
         f'<div class="simple-feeds">'
         '<section class="simple-feed-panel">'
         f'<h2 class="simple-feed-title">{html.escape("🎁 " + _t("Gifts & Super Chats"))}</h2>'
@@ -714,13 +826,23 @@ def _render_feeds() -> None:
         f'<h2 class="simple-feed-title">{html.escape("💬 " + _t("Chat"))}</h2>'
         f'<div class="simple-feed-scroll">{chat_html}</div>'
         '</section></div>',
+        unsafe_allow_html=True,
     )
 
 
-@st.fragment(run_every=_STATUS_INTERVAL)
+_STATUS_AUTO_REFRESH = (
+    None if st.session_state["simple_status_polling_paused"] else _STATUS_INTERVAL
+)
+
+
+@st.fragment(run_every=_STATUS_AUTO_REFRESH)
 def _update_status() -> None:
-    _refresh_youtube()
-    _refresh_room_status()
+    was_paused = st.session_state["simple_status_polling_paused"]
+    if not was_paused:
+        _refresh_youtube()
+        _refresh_room_status()
+    if not was_paused and st.session_state["simple_status_polling_paused"]:
+        st.rerun(scope="app")
     _emit_live_notifications()
     for site in _SOURCES:
         _status_line(site, st.session_state["simple_yt_status"] if site == "youtube" else {})
@@ -784,7 +906,7 @@ else:
         st.caption(_t("Speech uses this browser's voices. Click the page once if your browser blocks audio."))
 
 
-@st.fragment(run_every=max(1, CHAT_POLL_INTERVAL))
+@st.fragment(run_every=SIMPLE_CHAT_POLL_INTERVAL)
 def _update_chat() -> None:
     _poll_messages()
     _speech_script()

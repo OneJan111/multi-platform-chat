@@ -301,6 +301,14 @@ def pending_count() -> int:
         return len(_priority_q) + len(_normal_q)
 
 
+def queue_metrics() -> dict[str, int]:
+    with _cond:
+        return {
+            "tts_offline_normal_pending": len(_normal_q),
+            "tts_offline_priority_pending": len(_priority_q),
+        }
+
+
 def clear_queue():
     with _cond:
         _priority_q.clear()

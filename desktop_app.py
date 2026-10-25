@@ -68,7 +68,76 @@ def _memory_log_path() -> Path:
     return Path.home() / ".streaming-dashboard" / "logs" / "memory.log"
 
 
+def _count_memory_work(window, key: str, amount: int = 1):
+    if not hasattr(window, "_memory_work_counters"):
+        window._memory_work_counters = Counter()
+    window._memory_work_counters[key] += amount
+
+
+class _MemoryAllocationTrace:
+    def __init__(self):
+        import tracemalloc
+
+        self._owns_trace = not tracemalloc.is_tracing()
+        if self._owns_trace:
+            tracemalloc.start(1)
+        self._previous = {}
+        self._last_sample = None
+
+    def metrics(self) -> dict[str, int]:
+        import tracemalloc
+
+        current, peak = tracemalloc.get_traced_memory()
+        return {
+            "python_traced_current_bytes": current,
+            "python_traced_peak_bytes": peak,
+            "python_trace_overhead_bytes": tracemalloc.get_tracemalloc_memory(),
+        }
+
+    def sample(self, now: float) -> dict | None:
+        import tracemalloc
+
+        if self._last_sample is not None and now - self._last_sample < 60:
+            return None
+        snapshot = tracemalloc.take_snapshot()
+        current = {
+            (stat.traceback[0].filename, stat.traceback[0].lineno): (stat.size, stat.count)
+            for stat in snapshot.statistics("lineno")
+        }
+        growth = []
+        for (filename, line), (size, count) in current.items():
+            old_size, old_count = self._previous.get((filename, line), (0, 0))
+            if size > old_size:
+                growth.append({
+                    "file": filename,
+                    "line": line,
+                    "size_bytes": size,
+                    "size_delta_bytes": size - old_size,
+                    "count_delta": count - old_count,
+                })
+        growth.sort(key=lambda item: item["size_delta_bytes"], reverse=True)
+        result = {
+            "event": "python_allocation_sample",
+            "timestamp": _utc_now(),
+            "baseline": self._last_sample is None,
+            "interval_seconds": now - self._last_sample if self._last_sample is not None else 0,
+            "top_growth": growth[:10],
+        }
+        self._previous = current
+        self._last_sample = now
+        return result
+
+    def close(self):
+        import tracemalloc
+
+        self._previous.clear()
+        if self._owns_trace:
+            tracemalloc.stop()
+
+
 def _memory_collection_metrics(window) -> dict[str, int]:
+    from src.tts import queue_metrics
+
     image_bytes = sum(
         len(value[1])
         for value in getattr(window, "_chat_image_cache", {}).values()
@@ -95,7 +164,7 @@ def _memory_collection_metrics(window) -> dict[str, int]:
                 transcription_worker_segments += len(segments)
     worker = getattr(window, "_worker", None)
     recorders = getattr(window, "_recorders", {})
-    return {
+    metrics = {
         "chat_messages": len(getattr(window, "_messages", [])),
         "paid_messages": len(getattr(window, "_paid", [])),
         "join_messages": len(getattr(window, "_joins", [])),
@@ -119,11 +188,43 @@ def _memory_collection_metrics(window) -> dict[str, int]:
             bool(getattr(recorder, "is_running", False))
             for recorder in recorders.values()
         ),
+        "task_callbacks_pending": len(getattr(window, "_task_bridges", [])),
+        "bilibili_avatar_cache_entries": len(getattr(window, "_bilibili_avatar_cache", {})),
+        "bilibili_avatars_pending": len(getattr(window, "_bilibili_avatars_pending", set())),
+        "bilibili_avatar_failures": len(getattr(window, "_bilibili_avatar_failures", {})),
+        "live_notifications": len(getattr(window, "_live_notifications", [])),
+        **queue_metrics(),
+        **getattr(window, "_memory_work_counters", {}),
     }
+    bili_network = sys.modules.get("bilibili_api.utils.network")
+    if bili_network is not None:
+        loops = [
+            loop for pool in bili_network.session_pool.copy().values()
+            for loop in pool.copy()
+        ]
+        metrics["bilibili_http_clients"] = len(loops)
+        metrics["bilibili_http_clients_closed_loops"] = sum(
+            loop.is_closed() for loop in loops
+        )
+    if QtWidgets is not None and isinstance(window, QtWidgets.QWidget):
+        widgets = QtWidgets.QApplication.allWidgets()
+        metrics["qt_widgets_total"] = len(widgets)
+        metrics["qt_widgets_hidden"] = sum(not widget.isVisible() for widget in widgets)
+        metrics["qt_message_rows_alive"] = sum(
+            isinstance(widget, _HoverMessageWidget) for widget in widgets
+        )
+        metrics["qt_task_bridges_alive"] = len(window.findChildren(_TaskBridge))
+        metrics["qt_pixmap_cache_limit_kib"] = QtGui.QPixmapCache.cacheLimit()
+        for name in ("chat_list", "paid_list", "joins_list"):
+            view = getattr(window, name, None)
+            if view is not None:
+                metrics[f"{name}_rows"] = view.count()
+    return metrics
 
 
 def _memory_process_metrics(process, psutil_module) -> dict[str, int]:
-    parent_rss = process.memory_info().rss
+    memory = process.memory_info()
+    parent_rss = memory.rss
     children = process.children(recursive=True)
     child_rss = 0
     unreadable_children = 0
@@ -132,7 +233,7 @@ def _memory_process_metrics(process, psutil_module) -> dict[str, int]:
             child_rss += child.memory_info().rss
         except psutil_module.Error:
             unreadable_children += 1
-    return {
+    metrics = {
         "process_rss_bytes": parent_rss,
         "child_process_count": len(children),
         "child_process_rss_bytes": child_rss,
@@ -140,6 +241,11 @@ def _memory_process_metrics(process, psutil_module) -> dict[str, int]:
         "process_tree_rss_bytes": parent_rss + child_rss,
         "thread_count": process.num_threads(),
     }
+    for name in ("vms", "private"):
+        value = getattr(memory, name, None)
+        if value is not None:
+            metrics[f"process_{name}_bytes"] = value
+    return metrics
 
 
 def _archive_path() -> Path:
@@ -1642,7 +1748,11 @@ if QtCore is not None:
 
                     if new_messages:
                         self.messages.emit(new_messages)
-                    self.statuses.emit(dict(statuses))
+                    status_snapshot = {
+                        monitor_id: dict(info)
+                        for monitor_id, info in statuses.items()
+                    }
+                    self.statuses.emit(status_snapshot)
                 except Exception as exc:
                     self.failed.emit(f"Chat monitor error: {type(exc).__name__}: {exc}")
                 self.msleep(250)
@@ -1955,9 +2065,23 @@ if QtCore is not None:
                     logger.addHandler(handler)
                 self._memory_logger = logger
                 self._memory_process = psutil.Process(os.getpid())
+                self._memory_allocation_trace = (
+                    _MemoryAllocationTrace()
+                    if self.config.MEMORY_TRACE_ENABLED else None
+                )
                 self._memory_logger.info(
                     json.dumps({
                         "event": "monitor_started",
+                        "diagnostics_version": 3,
+                        "memory_trace_enabled": self.config.MEMORY_TRACE_ENABLED,
+                        "process_id": os.getpid(),
+                        "python_version": sys.version.split()[0],
+                        "qt_version": QtCore.qVersion(),
+                        "tts_use_gtts": self.config.TTS_USE_GTTS,
+                        "tts_task_limit": self.config.TTS_TASK_LIMIT,
+                        "tts_audio_queue_limit": self.config.TTS_AUDIO_QUEUE_LIMIT,
+                        "tts_normal_queue_limit": self.config.TTS_QUEUE_LIMIT,
+                        "tts_priority_queue_limit": self.config.TTS_PRIORITY_QUEUE_LIMIT,
                         "sample_interval_seconds": 10,
                         "log_path": str(log_path),
                     })
@@ -1990,6 +2114,12 @@ if QtCore is not None:
                     **process_metrics,
                     **collection_metrics,
                 }
+                allocation_trace = getattr(self, "_memory_allocation_trace", None)
+                if allocation_trace is not None:
+                    snapshot.update(allocation_trace.metrics())
+                    allocation_sample = allocation_trace.sample(time.monotonic())
+                    if allocation_sample is not None:
+                        self._memory_logger.info(json.dumps(allocation_sample, sort_keys=True))
                 app_mb = process_metrics["process_rss_bytes"] / (1024 * 1024)
                 tree_mb = process_metrics["process_tree_rss_bytes"] / (
                     1024 * 1024
@@ -2004,6 +2134,12 @@ if QtCore is not None:
                     process_metrics["process_rss_bytes"] - self._memory_start_rss
                 )
                 snapshot["process_rss_peak_bytes"] = self._memory_peak_rss
+                previous_rss = getattr(self, "_memory_previous_rss", None)
+                snapshot["process_rss_sample_delta_bytes"] = (
+                    process_metrics["process_rss_bytes"] - previous_rss
+                    if previous_rss is not None else 0
+                )
+                self._memory_previous_rss = process_metrics["process_rss_bytes"]
                 self._memory_status.setText(
                     f"RAM {app_mb:.0f} / {tree_mb:.0f} MiB"
                 )
@@ -3089,10 +3225,31 @@ if QtCore is not None:
                 self.login_status_labels[site.lower()] = label
                 site_layout.addWidget(label)
                 login_layout.addWidget(site_status, 1)
-            self._refresh_login_status()
+            layout.addWidget(self.login_status_group)
+            account_row = QtWidgets.QHBoxLayout()
+            account_row.addWidget(QtWidgets.QLabel("YouTube account / channel:"))
+            self.youtube_account_combo = QtWidgets.QComboBox()
+            selected_page_id = str(self._login_data.get("youtube_page_id") or "")
+            self.youtube_account_combo.addItem(
+                "Default account" if not selected_page_id else "Selected YouTube channel",
+                selected_page_id,
+            )
+            self.youtube_account_combo.setEnabled(bool(self._login_data.get("youtube")))
+            self.youtube_account_combo.currentIndexChanged.connect(
+                self._select_youtube_channel
+            )
+            account_row.addWidget(self.youtube_account_combo)
+            discover_accounts = QtWidgets.QPushButton("Find accounts")
+            discover_accounts.clicked.connect(self._discover_youtube_channels)
+            discover_accounts.setEnabled(bool(self._login_data.get("youtube")))
+            self.youtube_account_discover = discover_accounts
+            account_row.addWidget(discover_accounts)
+            account_row.addStretch(1)
+            layout.addLayout(account_row)
             self.cookie_status = QtWidgets.QLabel()
             self.cookie_status.setWordWrap(True)
             layout.addWidget(self.cookie_status)
+            self._refresh_login_status()
             return widget
 
         def _make_obs_tab(self):
@@ -3719,7 +3876,9 @@ if QtCore is not None:
                     self._room_names[monitor_id] = room_name
                     room_names_changed = True
                 name = room_name or entry["target"]
-                card["title"].setText(f"{entry['platform'].title()} · {name}")
+                title = f"{entry['platform'].title()} · {name}"
+                if card["title"].text() != title:
+                    card["title"].setText(title)
                 viewers = info.get("viewers", "")
                 live = bool(info.get("live"))
                 try:
@@ -3763,7 +3922,8 @@ if QtCore is not None:
                         self._ui_language,
                         count=viewers,
                     )
-                card["detail"].setText(detail)
+                if card["detail"].text() != detail:
+                    card["detail"].setText(detail)
                 connection = info.get("connection", "Connecting")
                 _set_desktop_widget_text(
                     card["connection"],
@@ -3771,7 +3931,9 @@ if QtCore is not None:
                     self._ui_language,
                     self.i18n,
                 )
-                card["connection"].setToolTip(info.get("error", ""))
+                error = info.get("error", "")
+                if card["connection"].toolTip() != error:
+                    card["connection"].setToolTip(error)
                 if connection.startswith("Connected"):
                     color = "#16803c"
                 elif connection in ("Connecting", "Waiting for chat", "Waiting for stream", "Reconnecting"):
@@ -3780,10 +3942,15 @@ if QtCore is not None:
                     color = "#666666"
                 else:
                     color = "#b42318"
-                card["connection"].setStyleSheet(f"color: {color}; border: 0;")
-            self.live_status.setText(
-                "Live: " + (", ".join(live_channels) if live_channels else "No active streams detected")
+                style = f"color: {color}; border: 0;"
+                if card["connection"].styleSheet() != style:
+                    card["connection"].setStyleSheet(style)
+            live_text = "Live: " + (
+                ", ".join(live_channels) if live_channels
+                else "No active streams detected"
             )
+            if self.live_status.text() != live_text:
+                self.live_status.setText(live_text)
             if self.config.ANALYTICS_ENABLED:
                 self._viewer_samples.append((time.time(), dict(viewers_by_platform)))
                 self._viewer_samples = self._viewer_samples[-2000:]
@@ -4024,17 +4191,23 @@ if QtCore is not None:
 
         def _run_tts_task(self, function, callback):
             if not self._tts_task_slots.acquire(blocking=False):
+                _count_memory_work(self, "tts_tasks_dropped_total")
                 self.statusBar().showMessage(
                     "TTS task queue full; skipped incoming speech.", 5000
                 )
                 return
             try:
+                _count_memory_work(self, "tts_tasks_pending")
                 self._run_task(
-                    function, callback, on_finished=self._tts_task_slots.release
+                    function, callback, on_finished=self._tts_task_finished
                 )
             except RuntimeError:
-                self._tts_task_slots.release()
+                self._tts_task_finished()
                 raise
+
+        def _tts_task_finished(self):
+            self._tts_task_slots.release()
+            _count_memory_work(self, "tts_tasks_pending", -1)
 
         def _speak_message(self, text, rate, volume, lang, paid, target, translate_message, skip_name, author, message):
             from src import translate
@@ -4068,6 +4241,7 @@ if QtCore is not None:
             if not audio:
                 return
             if len(self._audio_queue) >= self.config.TTS_AUDIO_QUEUE_LIMIT:
+                _count_memory_work(self, "tts_audio_dropped_total")
                 self._audio_queue.pop(0)
                 self.statusBar().showMessage(
                     "TTS audio queue full; dropped oldest waiting audio.", 5000
@@ -4189,16 +4363,27 @@ if QtCore is not None:
             self._render_feed(self.chat_list, chat_messages)
             self._render_feed(self.paid_list, paid_messages)
             self._queue_chat_images(chat_messages + paid_messages)
-            self.joins_list.clear()
-            for msg in self._visible_chat_messages("joins"):
-                item = QtWidgets.QListWidgetItem(
+            joins = self._visible_chat_messages("joins")
+            joins_changed = False
+            while self.joins_list.count() > len(joins):
+                self.joins_list.takeItem(self.joins_list.count() - 1)
+                joins_changed = True
+            for index, msg in enumerate(joins):
+                text = (
                     f"{_format_chat_timestamp(msg.get('timestamp', ''))}  "
                     f"[{msg.get('platform', '').upper()}]  "
                     f"{msg.get('author', '?')} entered"
                 )
+                item = self.joins_list.item(index)
+                if item is None:
+                    item = QtWidgets.QListWidgetItem()
+                    self.joins_list.addItem(item)
+                if item.text() != text:
+                    item.setText(text)
+                    joins_changed = True
                 item.setData(QtCore.Qt.ItemDataRole.UserRole, msg)
-                self.joins_list.addItem(item)
-            self.joins_list.scrollToBottom()
+            if joins_changed:
+                self.joins_list.scrollToBottom()
 
         def _queue_chat_images(self, messages):
             from src import emotes
@@ -4310,6 +4495,7 @@ if QtCore is not None:
             from src import emotes
             from src import reading
 
+            _count_memory_work(self, "feed_update_calls_total")
             feed = "paid" if view is self.paid_list else "chat"
             paused = self._feed_scroll_paused[feed]
             paused_message_id = self._feed_paused_messages[feed]
@@ -4331,8 +4517,59 @@ if QtCore is not None:
             )
             scroll_bar = view.verticalScrollBar()
             scroll_position = scroll_bar.value()
-            view.clear()
-            for msg in messages:
+            message_keys = [
+                (
+                    msg.get("_monitor_id", ""),
+                    msg.get("_desktop_feed_id", msg.get("id") or id(msg)),
+                )
+                for msg in messages
+            ]
+            desired_keys = set(message_keys)
+            changed = False
+            for index in range(view.count() - 1, -1, -1):
+                row = view.itemWidget(view.item(index))
+                if row._feed_key not in desired_keys:
+                    view.takeItem(index)
+                    _count_memory_work(self, "feed_rows_removed_total")
+                    changed = True
+            for index, (key, msg) in enumerate(zip(message_keys, messages)):
+                image_urls = [
+                    _message_avatar_url(msg, self._bilibili_avatar_cache),
+                    emotes.safe_badge_url(msg.get("membership_icon", "")),
+                    emotes.safe_chat_image_url(msg.get("sticker_url", "")),
+                ]
+                if isinstance(msg.get("emotes"), dict):
+                    image_urls.extend(
+                        emotes.safe_chat_image_url(url)
+                        for url in msg["emotes"].values()
+                    )
+                signature = (
+                    json.dumps(msg, ensure_ascii=True, default=str),
+                    self._ui_language,
+                    self.show_reading.isChecked(),
+                    view.font().toString(),
+                    msg.get("id") in self._thanked_ids,
+                    tuple(
+                        (url, bool(self._chat_image_cache.get(url)))
+                        for url in image_urls
+                    ),
+                )
+                item = view.item(index)
+                if item is not None and view.itemWidget(item)._feed_key != key:
+                    for old_index in range(index + 1, view.count()):
+                        old_item = view.item(old_index)
+                        if view.itemWidget(old_item)._feed_key == key:
+                            view.takeItem(old_index)
+                            break
+                    item = None
+                if item is not None:
+                    row = view.itemWidget(item)
+                    if row._feed_signature == signature:
+                        _count_memory_work(self, "feed_rows_reused_total")
+                        item.setData(QtCore.Qt.ItemDataRole.UserRole, msg)
+                        continue
+                changed = True
+                _count_memory_work(self, "feed_rows_rendered_total")
                 stamp = _format_chat_timestamp(msg.get("timestamp", ""))
                 prefix = f"{stamp}  [{msg.get('platform', '').upper()}]  {msg.get('author', '?')}"
                 flags = []
@@ -4442,9 +4679,13 @@ if QtCore is not None:
                 price = gifts.gift_price_label(msg) if msg.get("value") else ""
                 if price:
                     text += f"<br>{html.escape(price)}"
-                item = QtWidgets.QListWidgetItem()
+                if item is None:
+                    item = QtWidgets.QListWidgetItem()
+                    view.insertItem(index, item)
                 item.setData(QtCore.Qt.ItemDataRole.UserRole, msg)
                 row = _HoverMessageWidget()
+                row._feed_key = key
+                row._feed_signature = signature
                 card_colors = _chat_event_card_colors(msg)
                 if card_colors:
                     background, foreground, border = card_colors
@@ -4528,15 +4769,17 @@ if QtCore is not None:
                             message, source.mapToGlobal(position), paid
                         )
                     )
-                view.addItem(item)
                 view.setItemWidget(item, row)
-            self._resize_feed_items(view)
+            if changed or getattr(view, "_feed_width", None) != view.viewport().width():
+                self._resize_feed_items(view)
+                view._feed_width = view.viewport().width()
             if paused:
                 for index in selected_indices:
                     view.item(index).setSelected(True)
-                view.doItemsLayout()
-                scroll_bar.setValue(scroll_position)
-            else:
+                if changed:
+                    view.doItemsLayout()
+                    scroll_bar.setValue(scroll_position)
+            elif changed:
                 view.scrollToBottom()
             if _reading_tooltip_allowed(view) and hovered_message_id is not None:
                 for index in range(view.count()):
@@ -4595,11 +4838,14 @@ if QtCore is not None:
                 row = view.itemWidget(item)
                 if not row:
                     continue
+                if getattr(row, "_feed_size_width", None) == width:
+                    continue
                 row.setFixedWidth(width)
                 label = row._chat_label
                 label.setFixedWidth(max(1, width - 68))
                 row.adjustSize()
                 item.setSizeHint(row.sizeHint())
+                row._feed_size_width = width
 
         def _set_show_reading(self, enabled):
             self._settings.setValue("show_reading", enabled)
@@ -5367,6 +5613,7 @@ if QtCore is not None:
                 return function()
 
         def _run_task(self, function, callback=None, *, on_finished=None):
+            _count_memory_work(self, "background_tasks_submitted_total")
             bridge = _TaskBridge(self)
             self._task_bridges = getattr(self, "_task_bridges", [])
             self._task_bridges.append(bridge)
@@ -5384,8 +5631,12 @@ if QtCore is not None:
             self._executor.submit(function).add_done_callback(completed)
 
         def _task_finished(self, bridge, value, error, callback, on_finished=None):
+            _count_memory_work(self, "background_tasks_completed_total")
+            if error:
+                _count_memory_work(self, "background_tasks_failed_total")
             if bridge in self._task_bridges:
                 self._task_bridges.remove(bridge)
+            bridge.deleteLater()
             if on_finished:
                 on_finished()
             if error:
@@ -5680,6 +5931,8 @@ if QtCore is not None:
                             raise ValueError(result.get("error") or "YouTube rejected these cookies.")
                         youtube_web.save_login(cookies)
                         name = result.get("name", "")
+                if site == "YouTube":
+                    self._reset_youtube_account_combo()
                 if not self._persist_logins():
                     self.cookie_status.setText(
                         self.i18n.translate(
@@ -5722,6 +5975,83 @@ if QtCore is not None:
                 label.setStyleSheet(
                     "color: #16803c;" if saved else "color: #666666;"
                 )
+            if hasattr(self, "youtube_account_combo"):
+                enabled = bool(self._login_data.get("youtube"))
+                self.youtube_account_combo.setEnabled(enabled)
+                self.youtube_account_discover.setEnabled(enabled)
+
+        def _reset_youtube_account_combo(self):
+            combo = self.youtube_account_combo
+            blocked = combo.blockSignals(True)
+            combo.clear()
+            combo.addItem("Default account", "")
+            combo.blockSignals(blocked)
+
+        def _discover_youtube_channels(self):
+            from src import youtube_web
+
+            cookies = dict(self._login_data.get("youtube") or {})
+            if not cookies:
+                self.cookie_status.setText("Import YouTube cookies first.")
+                return
+            self.cookie_status.setText("Checking YouTube accounts and channels...")
+
+            def done(result):
+                error = result.get("error")
+                if error:
+                    self.cookie_status.setText(f"Could not list YouTube accounts: {error}")
+                    return
+                accounts = result.get("channels", [])
+                if not accounts:
+                    self.cookie_status.setText("No YouTube accounts or channels were found for these cookies.")
+                    return
+                selected = str(self._login_data.get("youtube_page_id") or "")
+                combo = self.youtube_account_combo
+                blocked = combo.blockSignals(True)
+                combo.clear()
+                for number, account in enumerate(accounts, 1):
+                    page_id = account.get("page_id", "")
+                    name = account.get("name", "").strip()
+                    handle = account.get("handle", "").strip()
+                    label = name
+                    if handle and handle != name:
+                        label += f" ({handle})"
+                    if not label:
+                        label = "Default account" if not page_id else f"YouTube channel {number}"
+                    combo.addItem(label, page_id)
+                selected_row = combo.findData(selected)
+                combo.setCurrentIndex(selected_row if selected_row >= 0 else 0)
+                combo.blockSignals(blocked)
+                self.cookie_status.setText(
+                    f"Found {len(accounts)} YouTube account(s)/channel(s). Choose one to use for chat."
+                )
+
+            self._run_task(
+                lambda: youtube_web.list_channels(cookies),
+                done,
+            )
+
+        def _select_youtube_channel(self, row):
+            if row < 0:
+                return
+            page_id = self.youtube_account_combo.itemData(row)
+            if page_id is None:
+                return
+            from src import youtube_web
+
+            with self._login_context():
+                youtube_web.select_channel(page_id)
+            if self._persist_logins():
+                self.cookie_status.setText(
+                    "YouTube chat account/channel selection saved."
+                )
+            else:
+                self.cookie_status.setText(
+                    self.i18n.translate(
+                        "Unable to save login cookies to application settings.",
+                        self._ui_language,
+                    )
+                )
 
         def _read_browser_cookies(self):
             from src import browser_cookies as bc
@@ -5754,6 +6084,8 @@ if QtCore is not None:
             site = self.cookie_site.currentText().lower()
             with self._login_context():
                 bc.clear_login(site)
+            if site == "youtube":
+                self._reset_youtube_account_combo()
             if self._persist_logins():
                 self.cookie_status.setText(f"Cleared {site} login.")
             else:
@@ -6715,6 +7047,9 @@ if QtCore is not None:
                 self._memory_logger.info(
                     json.dumps({"event": "monitor_stopped"})
                 )
+            allocation_trace = getattr(self, "_memory_allocation_trace", None)
+            if allocation_trace is not None:
+                allocation_trace.close()
             self._settings.setValue("window_geometry", self.saveGeometry())
             if hasattr(self, "_feed_splitter"):
                 self._save_splitter_sizes(

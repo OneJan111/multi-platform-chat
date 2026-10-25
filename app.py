@@ -7,13 +7,10 @@ Run with:
 from __future__ import annotations
 
 import base64
-from concurrent.futures import Future, ThreadPoolExecutor
 import html as html_lib
 import json
-import logging
 import os
 import re
-import threading
 import time
 import zlib
 from datetime import datetime, timezone
@@ -34,6 +31,7 @@ st.set_page_config(
 
 from src import bilibili as bili
 from src import browser_cookies as bc
+from src import chat_avatars
 from src import config as app_config
 from src import emotes
 from src import gifts
@@ -1226,73 +1224,14 @@ def _block_user(msg: dict):
 _PLATFORM_NAMES = {"youtube": "YouTube", "bilibili": "Bilibili", "missevan": "MissEvan"}
 
 
-_AVATAR_LOCK = threading.Lock()
-_BILIBILI_AVATAR_CACHE: dict[str, str] = {}
-_BILIBILI_AVATAR_PENDING: dict[str, Future[str]] = {}
-_BILIBILI_AVATAR_FAILURES: dict[str, float] = {}
-
-
-@st.cache_resource
-def _bilibili_avatar_executor() -> ThreadPoolExecutor:
-    return ThreadPoolExecutor(max_workers=4, thread_name_prefix="bilibili-avatar")
-
-
 def _message_avatar_url(message: dict) -> str:
-    platform = str(message.get("platform", "")).lower()
-    safe_url = emotes.safe_image_url if platform == "bilibili" else emotes.safe_badge_url
-    url = safe_url(message.get("avatar", ""))
-    if url or platform != "bilibili":
-        return url
-
-    uid = str(message.get("author_id", "")).strip()
-    if not uid.isdigit() or int(uid) <= 0:
-        return ""
-
-    now = time.monotonic()
-    with _AVATAR_LOCK:
-        for pending_uid, future in list(_BILIBILI_AVATAR_PENDING.items()):
-            if not future.done():
-                continue
-            del _BILIBILI_AVATAR_PENDING[pending_uid]
-            try:
-                avatar = emotes.safe_image_url(future.result())
-            except Exception:
-                logging.getLogger(__name__).exception(
-                    "Could not fetch Bilibili avatar for uid %s", pending_uid
-                )
-                avatar = ""
-            if avatar:
-                if len(_BILIBILI_AVATAR_CACHE) >= 500:
-                    _BILIBILI_AVATAR_CACHE.pop(next(iter(_BILIBILI_AVATAR_CACHE)))
-                _BILIBILI_AVATAR_CACHE[pending_uid] = avatar
-                _BILIBILI_AVATAR_FAILURES.pop(pending_uid, None)
-            else:
-                _BILIBILI_AVATAR_FAILURES[pending_uid] = now
-
-        avatar = _BILIBILI_AVATAR_CACHE.get(uid)
-        if avatar:
-            return avatar
-        if (
-            uid not in _BILIBILI_AVATAR_PENDING
-            and now - _BILIBILI_AVATAR_FAILURES.get(uid, 0) >= 300
-            and len(_BILIBILI_AVATAR_PENDING) < 8
-        ):
-            _BILIBILI_AVATAR_PENDING[uid] = _bilibili_avatar_executor().submit(
-                bili.get_user_avatar, uid
-            )
-    return ""
+    return chat_avatars.message_avatar_url(
+        message, bili.get_user_avatar, emotes.safe_image_url, emotes.safe_badge_url
+    )
 
 
 def _message_avatar_html(message: dict, avatar_url: str) -> str:
-    name = str(message.get("author") or "?")
-    escaped_name = html_lib.escape(name, quote=True)
-    if avatar_url:
-        return (
-            f'<img class="chat-avatar" src="{html_lib.escape(avatar_url, quote=True)}" '
-            f'alt="{escaped_name}" title="{escaped_name}" referrerpolicy="no-referrer">'
-        )
-    initial = html_lib.escape(name[:1].upper())
-    return f'<span class="chat-avatar" title="{escaped_name}">{initial}</span>'
+    return chat_avatars.avatar_html(message, avatar_url, "chat-avatar")
 
 
 def _browser_tts() -> bool:
@@ -2466,7 +2405,7 @@ def _render_transcription_results(session) -> None:
 
 
 def _render_transcription_panel() -> None:
-    @st.fragment(run_every=1)
+    @st.fragment
     def _panel() -> None:
         sources = _active_transcription_sources()
         session = st.session_state.get("transcription_session")
@@ -2635,7 +2574,7 @@ if page_transcription is not None:
 # TAB: STREAM STATUS
 # ═══════════════════════════════════════════════════════════════════════════════
 
-@st.fragment(run_every=ROOM_STATUS_POLL_INTERVAL)
+@st.fragment
 def _stream_status():
     if _has_active_chat_listener():
         st.info(t("A room is being monitored. Switch to 💬 Chat in the top bar to view live messages."))
@@ -4653,8 +4592,6 @@ _emit_live_alerts()
 _emit_browser_tts()
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Live updates: the Chat tab's _chat_live() fragment (run_every=CHAT_POLL_INTERVAL)
-# polls and re-renders the feeds on its own timer. Only that fragment reruns on each
-# tick, so the rest of the page -- and the other tabs -- are not re-executed every few
-# seconds, and clicks / typing elsewhere are never swallowed by a server-side sleep.
+# Live updates: only the Chat tab's _chat_live() fragment has a timer. Status and
+# transcription panels update on user interaction or a normal app rerun.
 # ──────────────────────────────────────────────────────────────────────────────

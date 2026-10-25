@@ -602,6 +602,35 @@ def _find_account_items(node) -> list[dict]:
     return []
 
 
+def _account_display_name(node) -> str:
+    if isinstance(node, dict):
+        for key in ("accountName", "channelHandle"):
+            value = node.get(key)
+            if isinstance(value, dict):
+                text = value.get("simpleText")
+                if isinstance(text, str) and text.strip():
+                    return text.strip()
+                runs = value.get("runs")
+                if isinstance(runs, list):
+                    text = "".join(
+                        run.get("text", "")
+                        for run in runs
+                        if isinstance(run, dict) and isinstance(run.get("text"), str)
+                    )
+                    if text.strip():
+                        return text.strip()
+        for value in node.values():
+            name = _account_display_name(value)
+            if name:
+                return name
+    elif isinstance(node, list):
+        for value in node:
+            name = _account_display_name(value)
+            if name:
+                return name
+    return ""
+
+
 def list_channels(cookies: dict[str, str] | None = None) -> dict:
     """Channels the cookie login can post as: {"channels": [{"name", "handle", "page_id", "selected"}]} (+ "error")."""
     cookies = login_cookies() if cookies is None else cookies
@@ -613,7 +642,7 @@ def list_channels(cookies: dict[str, str] | None = None) -> dict:
         headers.pop("X-Goog-PageId", None)  # list from the main account so every channel shows up
         body = {
             "context": {"client": {"clientName": "WEB", "clientVersion": _FALLBACK_CLIENT_VERSION, "hl": "en"}},
-            "accountReadMask": {"returnOwner": True, "returnBrandAccounts": True, "returnPersonaAccounts": False},
+            "accountReadMask": {"returnOwner": True, "returnBrandAccounts": True, "returnPersonaAccounts": True},
         }
         resp = s.post(YOUTUBE_ACCOUNTS_LIST_URL, params={"prettyPrint": "false"}, json=body, headers=headers, timeout=_TIMEOUT)
         if resp.status_code != 200:
@@ -646,12 +675,28 @@ def verify_login(cookies: dict[str, str] | None = None) -> dict:
     try:
         s = _auth_session(cookies)
         body = {"context": {"client": {"clientName": "WEB", "clientVersion": _FALLBACK_CLIENT_VERSION, "hl": "en"}}}
-        resp = s.post(YOUTUBE_ACCOUNT_MENU_URL, params={"prettyPrint": "false"}, json=body, headers=_auth_headers(cookies), timeout=_TIMEOUT)
+        resp = s.post(
+            YOUTUBE_ACCOUNT_MENU_URL,
+            params={"prettyPrint": "false"},
+            json=body,
+            headers=_auth_headers(cookies),
+            timeout=_TIMEOUT,
+        )
         if resp.status_code != 200:
             return {"is_login": False, "name": ""}
-        m = (re.search(r'"accountName":\{"simpleText":"((?:[^"\\]|\\.)*)"', resp.text)
-             or re.search(r'"channelHandle":\{"simpleText":"((?:[^"\\]|\\.)*)"', resp.text))
-        name = json.loads(f'"{m.group(1)}"') if m else ""
+        try:
+            name = _account_display_name(resp.json())
+        except ValueError:
+            name = ""
+        if not name:
+            m = (
+                re.search(r'"accountName"\s*:\s*\{\s*"simpleText"\s*:\s*"((?:[^"\\]|\\.)*)"', resp.text)
+                or re.search(
+                    r'"channelHandle"\s*:\s*\{\s*"simpleText"\s*:\s*"((?:[^"\\]|\\.)*)"',
+                    resp.text,
+                )
+            )
+            name = json.loads(f'"{m.group(1)}"') if m else ""
         return {"is_login": bool(name), "name": name}
     except (requests.RequestException, ValueError) as exc:
         return {"is_login": False, "name": "", "error": str(exc)}

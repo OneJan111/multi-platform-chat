@@ -1,13 +1,100 @@
+import asyncio
 import base64
 import unittest
 from types import SimpleNamespace
-from unittest.mock import Mock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 from src import bilibili as bili
 from src.bilibili import DanmakuListener, _decode_interact_word_v2, _decode_send_gift_v2
 
 
 class BilibiliSendTests(unittest.TestCase):
+    def test_owned_loops_close_and_remove_cached_clients(self):
+        from bilibili_api.utils import network
+
+        clients = []
+        pools = {"test": {}}
+        settings = {"test": {}}
+
+        async def request():
+            loop = asyncio.get_running_loop()
+            client = SimpleNamespace(close=AsyncMock())
+            clients.append(client)
+            pools["test"][loop] = client
+            settings["test"][loop] = {"timeout": 5}
+            return "result"
+
+        with patch.object(network, "session_pool", pools), \
+                patch.object(network, "lazy_settings", settings):
+            for _ in range(10):
+                self.assertEqual(bili._run_owned_loop(request()), "result")
+                self.assertEqual(pools["test"], {})
+                self.assertEqual(settings["test"], {})
+        for client in clients:
+            client.close.assert_awaited_once()
+
+    def test_owned_loop_cleans_up_when_request_raises(self):
+        from bilibili_api.utils import network
+
+        client = SimpleNamespace(close=AsyncMock())
+        pools = {"test": {}}
+        settings = {"test": {}}
+
+        async def request():
+            loop = asyncio.get_running_loop()
+            pools["test"][loop] = client
+            settings["test"][loop] = {}
+            raise ValueError("request failed")
+
+        with patch.object(network, "session_pool", pools), \
+                patch.object(network, "lazy_settings", settings):
+            with self.assertRaisesRegex(ValueError, "request failed"):
+                bili._run_owned_loop(request())
+        self.assertEqual(pools["test"], {})
+        self.assertEqual(settings["test"], {})
+        client.close.assert_awaited_once()
+
+    def test_run_does_not_retry_coroutine_runtime_errors(self):
+        async def request():
+            raise RuntimeError("request failed")
+
+        with self.assertRaisesRegex(RuntimeError, "request failed"):
+            bili._run(request())
+
+    def test_run_from_running_loop_uses_separate_loop(self):
+        async def caller():
+            caller_loop = asyncio.get_running_loop()
+
+            async def request():
+                self.assertIsNot(asyncio.get_running_loop(), caller_loop)
+                return "result"
+
+            self.assertEqual(bili._run(request()), "result")
+            self.assertFalse(caller_loop.is_closed())
+
+        asyncio.run(caller())
+
+    def test_owned_loop_closes_other_clients_when_one_close_fails(self):
+        from bilibili_api.utils import network
+
+        first = SimpleNamespace(close=AsyncMock(side_effect=OSError("close failed")))
+        second = SimpleNamespace(close=AsyncMock())
+        pools = {"first": {}, "second": {}}
+        settings = {"first": {}, "second": {}}
+
+        async def request():
+            loop = asyncio.get_running_loop()
+            pools["first"][loop] = first
+            pools["second"][loop] = second
+
+        with patch.object(network, "session_pool", pools), \
+                patch.object(network, "lazy_settings", settings):
+            with self.assertRaisesRegex(OSError, "close failed"):
+                bili._run_owned_loop(request())
+        self.assertTrue(all(not pool for pool in pools.values()))
+        first.close.assert_awaited_once()
+        second.close.assert_awaited_once()
+
     def test_get_user_avatar_normalizes_trusted_profile_face(self):
         profile = {"face": "http://i0.hdslb.com/bfs/face/avatar.png"}
         api_user = Mock()

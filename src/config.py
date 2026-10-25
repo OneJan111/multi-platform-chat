@@ -48,6 +48,23 @@ INDEX_TRANSLATE_API_BASE: str = os.getenv(
     "INDEX_TRANSLATE_API_BASE", "https://index-translate.bilibili.com/v1"
 ).strip().rstrip("/")
 INDEX_TRANSLATE_MODEL: str = os.getenv("INDEX_TRANSLATE_MODEL", "Index-Translate-35B-A3B").strip()
+TRANSLATION_PROVIDER: str = os.getenv("TRANSLATION_PROVIDER", "index").strip().lower()
+if TRANSLATION_PROVIDER == "lm_studio":
+    TRANSLATION_PROVIDER = "openai_compatible"
+if TRANSLATION_PROVIDER not in ("index", "openai_compatible", "google"):
+    raise ValueError("TRANSLATION_PROVIDER must be 'index', 'openai_compatible', or 'google'")
+OPENAI_COMPATIBLE_TRANSLATE_API_BASE: str = os.getenv(
+    "OPENAI_COMPATIBLE_TRANSLATE_API_BASE",
+    os.getenv("LM_STUDIO_TRANSLATE_API_BASE", "http://localhost:1234/v1"),
+).strip().rstrip("/")
+OPENAI_COMPATIBLE_TRANSLATE_MODEL: str = os.getenv(
+    "OPENAI_COMPATIBLE_TRANSLATE_MODEL",
+    os.getenv("LM_STUDIO_TRANSLATE_MODEL", "local-model"),
+).strip()
+OPENAI_COMPATIBLE_TRANSLATE_API_KEY: str = os.getenv(
+    "OPENAI_COMPATIBLE_TRANSLATE_API_KEY",
+    os.getenv("LM_STUDIO_TRANSLATE_API_KEY", ""),
+).strip()
 
 # YouTube
 YOUTUBE_API_KEY: str = os.getenv("YOUTUBE_API_KEY", "")
@@ -73,6 +90,7 @@ OVERLAY_PUBLIC_URL: str = os.getenv("OVERLAY_PUBLIC_URL", "").strip().rstrip("/"
 
 # App
 ANALYTICS_ENABLED: bool = os.getenv("ANALYTICS_ENABLED", "false").strip().lower() == "true"
+MEMORY_TRACE_ENABLED: bool = os.getenv("MEMORY_TRACE_ENABLED", "false").strip().lower() == "true"
 TRANSCRIPTION_ENABLED: bool = os.getenv("TRANSCRIPTION_ENABLED", "false").strip().lower() == "true"
 TTS_USE_GTTS: bool = os.getenv("TTS_USE_GTTS", "false").lower() == "true"
 TTS_QUEUE_LIMIT: int = int(os.getenv("TTS_QUEUE_LIMIT", "20"))
@@ -97,6 +115,22 @@ CHAT_POLL_INTERVAL: int = int(os.getenv("CHAT_POLL_INTERVAL", "5"))
 ROOM_STATUS_POLL_INTERVAL: int = int(os.getenv("ROOM_STATUS_POLL_INTERVAL", "60"))
 if ROOM_STATUS_POLL_INTERVAL < 1:
     raise ValueError("ROOM_STATUS_POLL_INTERVAL must be at least 1 second")
+
+
+def _positive_interval_setting(name: str, default: str) -> int:
+    try:
+        value = int(os.getenv(name, default))
+    except ValueError as exc:
+        raise ValueError(f"{name} must be a positive integer number of seconds") from exc
+    if value < 1:
+        raise ValueError(f"{name} must be at least 1 second")
+    return value
+
+
+SIMPLE_CHAT_POLL_INTERVAL: int = _positive_interval_setting("SIMPLE_CHAT_POLL_INTERVAL", "15")
+SIMPLE_STATUS_POLL_INTERVAL: int = _positive_interval_setting(
+    "SIMPLE_STATUS_POLL_INTERVAL", str(ROOM_STATUS_POLL_INTERVAL)
+)
 MAX_CHAT_DISPLAY: int = int(os.getenv("MAX_CHAT_DISPLAY", "50"))
 if not 10 <= MAX_CHAT_DISPLAY <= 200:
     raise ValueError("MAX_CHAT_DISPLAY must be between 10 and 200")

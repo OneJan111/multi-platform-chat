@@ -25,13 +25,26 @@ class RoomStatusConfigTests(unittest.TestCase):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 self.load_interval(value)
 
-    def test_status_fragment_and_caches_use_configured_interval(self):
+    def test_status_and_transcription_have_no_auto_refresh_and_caches_use_interval(self):
         tree = ast.parse((ROOT / "app.py").read_text(encoding="utf-8"))
         functions = {
-            node.name: node for node in tree.body if isinstance(node, ast.FunctionDef)
+            node.name: node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)
         }
+        for name in ("_stream_status", "_panel"):
+            with self.subTest(function=name):
+                decorators = functions[name].decorator_list
+                self.assertTrue(decorators)
+                self.assertTrue(
+                    all(
+                        not any(
+                            keyword.arg == "run_every"
+                            for keyword in decorator.keywords
+                        )
+                        for decorator in decorators
+                        if isinstance(decorator, ast.Call)
+                    )
+                )
         for name, keyword in (
-            ("_stream_status", "run_every"),
             ("_cached_video_status", "ttl"),
             ("_cached_room_info", "ttl"),
             ("_cached_me_room_info", "ttl"),

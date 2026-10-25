@@ -140,14 +140,48 @@ def _run(coro):
     """Run an async coroutine synchronously."""
     try:
         loop = asyncio.get_event_loop()
-        if loop.is_running():
-            import concurrent.futures
-            with concurrent.futures.ThreadPoolExecutor() as pool:
-                future = pool.submit(asyncio.run, coro)
-                return future.result()
-        return loop.run_until_complete(coro)
     except RuntimeError:
-        return asyncio.run(coro)
+        loop = None
+    if loop is not None and not loop.is_closed() and not loop.is_running():
+        return loop.run_until_complete(coro)
+    if loop is not None and loop.is_running():
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor() as pool:
+            return pool.submit(_run_owned_loop, coro).result()
+    return _run_owned_loop(coro)
+
+
+def _run_owned_loop(coro):
+    async def run_and_close_clients():
+        try:
+            return await coro
+        finally:
+            if BILIBILI_LIB_OK:
+                from bilibili_api.utils import network
+
+                loop = asyncio.get_running_loop()
+                # The library caches clients by loop, even after asyncio.run closes it.
+                clients = [
+                    pool.pop(loop)
+                    for pool in network.session_pool.values()
+                    if loop in pool
+                ]
+                for settings in network.lazy_settings.values():
+                    settings.pop(loop, None)
+                try:
+                    results = await asyncio.gather(
+                        *(client.close() for client in clients),
+                        return_exceptions=True,
+                    )
+                    for result in results:
+                        if isinstance(result, BaseException):
+                            raise result
+                finally:
+                    # Allow Windows SSL transports to finish before closing the loop.
+                    if clients:
+                        await asyncio.sleep(0.25)
+
+    return asyncio.run(run_and_close_clients())
 
 
 # ── Room info ──────────────────────────────────────────────────────────────────
@@ -414,7 +448,7 @@ class DanmakuListener:
                 pass
 
     def _run_loop(self):
-        asyncio.run(self._listen())
+        _run_owned_loop(self._listen())
 
     async def _listen(self):
         try:

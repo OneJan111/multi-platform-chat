@@ -51,6 +51,17 @@ class UserLoginTests(unittest.TestCase):
             self.assertEqual(ytw.selected_page_id(), "")
             self.assertTrue(ul.take_changed())
 
+    def test_youtube_channel_selection_persists_and_resets_on_new_login(self):
+        logins = {}
+        with ul.using(logins):
+            ytw.save_login({"SAPISID": "a"})
+            ytw.select_channel("brand-channel")
+            restored = ul.decode(ul.encode(logins))
+            self.assertEqual(restored["youtube_page_id"], "brand-channel")
+
+            ytw.save_login({"SAPISID": "new-account"})
+            self.assertEqual(ytw.selected_page_id(), "")
+
     def test_browser_cookie_round_trip(self):
         logins = {"youtube": {f"c{i}": "v" * 300 for i in range(30)}, "youtube_page_id": "p", "_changed": True}
         token = ul.encode(logins)

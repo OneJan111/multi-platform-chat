@@ -20,7 +20,7 @@ A multilingual dashboard for monitoring **YouTube, Bilibili and MissEvan** live 
 | 🎁 **Gifts & Super Chats** | Gifts (including free gifts), Super Chats, Super Stickers, memberships and paid questions appear in their own column. Known gift prices appear beside each gift; the received total is shown by currency, without converting or combining currencies. YouTube gift memberships show the gifter's purchase ("Gifted 10 memberships") and each recipient ("received a gift membership by …"). Bilibili 🧧 红包 show the sender, price and contents, then the winners when the draw ends. Recipients and winners are listed but not read aloud. Mark each one 🙏 *thanked* (it is greyed out) or *Mark all thanked*. |
 | 👋 **Joins** | On wide screens, viewers entering the room appear in a separate feed under gifts. On narrow screens, only the latest arrival appears as a single line in chat. |
 | 🛡️ **Moderation** | 🚫 on any message blocks that user. Blocked users, keyword & regex filters and allow-lists are saved to `chat_filters.json` and kept after restarts. |
-| 🌐 **Translation** | Start translation from the sidebar to translate chat and live transcription into the selected target language when the detected/source language differs. Supports Chinese (Simplified/Traditional), English, Japanese and Korean. Tries the free Index-Translate service first, then falls back to Google. A built-in streaming glossary overrides machine translations for terms such as *舰长*, *醒目留言*, *上舰* and *弹幕*. |
+| 🌐 **Translation** | Start translation from the sidebar to translate chat and live transcription into the selected target language when the detected/source language differs. Supports Chinese (Simplified/Traditional), English, Japanese and Korean. Choose Index-Translate, an OpenAI-compatible API (local or hosted), or Google in `.env`; Index-Translate falls back to Google, while the compatible API uses only its configured endpoint. A built-in streaming glossary overrides machine translations for terms such as *舰长*, *醒目留言*, *上舰* and *弹幕*. |
 | 🎙️ **Live transcription** | Transcribe audio from one currently monitored YouTube, Bilibili or MissEvan live stream at a time. While running, the latest three segments appear in a full-width sticky panel above both Chat and Gifts & Super Chats. Audio recognition uses local faster-whisper; the selected model downloads on first use. FFmpeg is required. Transcription is translated into the selected target language when translation is started and the detected language differs. |
 | 🔤 **Reading aids** | In the desktop chat, pinyin / furigana for message text and usernames appears in a tooltip on hover, rather than inline. Super Chat text, gift names and usernames elsewhere can show ruby readings; translations into Japanese get furigana, and Super Chat and gift translations into Chinese get pinyin. |
 | 💾 **Remembered settings** | Your settings (TTS, translation, message order, text size, OBS overlay options, language, time zone, …) are saved in this browser and restored next time. Feed layout adjusts automatically to screen width. Room IDs, stream URLs and chat aren't saved; logins use their own cookie. |
@@ -33,7 +33,9 @@ A multilingual dashboard for monitoring **YouTube, Bilibili and MissEvan** live 
 In the desktop app, all configured rooms continue receiving live chat whether **Allow saving** is checked or not. That checkbox only controls whether chat from the room can be saved to Saved Chat; it does not stop reception, recording, or transcription.
 In the desktop app, the Chat and Gifts / Super Chats panes sit side by side on wider windows. When the window is narrower than 1000 px, Gifts / Super Chats moves above Chat; the minimum window width is 720 px. Drag the splitter above Joins to adjust how much vertical space the Joins feed uses.
 Desktop window size, feed splitter proportions, room selections, send targets and other app preferences are remembered. Active recording, scroll pause and playback are session-only and do not resume automatically.
-The desktop app shows current process RAM and total RAM for its child processes in the status bar. Samples are logged every 10 seconds to `%LOCALAPPDATA%\StreamingDashboard\logs\memory.log` on Windows (or `~/.streaming-dashboard/logs/memory.log` on macOS/Linux); the **Memory log** button opens the log folder. Logs rotate at 5 MB, retaining three backups, and include chat/cache/TTS/transcription collection sizes to help identify what is growing.
+The desktop app shows current process RAM and total RAM for its child processes in the status bar. Samples are logged every 10 seconds to `%LOCALAPPDATA%\StreamingDashboard\logs\memory.log` on Windows (or `~/.streaming-dashboard/logs/memory.log` on macOS/Linux); the **Memory log** button opens the log folder. Logs rotate at 5 MB, retaining three backups, and include chat/cache/TTS/transcription collection sizes to help identify what is growing. Diagnostics also report Qt widget and parent-owned task-bridge counts, pending task callbacks, submitted/completed/failed task totals, offline TTS queue lengths, desktop speech tasks awaiting completion, dropped speech/audio totals, avatar lookup counts, and cumulative feed-row render/reuse/remove counts. RSS changes are recorded both since startup and since the previous sample; Windows private memory is included when available. Startup entries identify the process, Python/Qt versions and TTS limits. Diagnostics version 3 optionally enables Python allocation tracing with `MEMORY_TRACE_ENABLED=true`: each memory sample includes traced bytes and tracer overhead, and a separate `python_allocation_sample` records the top 10 growing source locations once a minute. The first allocation sample is a baseline, and later samples compare against the previous allocation sample. Tracing begins when the desktop memory monitor starts, so earlier allocations and many native allocations are not tracked. Logs contain counts, sizes and (when tracing) source paths/line numbers, not chat text or credentials. No forced garbage collection is performed.
+
+Bilibili diagnostics additionally report `bilibili_http_clients` and `bilibili_http_clients_closed_loops`. Clients on active listener loops are expected; clients on closed loops should remain at zero. Temporary Bilibili request loops close and remove their library-cached HTTP clients before exiting.
 
 ## Requirements
 
@@ -62,6 +64,10 @@ The template only contains placeholder values (`your-…`, `xxx`). **Replace the
 | `YOUTUBE_CHANNEL` | Default YouTube channel link (or stream URL) in the Stream Monitoring tab; click *Start listening* to watch it | `https://www.youtube.com/@Ya-chan` |
 | `BILIBILI_ROOM_ID` | Default Bilibili live room | — |
 | `MISSEVAN_ROOM_ID` | Default MissEvan live room | `869215180` |
+| `TRANSLATION_PROVIDER` | Translation backend: `index`, `openai_compatible`, or `google`. The compatible API mode does not fall back to another provider. | `index` |
+| `OPENAI_COMPATIBLE_TRANSLATE_API_BASE` | OpenAI-compatible chat API base URL (include `/v1`; local LM Studio example: `http://localhost:1234/v1`) | `http://localhost:1234/v1` |
+| `OPENAI_COMPATIBLE_TRANSLATE_MODEL` | Exact model ID accepted by the configured API | `local-model` |
+| `OPENAI_COMPATIBLE_TRANSLATE_API_KEY` | Optional API key; required by most hosted providers and usually blank for local servers | — |
 | `INDEX_TRANSLATE_API_BASE` | Index-Translate OpenAI-compatible API base; set empty to disable it | `https://index-translate.bilibili.com/v1` |
 | `INDEX_TRANSLATE_MODEL` | Index-Translate model | `Index-Translate-35B-A3B` |
 | `OBS_HOST` | OBS WebSocket host | `localhost` |
@@ -71,13 +77,16 @@ The template only contains placeholder values (`your-…`, `xxx`). **Replace the
 | `OVERLAY_PORT` | Chat overlay port | `8502` |
 | `OVERLAY_PUBLIC_URL` | Overlay address shown in the 🎬 OBS tab (e.g. `http://203.0.113.5:8502` or a reverse-proxy URL) | auto |
 | `ANALYTICS_ENABLED` | `false` hides the Analytics page/tab and stops collecting viewer history, activity and hotspot data in both apps | `false` |
+| `MEMORY_TRACE_ENABLED` | Opt-in desktop Python allocation tracing. Adds traced current/peak bytes and tracer overhead to memory samples, plus the top 10 allocation growth locations every 60 seconds. Adds CPU/RAM overhead; restart after changing and disable after diagnosis. | `false` |
 | `TTS_USE_GTTS` | `true` = online gTTS, `false` = offline pyttsx3 | `false` |
 | `TTS_QUEUE_LIMIT` | Offline normal chat/join queue limit; drops oldest waiting message when full | `20` |
 | `TTS_PRIORITY_QUEUE_LIMIT` | Offline gifts / Super Chats queue limit; drops oldest waiting priority message when full | `50` |
 | `TTS_TASK_LIMIT` | Desktop pending and running speech-generation task limit; skips incoming speech when full | `20` |
 | `TTS_AUDIO_QUEUE_LIMIT` | Desktop online audio waiting for playback; drops oldest waiting audio when full | `20` |
+| `SIMPLE_CHAT_POLL_INTERVAL` | Chat polling and feed refresh interval for `simple_app.py` and `simple_server_app.py`, in seconds; minimum `1` | `15` |
+| `SIMPLE_STATUS_POLL_INTERVAL` | Live-status and channel-watch refresh interval for the simple monitors, in seconds; minimum `1` | `60` |
 | `CHAT_POLL_INTERVAL` | Chat refresh interval in seconds | `5` |
-| `ROOM_STATUS_POLL_INTERVAL` | Live-status, title and viewer-count polling interval in seconds for desktop and browser apps, including YouTube channel monitoring. Minimum `1`; restart after changing. Live alerts are triggered when a poll detects a live stream. | `60` |
+| `ROOM_STATUS_POLL_INTERVAL` | Live-status, title and viewer-count polling/cache interval in seconds for desktop status checks and browser status data, including YouTube channel monitoring. Minimum `1`; restart after changing. The main dashboard status and transcription panels no longer have background refresh timers; live alerts are checked when the app reruns. | `60` |
 | `CHAT_TRANSLATION_DISPLAY_MODE` | `immediate` shows chat right away and adds translations when ready; `wait` shows each message when its translation is ready | `immediate` |
 | `LOGIN_SECRET` | Key that encrypts each user's logins in their browser. Changing it logs everyone out | random, in `.login_secret` |
 
@@ -85,7 +94,7 @@ The template only contains placeholder values (`your-…`, `xxx`). **Replace the
 > TTS queue limits must be positive integers; restart after changing. Audio limits count clips, not bytes. Currently playing audio is not included in the waiting queue.
 > For Streamlit Community Cloud, set `LOGIN_SECRET = "your-long-random-secret"` in the app's **Secrets** settings. Locally, you can put the same TOML entry in `.streamlit/secrets.toml`. The `.env`/environment value takes precedence; if neither is set, the app generates `.login_secret`.
 >
-> Translation tries Index-Translate first and automatically falls back to Google. Set `INDEX_TRANSLATE_API_BASE=` to disable Index-Translate and use Google directly. The built-in streaming glossary protects known terms from being changed by either translator. Translation sends chat text to the provider; use the translation toggle only if you are comfortable with that.
+> By default, translation tries Index-Translate first and automatically falls back to Google. Set `TRANSLATION_PROVIDER=openai_compatible` to use an OpenAI-compatible chat-completions API such as LM Studio or a hosted model provider. Configure its API base URL, exact model ID, and (when required) API key using `OPENAI_COMPATIBLE_TRANSLATE_API_BASE`, `OPENAI_COMPATIBLE_TRANSLATE_MODEL`, and `OPENAI_COMPATIBLE_TRANSLATE_API_KEY`. For hosted APIs, chat text leaves your machine and is sent only to that configured API; it is never sent to a fallback provider. Existing `LM_STUDIO_TRANSLATE_*` settings are still accepted if their generic equivalents are unset.
 
 ## Running
 
@@ -106,7 +115,8 @@ Then open <http://localhost:8501>. To use it from a tablet on the same network, 
 
 On Windows you can double-click [Start_Desktop.bat](Start_Desktop.bat) instead. It uses the project's `.venv` when available, otherwise Python on `PATH`.
 
-- **Monitoring / Cookies**: add any number of YouTube channels, Bilibili rooms and MissEvan rooms. A YouTube channel monitor follows the channel's live page, including its nearest scheduled stream, and starts reading that stream's chat when it goes live. Each room shows as a card (3 per row) with live state, title and viewers, and can be switched on or off. On first launch the rooms in `.env` (`YOUTUBE_CHANNEL`, `BILIBILI_ROOM_ID`, `MISSEVAN_ROOM_ID`) are added. Optional live notifications show the channel, stream title and preview image, with a button to open the live stream. Cookie import for sending chat is on the same tab.
+- **Monitoring / Cookies**: add any number of YouTube channels, Bilibili rooms and MissEvan rooms. A YouTube channel monitor follows the channel's live page, including its nearest scheduled stream, and starts reading that stream's chat when it goes live. Each room shows as a card (3 per row) with live state, title and viewers, and can be switched on or off. On first launch the rooms in `.env` (`YOUTUBE_CHANNEL`, `BILIBILI_ROOM_ID`, `MISSEVAN_ROOM_ID`) are added. Optional live notifications show the channel, stream title and preview image, with a button to open the live stream. Cookie import for sending chat is on the same tab. In the Cookies section, click **Find accounts** to discover YouTube accounts and channels available to the imported login, then choose which identity to use for chat.
+- **Incremental desktop updates**: chat rows are retained while unchanged, preserving text selection as new messages arrive. Only new or changed rows (including translations, loaded images and membership updates) are rendered again; expired messages are removed. Join entries and monitoring labels update only when their displayed content changes. Polling does not rebuild the whole desktop UI.
 - **Chat**: pick one monitored room per site to show; sending also goes to that room. Click a chat message or gift to pause that feed's auto-scroll while new messages continue to arrive; click the same message again to clear its selection and resume scrolling. Hover a message for its actions (Read, Block, Thank, …) and, when reading aids are enabled, pinyin / furigana for both the message and username. Chat, gifts / Super Chats and room joins have their own panels, with emotes, stickers and member badges as images and optional translation. **Skip speech** skips the currently playing item; **Clear all speech** stops playback and removes the queued speech.
 - **Saved Chat**: regular chat and gifts / paid messages from every room with **Allow saving** enabled are appended directly to that room's archive file, including rooms not currently selected in Chat. Joins are not archived. Browse saved rooms by channel name with readable times, reload them later, or delete them. Files are kept under `%LOCALAPPDATA%\StreamingDashboard\chat_archive` on Windows.
 - **Live recording**: enable **Monitor** for a YouTube, Bilibili or MissEvan room, then switch **Record** on to arm recording. If the room is offline, recording starts automatically when it goes live; switch **Record** off to disarm or stop immediately. Recording stops when the room goes offline. YouTube and MissEvan streams are saved as MKV; Bilibili streams are saved as FLV (modelled on [BililiveRecorder](https://github.com/BililiveRecorder/BililiveRecorder)). Choose the save folder under **Recording settings**. FFmpeg is required; YouTube recording resolves streams with yt-dlp. Bilibili can also save danmaku / Super Chats / gifts to an XML file.
@@ -126,7 +136,16 @@ For a minimal monitor that automatically watches only the platforms configured i
 .\.venv\Scripts\python.exe -m streamlit run simple_app.py
 ```
 
-The simple monitor keeps translation and browser-based text-to-speech controls in its sidebar.
+The simple monitor keeps translation and browser-based text-to-speech controls in its sidebar. Chat and gift cards show each user's avatar when available and fall back to an initial.
+Status checks continue while all configured channels are offline, then stop after any channel goes live; chat and gift updates continue. Restart the monitor to resume status checks.
+
+To retain the full chat and gift history in memory for as long as the Streamlit server is running, use:
+
+```powershell
+.\.venv\Scripts\python.exe -m streamlit run simple_server_app.py
+```
+
+After opening the app once, background polling continues if all browser sessions disconnect. Status checks stop after any configured channel goes live; chat collection for the live room continues. Restart the server to resume status checks. History is shared by browser sessions connected to that server and cleared when the server stops.
 
 Configure its new-session defaults in `.env` (see `env.template`):
 
@@ -189,7 +208,7 @@ Sending to YouTube with browser cookies is unofficial (it works like youtube.com
 - In the desktop app, right-click a chat or gift to open its actions (Block, Read, Copy, and any room-specific actions) in a popup without changing the chat row height.
 - On narrow screens, the separate Joins controls and feed are hidden; the latest arrival appears as one line in chat.
 - The YouTube / Bilibili / MissEvan checkboxes above the feeds show or hide each site's messages.
-- Only the live Chat feed refreshes every `CHAT_POLL_INTERVAL` seconds (default 5); other tabs and controls are not re-run by the polling timer. *Max messages displayed* in the sidebar limits how many chat lines are kept on screen.
+- Only the Chat tab's chat/gift feed fragment has a background refresh timer (`CHAT_POLL_INTERVAL`, default 5 seconds). Status and transcription panels update on user interaction or a normal app rerun; live alerts are not checked in the background. Other tabs and controls are not re-run by the chat timer. *Max messages displayed* in the sidebar limits how many chat lines are kept on screen.
 - *🗑️ Clear chat history* (sidebar) empties Chat and Joins but keeps Gifts & Super Chats, so nobody you still need to thank is lost.
 
 ### Gifts & Super Chats
@@ -205,7 +224,7 @@ Chat is displayed without waiting for translation requests. Translated text is a
 
 Experimental live transcription is hidden by default. Set `TRANSCRIPTION_ENABLED=true` in `.env` and restart the dashboard to show its navigation entry and live preview. Set it to `false` to hide it again; chat translation remains available.
 
-Choose a target language and turn on **Start translation** in the sidebar. While enabled, chat and transcription in a different language are translated into that target. The app tries Index-Translate first and uses Google Translate if Index-Translate is unavailable or returns an invalid response. Known streaming terms (for example *舰长*, *醒目留言*, *上舰* and *弹幕*) use the built-in glossary overrides instead of a machine-translated term. Set `INDEX_TRANSLATE_API_BASE=` in `.env` to disable Index-Translate and use Google directly. Chat and transcription text sent for translation is shared with the translation provider.
+Choose a target language and turn on **Start translation** in the sidebar. While enabled, chat and transcription in a different language are translated into that target. The default provider tries Index-Translate first and uses Google Translate if it is unavailable or returns an invalid response. To use LM Studio or a hosted OpenAI-compatible provider, set `TRANSLATION_PROVIDER=openai_compatible` and configure `OPENAI_COMPATIBLE_TRANSLATE_API_BASE`, `OPENAI_COMPATIBLE_TRANSLATE_MODEL`, and, if required, `OPENAI_COMPATIBLE_TRANSLATE_API_KEY`. For hosted APIs, text is sent only to the configured service, with no other cloud fallback. Known streaming terms (for example *舰长*, *醒目留言*, *上舰* and *弹幕*) use built-in glossary overrides instead of machine-translated terms.
 
 ### Blocking users
 

@@ -58,6 +58,9 @@ class DesktopTtsQueueLimitTests(unittest.TestCase):
             statusBar=Mock(return_value=Mock()),
             _task_bridges=[],
         )
+        window._tts_task_finished = lambda: (
+            desktop_app._DesktopWindow._tts_task_finished(window)
+        )
         function, callback = Mock(), Mock()
         desktop_app._DesktopWindow._run_tts_task(window, function, callback)
         desktop_app._DesktopWindow._run_tts_task(window, function, callback)
@@ -65,7 +68,7 @@ class DesktopTtsQueueLimitTests(unittest.TestCase):
         window.statusBar().showMessage.assert_called_once()
         release = window._run_task.call_args.kwargs["on_finished"]
         desktop_app._DesktopWindow._task_finished(
-            window, object(), b"audio", None, callback, release
+            window, Mock(), b"audio", None, callback, release
         )
         callback.assert_called_once_with(b"audio")
         desktop_app._DesktopWindow._run_tts_task(window, function, callback)
@@ -76,7 +79,7 @@ class DesktopTtsQueueLimitTests(unittest.TestCase):
         slots.acquire()
         window = SimpleNamespace(_task_bridges=[], _show_error=Mock())
         desktop_app._DesktopWindow._task_finished(
-            window, object(), None, ValueError("failed"), None, slots.release
+            window, Mock(), None, ValueError("failed"), None, slots.release
         )
         self.assertTrue(slots.acquire(blocking=False))
         window._show_error.assert_called_once()
