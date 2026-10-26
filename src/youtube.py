@@ -127,6 +127,7 @@ def get_video_live_status(video_id: str) -> dict:
         "video_id": video_id,
         "title": snippet.get("title", ""),
         "channel": snippet.get("channelTitle", ""),
+        "channel_id": snippet.get("channelId", ""),
         # "live" | "upcoming" | "none" (ended streams and normal videos report "none")
         "broadcast": snippet.get("liveBroadcastContent", "none"),
         "is_stream": bool(details),

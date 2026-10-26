@@ -6,7 +6,7 @@ import unittest
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import desktop_app
 from src import youtube_recorder
@@ -29,6 +29,44 @@ class _YoutubeDL:
 
 
 class YouTubeSourceTests(unittest.TestCase):
+    def test_record_toggle_persists_enabled_state(self):
+        settings = Mock()
+        settings.status.return_value = (
+            desktop_app.QtCore.QSettings.Status.NoError
+        )
+        window = SimpleNamespace(
+            _monitor_targets=[{
+                "id": "youtube:channel",
+                "platform": "youtube",
+                "target": "https://youtube.com/@channel",
+            }],
+            _record_enabled_ids=set(),
+            _settings=settings,
+            _live_states={},
+            _stop_recording=Mock(),
+            _show_error=Mock(),
+        )
+        window._save_record_enabled_ids = lambda: (
+            desktop_app._DesktopWindow._save_record_enabled_ids(window)
+        )
+
+        desktop_app._DesktopWindow._set_recording(
+            window, "youtube:channel", True
+        )
+        self.assertIn("youtube:channel", window._record_enabled_ids)
+        settings.setValue.assert_called_with(
+            "record_enabled_ids", ["youtube:channel"]
+        )
+        settings.sync.assert_called_once_with()
+
+        settings.reset_mock()
+        desktop_app._DesktopWindow._set_recording(
+            window, "youtube:channel", False
+        )
+        self.assertNotIn("youtube:channel", window._record_enabled_ids)
+        settings.setValue.assert_called_once_with("record_enabled_ids", [])
+        settings.sync.assert_called_once_with()
+
     def test_resolves_muxed_stream_and_headers(self):
         class YoutubeDL(_YoutubeDL):
             info = {

@@ -17,11 +17,8 @@ __pycache__/
 node_modules/
 
 # Rust
+/rust-desktop/
 /rust-desktop/target/
-/rust-desktop/src/
-Start_Rust_Desktop.bat
-rust-desktop/Cargo.lock
-rust-desktop/Cargo.toml
 
 # Desktop app Bilibili recordings
 /recordings/

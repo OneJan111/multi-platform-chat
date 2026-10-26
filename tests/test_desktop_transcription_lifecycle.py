@@ -24,6 +24,8 @@ class TranscriptionLifecycleTests(unittest.TestCase):
         }
         window = SimpleNamespace(
             _monitor_cards={monitor_id: {
+                "widget": Mock(),
+                "unload_stream": Mock(),
                 "title": Mock(), "stream_title": Mock(), "detail": Mock(),
                 "connection": Mock(),
             }},
@@ -66,7 +68,9 @@ class TranscriptionLifecycleTests(unittest.TestCase):
                   "target": "123", "enabled": False}
         window = SimpleNamespace(
             _monitor_cards={monitor_id: {
-                "title": Mock(), "stream_title": Mock(), "detail": Mock(),
+                "widget": Mock(), "title": Mock(), "stream_title": Mock(),
+                "detail": Mock(),
+                "unload_stream": Mock(),
                 "connection": Mock(),
             }},
             _monitor_targets=[target], _room_names={}, _room_titles={},
@@ -78,18 +82,124 @@ class TranscriptionLifecycleTests(unittest.TestCase):
             config=SimpleNamespace(ANALYTICS_ENABLED=False),
             i18n=SimpleNamespace(translate=lambda text, language, **kwargs: text),
         )
-        statuses = {monitor_id: {"live": True}}
+        statuses = {monitor_id: {
+            "live": True,
+            "parent_area_name": "手游",
+            "area_name": "原神",
+        }}
 
         desktop_app._DesktopWindow._update_statuses(window, statuses)
         desktop_app._DesktopWindow._update_statuses(window, statuses)
 
         window._begin_transcription.assert_called_once_with(target)
+        for key in ("widget", "title", "stream_title", "detail"):
+            window._monitor_cards[monitor_id][key].setToolTip.assert_called_with(
+                "ID 123\nZone: 手游 / 原神"
+            )
         desktop_app._DesktopWindow._update_statuses(
             window, {monitor_id: {"live": False}}
         )
         window._transcriber.stop.assert_called_once_with()
         self.assertEqual(window._transcription_armed_id, monitor_id)
         self.assertEqual(window._viewer_samples, [])
+
+    def test_missevan_room_statistics_are_shown_in_monitor_tooltip(self):
+        monitor_id = "missevan:869215180"
+        card = {
+            "widget": Mock(),
+            "title": Mock(),
+            "stream_title": Mock(),
+            "detail": Mock(),
+            "connection": Mock(),
+            "unload_stream": Mock(),
+        }
+        window = SimpleNamespace(
+            _combined_monitor_ids={},
+            _monitor_cards={monitor_id: card},
+            _monitor_targets=[{
+                "id": monitor_id,
+                "platform": "missevan",
+                "target": "869215180",
+                "enabled": True,
+            }],
+            _room_names={},
+            _room_titles={},
+            _live_states={},
+            _transcription_armed_id=None,
+            _record_enabled_ids=set(),
+            _recorders={},
+            _worker=None,
+            _viewer_samples=[],
+            _ui_language="en",
+            _refresh_chat_room_selectors=Mock(),
+            _refresh_transcription_rooms=Mock(),
+            _refresh_archive_session_labels=Mock(),
+            config=SimpleNamespace(ANALYTICS_ENABLED=False),
+            notify_live_check=Mock(),
+            _notify_live_stream=Mock(),
+            live_status=Mock(),
+            i18n=SimpleNamespace(
+                translate=lambda text, language, **kwargs: text.format(**kwargs)
+            ),
+        )
+
+        desktop_app._DesktopWindow._update_statuses(window, {
+            monitor_id: {
+                "live": True,
+                "room_name": "Ya",
+                "viewers": 0,
+                "attention_count": 5128,
+                "vip": 21,
+                "score": 2574,
+                "revenue": 34195,
+            },
+        })
+
+        expected_tooltip = (
+            "ID 869215180 · 0 viewers\n"
+            "Attention count: 5128\n"
+            "VIP: 21\n"
+            "Score / popularity: 2574\n"
+            "Revenue: 34195"
+        )
+        for key in ("widget", "title", "stream_title", "detail"):
+            card[key].setToolTip.assert_called_once_with(expected_tooltip)
+
+    def test_unload_stream_removes_stream_target_but_keeps_channel(self):
+        channel_id = "youtube:channel"
+        stream_id = "youtube:AbCdEf12345"
+        channel = {
+            "id": channel_id, "platform": "youtube",
+            "target": "https://www.youtube.com/@channel", "enabled": True,
+        }
+        stream = {
+            "id": stream_id, "platform": "youtube",
+            "target": "https://www.youtube.com/watch?v=AbCdEf12345", "enabled": True,
+        }
+        worker = Mock()
+        window = SimpleNamespace(
+            _combined_monitor_ids={stream_id: (channel_id,)},
+            _monitor_targets=[channel, stream],
+            _recorders={stream_id: Mock()},
+            _record_enabled_ids={channel_id, stream_id},
+            _worker=worker,
+            _stop_recording=Mock(),
+            _save_record_enabled_ids=Mock(),
+            _save_monitor_targets=Mock(),
+            _refresh_monitor_cards=Mock(),
+            _refresh_chat_room_selectors=Mock(),
+            _refresh_transcription_rooms=Mock(),
+            _refresh_feeds=Mock(),
+        )
+
+        desktop_app._DesktopWindow._unload_youtube_stream(window, channel_id)
+
+        self.assertEqual(window._monitor_targets, [channel])
+        self.assertEqual(window._record_enabled_ids, {channel_id})
+        self.assertNotIn(stream_id, window._recorders)
+        window._stop_recording.assert_called_once_with(stream_id)
+        worker.update_targets.assert_called_once_with([channel])
+        window._save_monitor_targets.assert_called_once_with()
 
     def test_poll_keeps_previous_sessions_and_appends_new_text_after_clear(self):
         old_worker = Mock()

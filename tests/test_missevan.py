@@ -215,7 +215,12 @@ class MissEvanSendTests(unittest.TestCase):
                 "room_id": 869215180,
                 "cover_url": "https://static.maoercdn.com/fmcovers/room.jpg",
                 "status": {},
-                "statistics": {},
+                "statistics": {
+                    "attention_count": 5128,
+                    "vip": 21,
+                    "score": 2574,
+                    "revenue": 34195,
+                },
             }},
         }
         get.return_value = response
@@ -223,6 +228,10 @@ class MissEvanSendTests(unittest.TestCase):
         info = missevan.get_room_info("869215180")
 
         self.assertEqual(info["cover"], "https://static.maoercdn.com/fmcovers/room.jpg")
+        self.assertEqual(info["attention_count"], 5128)
+        self.assertEqual(info["vip"], 21)
+        self.assertEqual(info["score"], 2574)
+        self.assertEqual(info["revenue"], 34195)
 
     @patch("src.missevan._session")
     @patch("src.missevan.login_cookies", return_value={"token": "test"})
@@ -285,6 +294,20 @@ class MissEvanSendTests(unittest.TestCase):
         self.assertEqual(
             listener.messages[0]["sticker_url"], "https://static.maoercdn.com/sticker.png"
         )
+
+    def test_room_statistics_event_updates_listener_online_count(self):
+        listener = MissEvanListener.__new__(MissEvanListener)
+        listener.room_id = "869215180"
+        listener.online = None
+
+        listener._handle({
+            "room_id": 869215180,
+            "type": "room",
+            "event": "statistics",
+            "statistics": {"online": 18},
+        })
+
+        self.assertEqual(listener.online, 18)
 
     def test_incoming_sticker_rejects_untrusted_image_url(self):
         listener = MissEvanListener.__new__(MissEvanListener)

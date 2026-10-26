@@ -19,7 +19,7 @@ import sys
 import tempfile
 import threading
 import time
-from collections import Counter, defaultdict
+from collections import Counter, OrderedDict, defaultdict
 from datetime import datetime, timezone
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -52,10 +52,145 @@ def _monitor_card_columns(width: int) -> int:
     return 3
 
 
+def _bilibili_zone(parent_area_name: str, area_name: str) -> str:
+    parent = str(parent_area_name or "").strip()
+    area = str(area_name or "").strip()
+    if parent and area and parent != area:
+        return f"{parent} / {area}"
+    return area or parent
+
+
 def _youtube_channel_video_id(info: dict) -> str:
     if info.get("live") or info.get("upcoming"):
         return str(info.get("video_id", ""))
     return ""
+
+
+def _youtube_channel_for_video(info: dict) -> str:
+    channel_id = str(info.get("channel_id") or "").strip()
+    if not channel_id.startswith("UC") or len(channel_id) != 24:
+        return ""
+    from src import youtube_web
+
+    return youtube_web.channel_url(f"https://www.youtube.com/channel/{channel_id}")
+
+
+def _youtube_direct_stream_finished(info: dict, fallback_channel: str) -> bool:
+    return bool(info.get("ended") and fallback_channel)
+
+
+def _youtube_monitor_groups(
+    targets: list[dict], statuses: dict[str, dict]
+) -> dict[str, tuple[str, ...]]:
+    from src import youtube, youtube_web
+
+    video_targets = {}
+    channel_targets = {}
+    for entry in targets:
+        if entry.get("platform") != "youtube":
+            continue
+        monitor_id = str(entry.get("id") or "")
+        target = str(entry.get("target") or "")
+        video_id = youtube.extract_video_id(target)
+        if video_id:
+            video_targets[monitor_id] = video_id
+        elif youtube_web.channel_url(target):
+            channel_targets[monitor_id] = True
+
+    groups = {}
+    for video_monitor_id, video_id in video_targets.items():
+        matches = tuple(
+            channel_monitor_id
+            for channel_monitor_id in channel_targets
+            if statuses.get(video_monitor_id, {}).get("video_id") == video_id
+            and statuses.get(channel_monitor_id, {}).get("video_id") == video_id
+        )
+        if matches:
+            groups[video_monitor_id] = matches
+    return groups
+
+
+def _related_monitor_ids(window, monitor_id: str) -> set[str]:
+    groups = getattr(window, "_combined_monitor_ids", {})
+    related = {monitor_id}
+    for primary, secondary_ids in groups.items():
+        if monitor_id == primary or monitor_id in secondary_ids:
+            related.add(primary)
+            related.update(secondary_ids)
+    return related
+
+
+def _youtube_channel_stream_map(
+    groups: dict[str, tuple[str, ...]]
+) -> dict[str, str]:
+    return {
+        channel_id: video_id
+        for video_id, channel_ids in groups.items()
+        for channel_id in channel_ids
+    }
+
+
+def _two_row_group_height(group_height: int, list_height: int, row_height: int) -> int:
+    group_overhead = max(0, group_height - list_height)
+    return group_overhead + 2 * max(1, row_height)
+
+
+def _missevan_viewer_count(api_count, listener_count):
+    return api_count if listener_count is None else listener_count
+
+
+def _archive_monitor_target(
+    message: dict, monitor_targets: list[dict], groups: dict[str, tuple[str, ...]]
+) -> dict | None:
+    entry = _monitored_target_for_message(message, monitor_targets)
+    if not entry or entry.get("platform") != "youtube":
+        return entry
+    monitor_id = str(message.get("_monitor_id") or "")
+    channel_ids = groups.get(monitor_id, ())
+    if not channel_ids:
+        return entry
+    return next(
+        (
+            target for target in monitor_targets
+            if target.get("id") in channel_ids
+            and target.get("platform") == "youtube"
+            and target.get("enabled")
+        ),
+        entry,
+    )
+
+
+def _dedupe_combined_monitor_messages(
+    messages: list[dict],
+    groups: dict[str, tuple[str, ...]],
+    seen: OrderedDict,
+    limit: int = 4000,
+) -> list[dict]:
+    group_for_monitor = {}
+    for primary, secondary_ids in groups.items():
+        canonical_id = secondary_ids[0] if secondary_ids else primary
+        group_for_monitor[primary] = canonical_id
+        group_for_monitor.update({
+            monitor_id: canonical_id for monitor_id in secondary_ids
+        })
+
+    result = []
+    for message in messages:
+        primary = group_for_monitor.get(str(message.get("_monitor_id") or ""))
+        message_id = str(message.get("id") or "")
+        if not primary or not message_id:
+            result.append(message)
+            continue
+        message = dict(message)
+        message["_monitor_id"] = primary
+        key = (primary, str(message.get("platform") or ""), message_id)
+        if key in seen:
+            continue
+        seen[key] = None
+        result.append(message)
+    while len(seen) > limit:
+        seen.popitem(last=False)
+    return result
 
 
 def _saved_splitter_sizes(settings, key: str, defaults: list[int]) -> list[int]:
@@ -67,6 +202,17 @@ def _saved_splitter_sizes(settings, key: str, defaults: list[int]) -> list[int]:
     ):
         return defaults
     return sizes
+
+
+def _saved_record_enabled_ids(settings, monitor_ids: set[str]) -> set[str]:
+    saved = settings.value("record_enabled_ids", [], type=list)
+    if not isinstance(saved, list):
+        return set()
+    return {
+        monitor_id
+        for monitor_id in saved
+        if isinstance(monitor_id, str) and monitor_id in monitor_ids
+    }
 
 
 def _memory_log_path() -> Path:
@@ -1649,14 +1795,31 @@ if QtCore is not None:
                         status["platform"] = platform
                         status["target"] = value
                         if platform == "youtube":
+                            video_id = youtube.extract_video_id(value)
+                            channel = youtube_web.channel_url(value)
                             state = self._youtube.setdefault(monitor_id, {
+                                "target": value,
+                                "mode": "video" if video_id else "channel",
+                                "fallback_channel": "",
                                 "video_id": "",
                                 "chat_id": "",
                                 "page_token": "",
                                 "backlog_loaded": False,
                             })
-                            video_id = youtube.extract_video_id(value)
-                            channel = youtube_web.channel_url(value)
+                            if state.get("target") != value:
+                                state.clear()
+                                state.update(
+                                    target=value,
+                                    mode="video" if video_id else "channel",
+                                    fallback_channel="",
+                                    video_id="",
+                                    chat_id="",
+                                    page_token="",
+                                    backlog_loaded=False,
+                                )
+                            if state["mode"] == "channel" and state["fallback_channel"]:
+                                channel = state["fallback_channel"]
+                                video_id = ""
                             if not video_id and not channel:
                                 status["connection"] = "Invalid target"
                                 status["error"] = "Enter a YouTube channel, live URL, or 11-character video ID."
@@ -1676,9 +1839,13 @@ if QtCore is not None:
                                     })
                                     if new_video_id != state["video_id"]:
                                         state.update(video_id=new_video_id, chat_id="", page_token="", backlog_loaded=False)
+                                    status["video_id"] = state["video_id"]
                                 else:
                                     with user_login.using(login_data):
                                         info = youtube.get_video_live_status(video_id)
+                                    fallback_channel = _youtube_channel_for_video(info)
+                                    if fallback_channel:
+                                        state["fallback_channel"] = fallback_channel
                                     status.update({
                                         "live": info.get("broadcast") == "live",
                                         "room_name": info.get("channel", "") or status.get("room_name", ""),
@@ -1687,8 +1854,37 @@ if QtCore is not None:
                                         "thumbnail": info.get("thumbnail", ""),
                                         "error": info.get("error", ""),
                                     })
-                                    if video_id != state["video_id"]:
+                                    if _youtube_direct_stream_finished(
+                                        info, state["fallback_channel"]
+                                    ):
+                                        state.update(
+                                            mode="channel",
+                                            video_id="",
+                                            chat_id="",
+                                            page_token="",
+                                            backlog_loaded=False,
+                                        )
+                                        channel = state["fallback_channel"]
+                                        info = youtube_web.find_live_video(channel)
+                                        new_video_id = _youtube_channel_video_id(info)
+                                        status.update({
+                                            "live": bool(info.get("live")),
+                                            "room_name": info.get("channel", "") or status.get("room_name", ""),
+                                            "title": info.get("title", ""),
+                                            "viewers": info.get("viewers", ""),
+                                            "thumbnail": info.get("thumbnail", ""),
+                                            "error": info.get("error", ""),
+                                        })
+                                        if new_video_id:
+                                            state.update(
+                                                video_id=new_video_id,
+                                                chat_id="",
+                                                page_token="",
+                                                backlog_loaded=False,
+                                            )
+                                    elif video_id != state["video_id"]:
                                         state.update(video_id=video_id, chat_id="", page_token="", backlog_loaded=False)
+                                    status["video_id"] = state["video_id"]
                                 if status.get("live") and state["video_id"] and not state["chat_id"]:
                                     with user_login.using(login_data):
                                         state["chat_id"], error = youtube.resolve_live_chat_id(state["video_id"])
@@ -1743,6 +1939,12 @@ if QtCore is not None:
                                     "viewers": info.get("online", info.get("viewers", "")),
                                     "thumbnail": info.get("cover", ""),
                                     "avatar": info.get("face", ""),
+                                    "area_name": info.get("area_name", ""),
+                                    "parent_area_name": info.get("parent_area_name", ""),
+                                    "attention_count": info.get("attention_count", ""),
+                                    "vip": info.get("vip", ""),
+                                    "score": info.get("score", ""),
+                                    "revenue": info.get("revenue", ""),
                                     "error": info.get("error", ""),
                                 })
                             module = bilibili if platform == "bilibili" else missevan
@@ -1755,6 +1957,11 @@ if QtCore is not None:
                                     monitor_id, platform, room_id, module
                                 )
                             if listener:
+                                if platform == "missevan":
+                                    status["viewers"] = _missevan_viewer_count(
+                                        status.get("viewers", ""),
+                                        getattr(listener, "online", None),
+                                    )
                                 if platform == "bilibili":
                                     if listener.connected_uid is not None:
                                         self._listener_errors.pop(monitor_id, None)
@@ -1888,7 +2095,12 @@ if QtCore is not None:
             self._live_states = {}
             self._live_notifications = []
             self._recorders = {}
-            self._record_enabled_ids = set()
+            self._combined_monitor_ids = {}
+            self._combined_chat_seen = OrderedDict()
+            self._record_enabled_ids = _saved_record_enabled_ids(
+                self._settings,
+                {entry["id"] for entry in self._monitor_targets},
+            )
             self._room_titles = {}
             self._viewer_samples = []
             self._restoring_splitter_sizes = False
@@ -1957,9 +2169,13 @@ if QtCore is not None:
             return targets
 
         def _channels_for_platform(self, platform: str, enabled_only: bool = False):
+            combined_children = set(
+                getattr(self, "_combined_monitor_ids", {})
+            )
             return [
                 entry for entry in self._monitor_targets
                 if entry["platform"] == platform
+                and entry["id"] not in combined_children
                 and (entry["enabled"] or not enabled_only)
             ]
 
@@ -1974,9 +2190,8 @@ if QtCore is not None:
 
         def _monitor_target_changed(self, monitor_id: str, enabled: bool):
             for entry in self._monitor_targets:
-                if entry["id"] == monitor_id:
+                if entry["id"] in _related_monitor_ids(self, monitor_id):
                     entry["enabled"] = enabled
-                    break
             self._save_monitor_targets()
             if self._worker:
                 self._worker.update_targets(self._monitor_targets)
@@ -2750,14 +2965,41 @@ if QtCore is not None:
             self.channel_input.clear()
 
         def _remove_monitor_target(self, monitor_id: str):
-            if monitor_id == self._transcription_armed_id:
+            remove_ids = _related_monitor_ids(self, monitor_id)
+            if self._transcription_armed_id in remove_ids:
                 self._stop_transcription()
-            self._stop_recording(monitor_id)
-            self._recorders.pop(monitor_id, None)
-            self._record_enabled_ids.discard(monitor_id)
+            for related_id in remove_ids:
+                self._stop_recording(related_id)
+                self._recorders.pop(related_id, None)
+                self._record_enabled_ids.discard(related_id)
+            self._save_record_enabled_ids()
             self._monitor_targets = [
-                entry for entry in self._monitor_targets if entry["id"] != monitor_id
+                entry for entry in self._monitor_targets
+                if entry["id"] not in remove_ids
             ]
+            self._save_monitor_targets()
+            self._refresh_monitor_cards()
+            self._refresh_chat_room_selectors()
+            self._refresh_transcription_rooms()
+            if self._worker:
+                self._worker.update_targets(self._monitor_targets)
+            self._refresh_feeds()
+
+        def _unload_youtube_stream(self, channel_monitor_id):
+            stream_monitor_id = _youtube_channel_stream_map(
+                getattr(self, "_combined_monitor_ids", {})
+            ).get(channel_monitor_id)
+            if not stream_monitor_id:
+                return
+            self._stop_recording(stream_monitor_id)
+            self._recorders.pop(stream_monitor_id, None)
+            self._record_enabled_ids.discard(stream_monitor_id)
+            self._save_record_enabled_ids()
+            self._monitor_targets = [
+                entry for entry in self._monitor_targets
+                if entry["id"] != stream_monitor_id
+            ]
+            self._combined_monitor_ids = {}
             self._save_monitor_targets()
             self._refresh_monitor_cards()
             self._refresh_chat_room_selectors()
@@ -2837,6 +3079,13 @@ if QtCore is not None:
                     recording.setVisible(False)
                     card_layout.addWidget(recording)
                 controls.addStretch(1)
+                unload_stream = QtWidgets.QPushButton("Unload stream")
+                unload_stream.setVisible(False)
+                unload_stream.clicked.connect(
+                    lambda _, channel_id=entry["id"]:
+                    self._unload_youtube_stream(channel_id)
+                )
+                controls.addWidget(unload_stream)
                 remove = QtWidgets.QPushButton()
                 _set_desktop_widget_text(
                     remove, "Remove", self._ui_language, self.i18n
@@ -2856,6 +3105,7 @@ if QtCore is not None:
                     "monitor": monitor,
                     "record_toggle": record_toggle,
                     "recording": recording,
+                    "unload_stream": unload_stream,
                 }
             self._layout_channel_cards()
             self._apply_theme()
@@ -2888,6 +3138,50 @@ if QtCore is not None:
                 self._update_chat_splitter_layout(self.width())
                 QtCore.QTimer.singleShot(80, self._refresh_feeds)
 
+        def showEvent(self, event):
+            super().showEvent(event)
+            if not getattr(self, "_default_feed_layout_applied", False):
+                self._default_feed_layout_applied = True
+                QtCore.QTimer.singleShot(0, self._apply_default_feed_layout)
+
+        def _apply_default_feed_layout(self):
+            if not self._settings.contains("feed_splitter_sizes"):
+                total = self._feed_splitter.height()
+                if total <= 0:
+                    return
+                join_height = _two_row_group_height(
+                    self._joins_feed_group.sizeHint().height(),
+                    self.joins_list.sizeHint().height(),
+                    self.joins_list.sizeHintForRow(0)
+                    if self.joins_list.count()
+                    else self.joins_list.fontMetrics().height() + 8,
+                )
+                join_height = min(join_height, max(1, total // 2))
+                self._feed_splitter.setSizes(
+                    [max(1, total - join_height), join_height]
+                )
+            if (
+                self._chat_splitter_layout_name == "vertical"
+                and not self._settings.contains("chat_splitter_vertical_sizes")
+            ):
+                self._apply_default_vertical_chat_layout()
+
+        def _apply_default_vertical_chat_layout(self):
+            total = self._chat_splitter.height()
+            if total <= 0:
+                return
+            paid_height = _two_row_group_height(
+                self._paid_feed_group.sizeHint().height(),
+                self.paid_list.sizeHint().height(),
+                self.paid_list.sizeHintForRow(0)
+                if self.paid_list.count()
+                else self.paid_list.fontMetrics().height() + 8,
+            )
+            paid_height = min(paid_height, max(1, total // 2))
+            self._chat_splitter.setSizes(
+                [paid_height, max(1, total - paid_height)]
+            )
+
         def _update_chat_splitter_layout(self, width):
             if not hasattr(self, "_chat_splitter"):
                 return
@@ -2916,6 +3210,11 @@ if QtCore is not None:
             defaults = [2, 3] if layout_name == "vertical" else [3, 2]
             self._restore_splitter_sizes(self._chat_splitter, key, defaults)
             self._restoring_splitter_sizes = False
+            if (
+                layout_name == "vertical"
+                and not self._settings.contains("chat_splitter_vertical_sizes")
+            ):
+                QtCore.QTimer.singleShot(0, self._apply_default_vertical_chat_layout)
 
         def _restore_splitter_sizes(self, splitter, key, defaults):
             splitter.setSizes(
@@ -3630,17 +3929,33 @@ if QtCore is not None:
             entry = next(
                 (t for t in self._monitor_targets if t["id"] == monitor_id), None
             )
+            related_ids = _related_monitor_ids(self, monitor_id)
             if not enabled:
-                self._record_enabled_ids.discard(monitor_id)
-                self._stop_recording(monitor_id)
+                self._record_enabled_ids.difference_update(related_ids)
+                self._save_record_enabled_ids()
+                for related_id in related_ids:
+                    self._stop_recording(related_id)
                 return
             if not entry:
                 self._show_error("Select a configured room before recording.")
                 self._refresh_monitor_cards()
                 return
-            self._record_enabled_ids.add(monitor_id)
+            self._record_enabled_ids.update(related_ids)
+            self._save_record_enabled_ids()
             if self._live_states.get(monitor_id, False):
-                self._start_recording(monitor_id)
+                self._start_recording(
+                    _youtube_channel_stream_map(
+                        getattr(self, "_combined_monitor_ids", {})
+                    ).get(monitor_id, monitor_id)
+                )
+
+        def _save_record_enabled_ids(self):
+            self._settings.setValue(
+                "record_enabled_ids", sorted(self._record_enabled_ids)
+            )
+            self._settings.sync()
+            if self._settings.status() != QtCore.QSettings.Status.NoError:
+                self._show_error("Unable to save recording selections.")
 
         def _start_recording(self, monitor_id):
             from src import bili_recorder, bilibili, missevan, missevan_recorder
@@ -3767,17 +4082,24 @@ if QtCore is not None:
             return ""
 
         def _refresh_recording_status(self):
+            channel_streams = _youtube_channel_stream_map(
+                getattr(self, "_combined_monitor_ids", {})
+            )
             for monitor_id, card in self._monitor_cards.items():
                 label = card.get("recording")
                 if label is None:
                     continue
-                recorder = self._recorders.get(monitor_id)
-                text = self._recording_status_text(monitor_id)
+                recorder_id = channel_streams.get(monitor_id, monitor_id)
+                recorder = self._recorders.get(recorder_id)
+                text = self._recording_status_text(recorder_id)
                 if label.text() != text:
                     label.setText(text)
                 record_toggle = card.get("record_toggle")
                 if record_toggle is not None:
-                    is_armed = monitor_id in self._record_enabled_ids
+                    is_armed = bool(
+                        _related_monitor_ids(self, monitor_id)
+                        & self._record_enabled_ids
+                    )
                     if record_toggle.isChecked() != is_armed:
                         record_toggle.blockSignals(True)
                         record_toggle.setChecked(is_armed)
@@ -3934,6 +4256,19 @@ if QtCore is not None:
             self.statusBar().showMessage("Monitor targets updated.", 5000)
 
         def _update_statuses(self, statuses):
+            self._combined_monitor_ids = _youtube_monitor_groups(
+                self._monitor_targets, statuses
+            )
+            channel_streams = _youtube_channel_stream_map(
+                self._combined_monitor_ids
+            )
+            combined_children = set(self._combined_monitor_ids)
+            for monitor_id, card in self._monitor_cards.items():
+                card["widget"].setVisible(monitor_id not in combined_children)
+                card["unload_stream"].setVisible(
+                    monitor_id in channel_streams
+                )
+
             live_channels = []
             viewers_by_platform = defaultdict(int)
             room_names_changed = False
@@ -3942,8 +4277,11 @@ if QtCore is not None:
                     (target for target in self._monitor_targets if target["id"] == monitor_id),
                     None,
                 )
-                info = statuses.get(monitor_id, {})
+                stream_monitor_id = channel_streams.get(monitor_id, "")
+                info = statuses.get(stream_monitor_id, statuses.get(monitor_id, {}))
                 if not entry:
+                    continue
+                if monitor_id in combined_children:
                     continue
                 room_name = str(info.get("room_name") or "").strip()
                 if room_name and self._room_names.get(monitor_id) != room_name:
@@ -3961,6 +4299,8 @@ if QtCore is not None:
                     pass
                 previous = self._live_states.get(monitor_id)
                 self._live_states[monitor_id] = live
+                if stream_monitor_id:
+                    self._live_states[stream_monitor_id] = live
                 if monitor_id == self._transcription_armed_id:
                     if live and previous is not True:
                         self._begin_transcription(entry)
@@ -3972,22 +4312,47 @@ if QtCore is not None:
                     monitor_id in self._record_enabled_ids,
                 )
                 if recording_action == "start":
-                    self._start_recording(monitor_id)
+                    self._start_recording(stream_monitor_id or monitor_id)
                 elif recording_action == "stop":
-                    self._stop_recording(monitor_id)
+                    self._stop_recording(stream_monitor_id or monitor_id)
                 room_title = str(info.get("title") or "").strip()
                 if room_title:
                     self._room_titles[monitor_id] = room_title
+                    if stream_monitor_id:
+                        self._room_titles[stream_monitor_id] = room_title
+                if stream_monitor_id and room_name:
+                    self._room_names[stream_monitor_id] = room_name
                 card["stream_title"].setFullText(room_title)
                 if previous is not True and live and self.notify_live_check.isChecked():
+                    notification_entry = next(
+                        (
+                            target for target in self._monitor_targets
+                            if target["id"] == stream_monitor_id
+                        ),
+                        entry,
+                    )
                     video_id = (
-                        self._worker._youtube.get(monitor_id, {}).get("video_id", "")
+                        self._worker._youtube.get(
+                            stream_monitor_id or monitor_id, {}
+                        ).get("video_id", "")
                         if entry["platform"] == "youtube" and self._worker else ""
                     )
-                    self._notify_live_stream(entry, info, video_id)
+                    self._notify_live_stream(
+                        notification_entry, info, video_id
+                    )
                 if live:
                     live_channels.append(name)
-                detail = f"ID {entry['target']}"
+                display_target = entry["target"]
+                if stream_monitor_id:
+                    display_target = next(
+                        (
+                            target["target"]
+                            for target in self._monitor_targets
+                            if target["id"] == stream_monitor_id
+                        ),
+                        display_target,
+                    )
+                detail = f"ID {display_target}"
                 if viewers not in ("", None):
                     detail += self.i18n.translate(
                         " · {count} viewers",
@@ -3996,6 +4361,50 @@ if QtCore is not None:
                     )
                 if card["detail"].fullText != detail:
                     card["detail"].setFullText(detail)
+                related_ids = _related_monitor_ids(self, monitor_id)
+                related_targets = [
+                    related["target"]
+                    for related in self._monitor_targets
+                    if related["id"] in related_ids
+                    and related["id"] != monitor_id
+                ]
+                tooltip_lines = [detail]
+                if related_targets:
+                    tooltip_lines.append(
+                        "Also monitoring: " + "\n".join(related_targets)
+                    )
+                if entry["platform"] == "bilibili":
+                    zone = _bilibili_zone(
+                        info.get("parent_area_name", ""),
+                        info.get("area_name", ""),
+                    )
+                    if zone:
+                        tooltip_lines.append(f"Zone: {zone}")
+                elif entry["platform"] == "missevan":
+                    for key, label in (
+                        ("attention_count", "Attention count: {value}"),
+                        ("vip", "VIP: {value}"),
+                        ("score", "Score / popularity: {value}"),
+                        ("revenue", "Revenue: {value}"),
+                    ):
+                        value = info.get(key)
+                        if value not in (None, ""):
+                            tooltip_lines.append(
+                                self.i18n.translate(
+                                    label,
+                                    self._ui_language,
+                                    value=value,
+                                )
+                            )
+                if entry["platform"] in ("bilibili", "missevan") or related_targets:
+                    tooltip = "\n".join(tooltip_lines)
+                    for widget in (
+                        card["widget"],
+                        card["title"],
+                        card["stream_title"],
+                        card["detail"],
+                    ):
+                        widget.setToolTip(tooltip)
                 connection = info.get("connection", "Connecting")
                 _set_desktop_widget_text(
                     card["connection"],
@@ -4037,8 +4446,10 @@ if QtCore is not None:
             for message in messages:
                 if message.get("type") == "enter":
                     continue
-                entry = _monitored_target_for_message(
-                    message, self._monitor_targets
+                entry = _archive_monitor_target(
+                    message,
+                    self._monitor_targets,
+                    getattr(self, "_combined_monitor_ids", {}),
                 )
                 if entry is None:
                     continue
@@ -4090,6 +4501,13 @@ if QtCore is not None:
             from src import gifts, translate
             from src.tts import is_gift, is_paid, is_emoji_only, strip_emoji, format_announcement
 
+            messages = _dedupe_combined_monitor_messages(
+                messages,
+                getattr(self, "_combined_monitor_ids", {}),
+                getattr(self, "_combined_chat_seen", OrderedDict()),
+            )
+            if not messages:
+                return
             if self.config.ANALYTICS_ENABLED:
                 from src import highlights
 
@@ -7044,8 +7462,10 @@ if QtCore is not None:
                 platform = str(msg.get("platform", "")).lower()
                 if platform not in self.target_inputs:
                     continue
-                entry = _monitored_target_for_message(
-                    msg, self._monitor_targets
+                entry = _archive_monitor_target(
+                    msg,
+                    self._monitor_targets,
+                    getattr(self, "_combined_monitor_ids", {}),
                 )
                 if entry is None:
                     continue

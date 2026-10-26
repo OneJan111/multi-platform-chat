@@ -56,6 +56,20 @@ class TranslationCoverageTests(unittest.TestCase):
         self.assertEqual(i18n.translate(label, "zh"), "显示拼音 / 振假名")
         self.assertEqual(i18n.translate(label, "ja"), "ピンイン／振り仮名を表示")
 
+    def test_missevan_room_stat_tooltips_are_localized(self):
+        for label, zh, ja in (
+            ("Attention count: {value}", "关注数：21", "フォロー数：21"),
+            ("VIP: {value}", "贵宾：21", "VIP：21"),
+            ("Score / popularity: {value}", "热度：21", "人気スコア：21"),
+            ("Revenue: {value}", "收益：21", "収益：21"),
+        ):
+            self.assertEqual(
+                i18n.translate(label, "en", value=21),
+                label.format(value=21),
+            )
+            self.assertEqual(i18n.translate(label, "zh", value=21), zh)
+            self.assertEqual(i18n.translate(label, "ja", value=21), ja)
+
     def test_unthanked_filter_is_localized(self):
         label = "Unthanked"
         self.assertEqual(i18n.translate(label, "en"), label)

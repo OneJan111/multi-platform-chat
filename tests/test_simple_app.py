@@ -4,6 +4,7 @@ import unittest
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import Mock
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from src.tts import resolve_language
@@ -465,6 +466,9 @@ class SimpleAppConfigTests(unittest.TestCase):
             "_PLATFORM_NAMES": platforms,
             "_site_icon_uris": lambda: {site: f"data:image/png;base64,{site}" for site in platforms},
             "_source_username": lambda site, info: "Streamer",
+            "_current_viewer_count": lambda site, info, listener=None: info.get(
+                "viewers", info.get("online")
+            ),
             "_t": lambda text, **kwargs: text.format(**kwargs),
         }
         exec(compile(ast.Module(body=[function], type_ignores=[]), "simple_app.py", "exec"), namespace)
@@ -474,6 +478,106 @@ class SimpleAppConfigTests(unittest.TestCase):
                 self.assertIn(f'alt="{label}"', output[-1])
                 self.assertIn("Waiting for Streamer", output[-1])
                 self.assertIn("white-space:nowrap", output[-1])
+
+    def test_live_status_shows_current_viewer_counts(self):
+        source = (ROOT / "simple_app.py").read_text(encoding="utf-8")
+        functions = [
+            node for node in ast.parse(source).body
+            if isinstance(node, ast.FunctionDef)
+            and node.name in {"_current_viewer_count", "_status_line"}
+        ]
+        output = []
+        platforms = {
+            "youtube": "YouTube",
+            "bilibili": "Bilibili",
+            "missevan": "MissEvan",
+        }
+        state = {
+            "simple_yt_error": "",
+            "simple_yt_channel": "channel",
+            "simple_bili_listener": SimpleNamespace(
+                running=True, connected_uid=123,
+            ),
+            "simple_bili_error": "",
+            "simple_me_listener": SimpleNamespace(
+                running=True, connected=True, online=18,
+            ),
+            "simple_me_error": "",
+            "simple_room_status": {
+                "bilibili": {
+                    "live_status": 1, "online": 7, "title": "Bili room",
+                },
+                "missevan": {
+                    "live": True, "online": 0, "title": "MissEvan room",
+                },
+            },
+        }
+        namespace = {
+            "st": SimpleNamespace(
+                session_state=state,
+                markdown=lambda content, **kwargs: output.append(content),
+            ),
+            "html": html,
+            "_PLATFORM_NAMES": platforms,
+            "_site_icon_uris": lambda: {
+                site: f"data:image/png;base64,{site}" for site in platforms
+            },
+            "_source_username": lambda site, info: "Streamer",
+            "_t": lambda text, **kwargs: text.format(**kwargs),
+        }
+        exec(compile(ast.Module(body=functions, type_ignores=[]), "simple_app.py", "exec"), namespace)
+
+        namespace["_status_line"]("youtube", {
+            "live": True, "viewers": 0, "title": "YouTube stream",
+        })
+        self.assertIn("0 viewers", output[-1])
+        namespace["_status_line"]("bilibili", {})
+        self.assertIn("7 viewers", output[-1])
+        state["simple_room_status"]["bilibili"]["online"] = 0
+        namespace["_status_line"]("bilibili", {})
+        self.assertIn("0 viewers", output[-1])
+        namespace["_status_line"]("missevan", {})
+        self.assertIn("18 viewers", output[-1])
+        state["simple_me_listener"].online = None
+        namespace["_status_line"]("missevan", {})
+        self.assertIn("0 viewers", output[-1])
+
+    def test_youtube_channel_refresh_loads_current_live_video_viewers(self):
+        source = (ROOT / "simple_app.py").read_text(encoding="utf-8")
+        function = next(
+            node for node in ast.parse(source).body
+            if isinstance(node, ast.FunctionDef) and node.name == "_refresh_youtube"
+        )
+        live_video = {
+            "live": True,
+            "video_id": "livevideo01",
+            "title": "Current stream",
+        }
+        state = {
+            "simple_last_status": 0.0,
+            "simple_yt_channel": "https://youtube.com/@channel",
+            "simple_yt_video_id": "livevideo01",
+            "simple_yt_chat_id": "existing-chat",
+            "simple_yt_page_token": "",
+            "simple_yt_backlog_loaded": True,
+            "simple_yt_status": {},
+            "simple_yt_error": "",
+        }
+        viewer_lookup = Mock(return_value={"viewers": 42})
+        namespace = {
+            "time": SimpleNamespace(monotonic=lambda: 61.0),
+            "st": SimpleNamespace(session_state=state),
+            "_STATUS_INTERVAL": 60,
+            "ytw": SimpleNamespace(find_live_video=lambda _channel: live_video),
+            "yt": SimpleNamespace(get_video_live_status=viewer_lookup),
+            "_track_live_status": Mock(),
+        }
+        exec(compile(ast.Module(body=[function], type_ignores=[]), "simple_app.py", "exec"), namespace)
+
+        namespace["_refresh_youtube"]()
+
+        viewer_lookup.assert_called_once_with("livevideo01")
+        self.assertEqual(state["simple_yt_status"]["viewers"], 42)
 
     def test_live_notification_only_triggers_on_offline_to_live_transition(self):
         source = (ROOT / "simple_app.py").read_text(encoding="utf-8")

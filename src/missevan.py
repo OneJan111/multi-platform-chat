@@ -414,6 +414,10 @@ def get_room_info(room_id: str) -> dict:
             "live": bool(status.get("open")),
             "online": stats.get("online", 0),
             "followers": stats.get("attention_count", 0),
+            "attention_count": stats.get("attention_count", 0),
+            "vip": stats.get("vip", 0),
+            "score": stats.get("score", 0),
+            "revenue": stats.get("revenue", 0),
             "cover": room.get("cover_url") or room.get("cover", ""),
             "start_time": datetime.fromtimestamp(open_ms / 1000).strftime("%Y-%m-%d %H:%M:%S") if open_ms and status.get("open") else "",
         }

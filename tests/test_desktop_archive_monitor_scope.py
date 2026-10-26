@@ -1,6 +1,6 @@
 import unittest
 
-from desktop_app import _monitored_target_for_message
+from desktop_app import _archive_monitor_target, _monitored_target_for_message
 
 
 class DesktopArchiveMonitorScopeTests(unittest.TestCase):
@@ -61,6 +61,46 @@ class DesktopArchiveMonitorScopeTests(unittest.TestCase):
                     "enabled": True,
                 }],
             )
+        )
+
+    def test_youtube_stream_chat_archives_under_matching_channel(self):
+        channel = {
+            "id": "youtube:channel",
+            "platform": "youtube",
+            "target": "https://www.youtube.com/@channel",
+            "enabled": True,
+        }
+        stream = {
+            "id": "youtube:video",
+            "platform": "youtube",
+            "target": "https://www.youtube.com/watch?v=AbCdEf12345",
+            "enabled": True,
+        }
+        message = {"platform": "youtube", "_monitor_id": "youtube:video"}
+
+        archived_target = _archive_monitor_target(
+            message,
+            [channel, stream],
+            {"youtube:video": ("youtube:channel",)},
+        )
+
+        self.assertEqual(archived_target, channel)
+
+    def test_uncombined_youtube_stream_keeps_its_own_archive_target(self):
+        stream = {
+            "id": "youtube:video",
+            "platform": "youtube",
+            "target": "https://www.youtube.com/watch?v=AbCdEf12345",
+            "enabled": True,
+        }
+
+        self.assertEqual(
+            _archive_monitor_target(
+                {"platform": "youtube", "_monitor_id": "youtube:video"},
+                [stream],
+                {},
+            ),
+            stream,
         )
 
 

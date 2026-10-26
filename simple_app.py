@@ -299,6 +299,10 @@ def _refresh_youtube() -> None:
     join_video_id = ""
     if channel:
         info = ytw.find_live_video(channel)
+        if info.get("live") and info.get("video_id"):
+            live_status = yt.get_video_live_status(info["video_id"])
+            if "viewers" in live_status:
+                info["viewers"] = live_status["viewers"]
         st.session_state["simple_yt_status"] = info
         if not info.get("error"):
             st.session_state["simple_yt_error"] = ""
@@ -355,6 +359,17 @@ def _refresh_room_status() -> None:
         statuses["missevan"] = info
         if info:
             _track_live_status("missevan", bool(info.get("live")), info.get("uname") or info.get("title", ""))
+
+
+def _current_viewer_count(site: str, info: dict, listener=None):
+    if site == "missevan":
+        listener_count = getattr(listener, "online", None)
+        if listener_count is not None:
+            return listener_count
+    count = info.get("viewers")
+    if count is None:
+        count = info.get("online")
+    return count
 
 
 def _emit_live_notifications() -> None:
@@ -637,8 +652,11 @@ def _status_line(site: str, info: dict) -> None:
                 info.get("broadcast") == "live"
             )
             title = info.get("title", "")
-            viewers = info.get("viewers", 0)
-            detail = f" · {viewers:,} viewers" if live and viewers else ""
+            viewers = _current_viewer_count(site, info)
+            detail = (
+                _t(" · {count} viewers", count=f"{viewers:,}")
+                if live and viewers is not None else ""
+            )
             if live:
                 text = _t("🟢 {site} live{detail} — {title}", site=label, detail=detail, title=title)
             elif info.get("upcoming") or info.get("broadcast") == "upcoming":
@@ -658,8 +676,11 @@ def _status_line(site: str, info: dict) -> None:
             live = info.get("live_status") == 1 if site == "bilibili" else bool(info.get("live"))
             if live:
                 title = info.get("title", "")
-                viewers = info.get("online", 0)
-                detail = f" · {viewers:,} viewers" if viewers else ""
+                viewers = _current_viewer_count(site, info, listener)
+                detail = (
+                    _t(" · {count} viewers", count=f"{viewers:,}")
+                    if viewers is not None else ""
+                )
                 text = _t("🟢 {site} live{detail} — {title}", site=label, detail=detail, title=title)
             else:
                 text = _t("⚫ Waiting for {username}", username=_source_username(site, info))
@@ -830,19 +851,13 @@ def _render_feeds() -> None:
     )
 
 
-_STATUS_AUTO_REFRESH = (
-    None if st.session_state["simple_status_polling_paused"] else _STATUS_INTERVAL
-)
+_STATUS_AUTO_REFRESH = _STATUS_INTERVAL
 
 
 @st.fragment(run_every=_STATUS_AUTO_REFRESH)
 def _update_status() -> None:
-    was_paused = st.session_state["simple_status_polling_paused"]
-    if not was_paused:
-        _refresh_youtube()
-        _refresh_room_status()
-    if not was_paused and st.session_state["simple_status_polling_paused"]:
-        st.rerun(scope="app")
+    _refresh_youtube()
+    _refresh_room_status()
     _emit_live_notifications()
     for site in _SOURCES:
         _status_line(site, st.session_state["simple_yt_status"] if site == "youtube" else {})

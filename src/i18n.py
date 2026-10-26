@@ -120,6 +120,10 @@ _STRINGS: dict[str, tuple[str, str]] = {
     "Could not find a room ID in that text.": ("无法从输入中找到房间号。", "入力からルームIDが見つかりません。"),
     "MissEvan": ("猫耳FM", "MissEvan"),
     "Followers: {n}": ("关注：{n}", "フォロワー：{n}"),
+    "Attention count: {value}": ("关注数：{value}", "フォロー数：{value}"),
+    "VIP: {value}": ("贵宾：{value}", "VIP：{value}"),
+    "Score / popularity: {value}": ("热度：{value}", "人気スコア：{value}"),
+    "Revenue: {value}": ("收益：{value}", "収益：{value}"),
     "MissEvan messages": ("猫耳FM 消息", "MissEvan メッセージ"),
     "Scroll to bottom": ("滚动到底部", "一番下までスクロール"),
     "bilibili-api-python not installed or connection failed.": (

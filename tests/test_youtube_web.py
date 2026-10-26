@@ -133,6 +133,50 @@ class YouTubeWebChatTests(unittest.TestCase):
             "https://i.ytimg.com/vi/scheduled01/mqdefault.jpg",
         )
 
+    def test_video_status_includes_channel_id_for_channel_followup(self):
+        from src import youtube_web as w
+
+        response = Mock(
+            text=(
+                'var ytInitialPlayerResponse = {'
+                '"videoDetails":{"videoId":"scheduled01","title":"Next stream",'
+                '"author":"Channel","channelId":"UCabcdefghijklmnopqrstuv",'
+                '"isUpcoming":true}};'
+            )
+        )
+        with patch.object(w._session, "get", return_value=response):
+            info = w.get_video_status("scheduled01")
+
+        self.assertEqual(info["channel_id"], "UCabcdefghijklmnopqrstuv")
+
+    def test_exact_scheduled_stream_url_resolves_as_video_not_channel(self):
+        from src import youtube
+        from src import youtube_web
+
+        scheduled_url = "https://www.youtube.com/live/AbCdEf12345"
+
+        self.assertEqual(youtube.extract_video_id(scheduled_url), "AbCdEf12345")
+        self.assertEqual(youtube_web.channel_url(scheduled_url), "")
+
+    def test_data_api_video_status_includes_channel_id(self):
+        from src import youtube
+
+        service = Mock()
+        service.videos.return_value.list.return_value.execute.return_value = {
+            "items": [{
+                "snippet": {
+                    "channelId": "UCabcdefghijklmnopqrstuv",
+                    "channelTitle": "Channel",
+                    "liveBroadcastContent": "upcoming",
+                },
+                "liveStreamingDetails": {"scheduledStartTime": "2026-10-27T00:00:00Z"},
+            }],
+        }
+        with patch.object(youtube, "_read_service", return_value=service):
+            info = youtube.get_video_live_status("scheduled01")
+
+        self.assertEqual(info["channel_id"], "UCabcdefghijklmnopqrstuv")
+
     def test_parses_paid_sticker_ticker_action(self):
         message = _parse_action({
             "addLiveChatTickerItemAction": {

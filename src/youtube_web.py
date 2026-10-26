@@ -438,6 +438,7 @@ def get_video_status(video_id: str) -> dict:
         "video_id": video_id,
         "title": details.get("title", ""),
         "channel": details.get("author", ""),
+        "channel_id": details.get("channelId", ""),
         "broadcast": broadcast,
         "is_stream": is_stream,
         "ended": bool(live.get("endTimestamp")),
