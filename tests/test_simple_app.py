@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from src import emotes, reading
 from src.tts import resolve_language
 
 
@@ -14,6 +15,61 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class SimpleAppConfigTests(unittest.TestCase):
+    def test_feed_author_always_gets_reading_aids_and_escapes_plain_names(self):
+        source = (ROOT / "simple_app.py").read_text(encoding="utf-8")
+        function = next(
+            node for node in ast.parse(source).body
+            if isinstance(node, ast.FunctionDef) and node.name == "_feed_author_html"
+        )
+        annotations = []
+
+        def annotate(name, mode):
+            annotations.append((name, mode))
+            return f'<ruby>{html.escape(name)}<rt>míng</rt></ruby>'
+
+        namespace = {
+            "reading": SimpleNamespace(annotate_html=annotate),
+            "html": html,
+        }
+        exec(compile(ast.Module(body=[function], type_ignores=[]), "simple_app.py", "exec"), namespace)
+
+        self.assertIn("<rt>míng</rt>", namespace["_feed_author_html"]("你好"))
+        self.assertEqual(annotations, [("你好", "auto")])
+
+        namespace["reading"].annotate_html = lambda *_: ""
+        self.assertEqual(namespace["_feed_author_html"]("<Viewer>"), "&lt;Viewer&gt;")
+
+    def test_simple_feed_always_renders_reading_aids_and_preserves_emotes(self):
+        source = (ROOT / "simple_app.py").read_text(encoding="utf-8")
+        function = next(
+            node for node in ast.parse(source).body
+            if isinstance(node, ast.FunctionDef) and node.name == "_feed_message_text_html"
+        )
+        annotations = []
+
+        def annotate(text, mode):
+            annotations.append((text, mode))
+            return f'<ruby>{html.escape(text)}<rt>reading</rt></ruby>'
+
+        namespace = {
+            "app_config": SimpleNamespace(RENDER_CHAT_IMAGES=True),
+            "emotes": emotes,
+            "html": html,
+            "reading": SimpleNamespace(annotate_html=annotate),
+        }
+        exec(compile(ast.Module(body=[function], type_ignores=[]), "simple_app.py", "exec"), namespace)
+        rendered = namespace["_feed_message_text_html"](
+            {
+                "emotes": {"[smile]": "https://i0.hdslb.com/bfs/emote/smile.png"},
+            },
+            "[smile]你好",
+        )
+
+        self.assertIn("<ruby>", rendered)
+        self.assertIn("<rt>reading</rt>", rendered)
+        self.assertIn('src="https://i0.hdslb.com/bfs/emote/smile.png"', rendered)
+        self.assertEqual(annotations[0][1], "auto")
+
     def configured_platforms(self, youtube="", bilibili="", missevan=""):
         source = (ROOT / "simple_app.py").read_text(encoding="utf-8")
         module = ast.parse(source)
@@ -302,10 +358,12 @@ class SimpleAppConfigTests(unittest.TestCase):
             }],
         }
         namespace = {
+            "_SERVER_HISTORY_ENABLED": False,
             "st": SimpleNamespace(
                 session_state=state,
                 context=SimpleNamespace(timezone=""),
                 html=lambda content, **kwargs: output.append(content),
+                markdown=lambda content, **kwargs: output.append(content),
             ),
             "html": html,
             "_PLATFORM_NAMES": {"youtube": "YouTube", "missevan": "MissEvan"},
@@ -313,16 +371,32 @@ class SimpleAppConfigTests(unittest.TestCase):
             "tr": SimpleNamespace(),
             "_translation_target": lambda: "en",
             "_t": lambda text, **kwargs: text.format(**kwargs),
-            "gift_utils": SimpleNamespace(format_amount=lambda currency, amount: f"{currency}{amount}"),
             "app_config": SimpleNamespace(RENDER_CHAT_IMAGES=True),
             "MAX_CHAT_DISPLAY": 50,
+            "_feed_message_text_html": lambda msg, text: html.escape(text),
+            "chat_avatars": SimpleNamespace(
+                message_avatar_url=lambda *_: "",
+                avatar_html=lambda *_: "",
+            ),
+            "bili": SimpleNamespace(get_user_avatar=Mock()),
+            "gift_utils": SimpleNamespace(
+                format_amount=lambda currency, amount: f"{currency}{amount}",
+                amount_label=lambda _: "",
+            ),
+            "_profit_totals": lambda: state["simple_profit_totals"],
+            "_gift_messages": lambda: state["simple_gifts"],
+            "_chat_messages": lambda: state["simple_chat"],
+            "is_paid": lambda _: False,
+            "is_gift": lambda _: False,
             "emotes": SimpleNamespace(text_to_html=lambda text, emote_map, sticker, caption:
-                                      f'<img src="https://i.test/{emote_map[text]}">' if emote_map else html.escape(text)),
+                                      f'<img src="https://i.test/{emote_map[text]}">' if emote_map else html.escape(text),
+                                      safe_image_url=lambda url: url, safe_badge_url=lambda url: url),
+            "reading": SimpleNamespace(annotate_html=lambda *_: ""),
         }
         exec(compile(ast.Module(body=functions, type_ignores=[]), "simple_app.py", "exec"), namespace)
         namespace["_render_feeds"]()
 
-        markup = output[0]
+        markup = "".join(output)
         self.assertIn("grid-template-columns: minmax(0, 1fr) minmax(0, 1fr)", markup)
         self.assertIn("@media (max-width: 768px)", markup)
         self.assertIn("grid-template-rows: minmax(0, 2fr) minmax(0, 3fr)", markup)
@@ -351,6 +425,7 @@ class SimpleAppConfigTests(unittest.TestCase):
             "emotes": {"[smile]": "https://i.test/smile.png"},
         }
         namespace = {
+            "_SERVER_HISTORY_ENABLED": False,
             "st": SimpleNamespace(session_state={"simple_translation_enabled": False}),
             "html": html,
             "_PLATFORM_NAMES": {"bilibili": "Bilibili"},
@@ -360,8 +435,26 @@ class SimpleAppConfigTests(unittest.TestCase):
             "_t": lambda text, **kwargs: text.format(**kwargs),
             "app_config": SimpleNamespace(RENDER_CHAT_IMAGES=True),
             "MAX_CHAT_DISPLAY": 50,
-            "emotes": SimpleNamespace(text_to_html=lambda text, emote_map, sticker, caption:
-                                      f'<img src="{emote_map[text]}">' if emote_map else html.escape(text)),
+            "_feed_message_text_html": lambda msg, text: (
+                namespace["emotes"].text_to_html(
+                    text, msg.get("emotes"), msg.get("sticker_url", ""), msg.get("sticker_caption", False)
+                ) if namespace["app_config"].RENDER_CHAT_IMAGES else html.escape(text)
+            ),
+            "chat_avatars": SimpleNamespace(
+                message_avatar_url=lambda *_: "",
+                avatar_html=lambda *_: "",
+            ),
+            "bili": SimpleNamespace(get_user_avatar=Mock()),
+            "gift_utils": SimpleNamespace(amount_label=lambda _: ""),
+            "is_paid": lambda _: False,
+            "is_gift": lambda _: False,
+            "emotes": SimpleNamespace(
+                text_to_html=lambda text, emote_map, sticker, caption:
+                    f'<img src="{emote_map[text]}">' if emote_map else html.escape(text),
+                safe_image_url=lambda url: url,
+                safe_badge_url=lambda url: url,
+            ),
+            "reading": SimpleNamespace(annotate_html=lambda *_: ""),
         }
         exec(compile(ast.Module(body=[function], type_ignores=[]), "simple_app.py", "exec"), namespace)
 
@@ -382,6 +475,7 @@ class SimpleAppConfigTests(unittest.TestCase):
             if isinstance(node, ast.FunctionDef) and node.name == "_feed_messages_html"
         )
         namespace = {
+            "_SERVER_HISTORY_ENABLED": False,
             "st": SimpleNamespace(session_state={"simple_translation_enabled": True}),
             "html": html,
             "_PLATFORM_NAMES": {"youtube": "YouTube"},
@@ -391,7 +485,17 @@ class SimpleAppConfigTests(unittest.TestCase):
             "_t": lambda text, **kwargs: text.format(**kwargs),
             "app_config": SimpleNamespace(RENDER_CHAT_IMAGES=False),
             "MAX_CHAT_DISPLAY": 50,
-            "emotes": SimpleNamespace(),
+            "_feed_message_text_html": lambda _msg, text: html.escape(text),
+            "chat_avatars": SimpleNamespace(
+                message_avatar_url=lambda *_: "",
+                avatar_html=lambda *_: "",
+            ),
+            "bili": SimpleNamespace(get_user_avatar=Mock()),
+            "gift_utils": SimpleNamespace(amount_label=lambda _: ""),
+            "is_paid": lambda _: False,
+            "is_gift": lambda _: False,
+            "emotes": SimpleNamespace(safe_image_url=lambda url: url, safe_badge_url=lambda url: url),
+            "reading": SimpleNamespace(annotate_html=lambda *_: ""),
         }
         exec(compile(ast.Module(body=[function], type_ignores=[]), "simple_app.py", "exec"), namespace)
 
@@ -411,6 +515,7 @@ class SimpleAppConfigTests(unittest.TestCase):
             if isinstance(node, ast.FunctionDef) and node.name == "_feed_messages_html"
         )
         namespace = {
+            "_SERVER_HISTORY_ENABLED": False,
             "st": SimpleNamespace(session_state={"simple_translation_enabled": False}),
             "html": html,
             "_PLATFORM_NAMES": {"youtube": "YouTube"},
@@ -420,7 +525,17 @@ class SimpleAppConfigTests(unittest.TestCase):
             "_t": lambda text, **kwargs: text.format(**kwargs),
             "app_config": SimpleNamespace(RENDER_CHAT_IMAGES=False),
             "MAX_CHAT_DISPLAY": 2,
-            "emotes": SimpleNamespace(),
+            "_feed_message_text_html": lambda _msg, text: html.escape(text),
+            "chat_avatars": SimpleNamespace(
+                message_avatar_url=lambda *_: "",
+                avatar_html=lambda *_: "",
+            ),
+            "bili": SimpleNamespace(get_user_avatar=Mock()),
+            "gift_utils": SimpleNamespace(amount_label=lambda _: ""),
+            "is_paid": lambda _: False,
+            "is_gift": lambda _: False,
+            "emotes": SimpleNamespace(safe_image_url=lambda url: url, safe_badge_url=lambda url: url),
+            "reading": SimpleNamespace(annotate_html=lambda *_: ""),
         }
         exec(compile(ast.Module(body=[function], type_ignores=[]), "simple_app.py", "exec"), namespace)
         messages = [
@@ -496,7 +611,7 @@ class SimpleAppConfigTests(unittest.TestCase):
             "simple_yt_error": "",
             "simple_yt_channel": "channel",
             "simple_bili_listener": SimpleNamespace(
-                running=True, connected_uid=123,
+                running=True, connected_uid=123, online_count=3395,
             ),
             "simple_bili_error": "",
             "simple_me_listener": SimpleNamespace(
@@ -505,7 +620,8 @@ class SimpleAppConfigTests(unittest.TestCase):
             "simple_me_error": "",
             "simple_room_status": {
                 "bilibili": {
-                    "live_status": 1, "online": 7, "title": "Bili room",
+                    "live_status": 1, "online": 146417, "guard_count": 205,
+                    "title": "Bili room",
                 },
                 "missevan": {
                     "live": True, "online": 0, "title": "MissEvan room",
@@ -532,10 +648,14 @@ class SimpleAppConfigTests(unittest.TestCase):
         })
         self.assertIn("0 viewers", output[-1])
         namespace["_status_line"]("bilibili", {})
-        self.assertIn("7 viewers", output[-1])
-        state["simple_room_status"]["bilibili"]["online"] = 0
+        self.assertIn("3,395 room audience", output[-1])
+        self.assertIn("205 Great Fleet", output[-1])
+        self.assertNotIn("146417", output[-1])
+        state["simple_bili_listener"].online_count = None
         namespace["_status_line"]("bilibili", {})
-        self.assertIn("0 viewers", output[-1])
+        self.assertNotIn("146417", output[-1])
+        self.assertNotIn("room audience", output[-1])
+        self.assertIn("205 Great Fleet", output[-1])
         namespace["_status_line"]("missevan", {})
         self.assertIn("18 viewers", output[-1])
         state["simple_me_listener"].online = None
@@ -587,6 +707,7 @@ class SimpleAppConfigTests(unittest.TestCase):
         )
         state = {"simple_live_states": {}, "simple_notify_live": True}
         namespace = {
+            "_SERVER_HISTORY_ENABLED": False,
             "st": SimpleNamespace(session_state=state),
             "_PLATFORM_NAMES": {"youtube": "YouTube"},
         }
@@ -608,6 +729,7 @@ class SimpleAppConfigTests(unittest.TestCase):
         )
         state = {"simple_live_states": {}, "simple_notify_live": False}
         namespace = {
+            "_SERVER_HISTORY_ENABLED": False,
             "st": SimpleNamespace(session_state=state),
             "_PLATFORM_NAMES": {"bilibili": "Bilibili"},
         }

@@ -26,6 +26,9 @@ BILIBILI_POWER_RIGHTS_URL: str = f"{BILIBILI_API_ORIGIN}/x/upowerv2/gw/rights/in
 BILIBILI_MASTER_INFO_URL: str = f"{BILIBILI_LIVE_API_ORIGIN}/live_user/v1/Master/info"
 BILIBILI_ANCHOR_INFO_URL: str = f"{BILIBILI_LIVE_API_ORIGIN}/live_user/v1/UserInfo/get_anchor_in_room"
 BILIBILI_ROOM_INFO_URL: str = f"{BILIBILI_LIVE_API_ORIGIN}/room/v1/Room/get_info"
+BILIBILI_GUARD_TAB_URL: str = (
+    f"{BILIBILI_LIVE_API_ORIGIN}/xlive/app-room/v2/guardTab/topListNew"
+)
 BILIBILI_GUARD_ICON_URL: str = (
     "https://i0.hdslb.com/bfs/activity-plat/static/20200716/"
     "1d0c5a1b042efb59f46d4ba1286c6727/icon-guard{}.png"

@@ -20,8 +20,10 @@ import requests
 
 from src import emotes, gifts, user_login
 from src.config import (
+    BILIBILI_API_ORIGIN,
     BILIBILI_ANCHOR_INFO_URL,
     BILIBILI_GARB_SEARCH_URL,
+    BILIBILI_GUARD_TAB_URL,
     BILIBILI_GUARD_ICON_URL,
     BILIBILI_LIVE_ORIGIN,
     BILIBILI_MASTER_INFO_URL,
@@ -187,7 +189,7 @@ def _run_owned_loop(coro):
 # ── Room info ──────────────────────────────────────────────────────────────────
 
 def get_room_info(room_id: str = "") -> dict:
-    """Return live room status, title, viewer count, etc."""
+    """Return room metadata, room-info popularity, and public guard total."""
     rid = room_id or BILIBILI_ROOM_ID
     if not rid:
         return {}
@@ -200,12 +202,16 @@ def get_room_info(room_id: str = "") -> dict:
         live_status = info.get("live_status", 0)
         room_data = room_info.get("room_info", {})
         anchor_data = room_info.get("anchor_info", {}).get("base_info", {})
+        uid = anchor_data.get("uid") or room_data.get("uid")
         return {
             "room_id": rid,
+            "uid": uid,
             "title": room_data.get("title", ""),
             "cover": room_data.get("cover") or room_data.get("user_cover", ""),
             "live_status": live_status,  # 1 = live, 0 = offline, 2 = playback
             "online": room_data.get("online", 0),
+            "popularity": room_data.get("online", 0),
+            "guard_count": _get_guard_count(rid, uid),
             "start_time": room_data.get("live_time", ""),
             "uname": anchor_data.get("uname", ""),
             "face": anchor_data.get("face", ""),
@@ -244,12 +250,16 @@ def _get_room_info_http(room_id: str) -> dict:
     try:
         resp = requests.get(BILIBILI_ROOM_INFO_URL, params={"room_id": room_id}, timeout=5)
         data = resp.json().get("data", {})
+        uid = data.get("uid")
         return {
             "room_id": room_id,
+            "uid": uid,
             "title": data.get("title", ""),
             "cover": data.get("user_cover", ""),
             "live_status": data.get("live_status", 0),
             "online": data.get("online", 0),
+            "popularity": data.get("online", 0),
+            "guard_count": _get_guard_count(room_id, uid),
             "start_time": data.get("live_time", ""),
             "uname": "",
             "area_name": data.get("area_name", ""),
@@ -257,6 +267,40 @@ def _get_room_info_http(room_id: str) -> dict:
         }
     except Exception:
         return {}
+
+
+def _get_guard_count(room_id: str, uid) -> Optional[int]:
+    if not room_id or not uid:
+        return None
+    try:
+        response = requests.get(
+            BILIBILI_GUARD_TAB_URL,
+            params={
+                "roomid": room_id,
+                "ruid": uid,
+                "page": 1,
+                "page_size": 1,
+            },
+            headers={
+                "User-Agent": "Mozilla/5.0",
+                "Referer": f"{BILIBILI_LIVE_ORIGIN}/{room_id}",
+            },
+            timeout=5,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        if payload.get("code") != 0:
+            log.warning(
+                "Bilibili guard-count API returned code %s for room %s.",
+                payload.get("code"),
+                room_id,
+            )
+            return None
+        count = (payload.get("data") or {}).get("info", {}).get("num")
+        return int(count) if count is not None else None
+    except (requests.RequestException, ValueError, TypeError, AttributeError):
+        log.exception("Bilibili guard-count lookup failed for room %s.", room_id)
+        return None
 
 
 # ── Danmaku (chat) via WebSocket listener ─────────────────────────────────────
@@ -291,6 +335,18 @@ def _guard_name(level) -> str:
         return _GUARD_NAMES.get(int(level or 0), "")
     except (TypeError, ValueError):
         return ""
+
+
+def _bili_online_count(event: dict) -> Optional[int]:
+    data = event.get("data", {}).get("data", {})
+    count = data.get("online_count")
+    if count is None:
+        return None
+    try:
+        return int(count)
+    except (TypeError, ValueError):
+        log.warning("Invalid Bilibili online count: %r", count)
+        return None
 
 
 def _fan_medal(data) -> dict:
@@ -414,6 +470,7 @@ class DanmakuListener:
         self._task: Optional[asyncio.Task] = None
         # UID used in the WebSocket handshake; 0 means anonymous (Bilibili masks usernames).
         self.connected_uid: Optional[int] = None
+        self.online_count: Optional[int] = None
         self.error = ""
         # The starting user's login, captured here: the listener thread has no Streamlit session.
         self._login = _cookie_values()
@@ -465,6 +522,12 @@ class DanmakuListener:
                 except (TypeError, ValueError):
                     self.connected_uid = 0
                 self.error = ""
+
+            @danmaku.on("ONLINE_RANK_COUNT")
+            async def on_online_rank_count(event):
+                count = _bili_online_count(event)
+                if count is not None:
+                    self.online_count = count
 
             @danmaku.on("DANMU_MSG")
             async def on_danmu(event):
@@ -1184,15 +1247,29 @@ def get_user_avatar(uid) -> str:
         return ""
     if uid <= 0:
         return ""
-    if not BILIBILI_LIB_OK:
-        log.warning("Cannot fetch Bilibili avatar for uid %s without bilibili-api-python", uid)
-        return ""
+    if BILIBILI_LIB_OK:
+        try:
+            profile = _run(
+                user.User(uid=uid, credential=_credential()).get_user_info()
+            )
+        except Exception:
+            log.warning("Could not fetch Bilibili avatar via bilibili-api for uid %s", uid, exc_info=True)
+        else:
+            face = profile.get("face", "") if isinstance(profile, dict) else ""
+            avatar = emotes.safe_image_url(face)
+            if avatar:
+                return avatar
+
     try:
-        profile = _run(
-            user.User(uid=uid, credential=_credential()).get_user_info()
+        response = requests.get(
+            f"{BILIBILI_API_ORIGIN}/x/space/acc/info",
+            params={"mid": uid},
+            timeout=5,
+            headers={"User-Agent": _BROWSER_UA},
         )
-    except Exception:
-        log.warning("Could not fetch Bilibili avatar for uid %s", uid, exc_info=True)
+        response.raise_for_status()
+        data = response.json().get("data") or {}
+    except (requests.RequestException, ValueError, AttributeError, TypeError):
+        log.warning("Could not fetch Bilibili avatar via profile API for uid %s", uid, exc_info=True)
         return ""
-    face = profile.get("face", "") if isinstance(profile, dict) else ""
-    return emotes.safe_image_url(face)
+    return emotes.safe_image_url(data.get("face", ""))

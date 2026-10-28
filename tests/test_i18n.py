@@ -62,6 +62,11 @@ class TranslationCoverageTests(unittest.TestCase):
             ("VIP: {value}", "贵宾：21", "VIP：21"),
             ("Score / popularity: {value}", "热度：21", "人気スコア：21"),
             ("Revenue: {value}", "收益：21", "収益：21"),
+            (
+                "Captured gift revenue (session): {value}",
+                "本次监控记录礼物收益：21",
+                "今回の監視中に記録したギフト収益：21",
+            ),
         ):
             self.assertEqual(
                 i18n.translate(label, "en", value=21),

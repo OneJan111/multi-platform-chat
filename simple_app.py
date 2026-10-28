@@ -25,6 +25,7 @@ from src import emotes
 from src import gifts as gift_utils
 from src import i18n
 from src import missevan as me
+from src import reading
 from src.server_chat_history import ServerChatHistory, ServerChatPoller
 from src import translate as tr
 from src import youtube as yt
@@ -362,6 +363,8 @@ def _refresh_room_status() -> None:
 
 
 def _current_viewer_count(site: str, info: dict, listener=None):
+    if site == "bilibili":
+        return getattr(listener, "online_count", None)
     if site == "missevan":
         listener_count = getattr(listener, "online", None)
         if listener_count is not None:
@@ -635,6 +638,54 @@ def _site_icon_uris() -> dict[str, str]:
     }
 
 
+def _feed_message_text_html(msg: dict, text: str) -> str:
+    render_images = app_config.RENDER_CHAT_IMAGES
+    emote_map = msg.get("emotes") or {}
+    text_html = (
+        emotes.text_to_html(
+            text, emote_map, msg.get("sticker_url", ""), msg.get("sticker_caption", False)
+        )
+        if render_images else html.escape(text)
+    )
+    if msg.get("sticker_url") and not msg.get("sticker_caption") and render_images:
+        return text_html
+
+    source = text
+    placeholders = []
+    if render_images and not msg.get("sticker_url"):
+        emote_codes = sorted((code for code in emote_map if code in text), key=len, reverse=True)
+        for index, code in enumerate(emote_codes):
+            placeholder = f"SIMPLEFEED_EMOTE_{index}_TOKEN"
+            while placeholder in source:
+                placeholder = "_" + placeholder
+            source = source.replace(code, placeholder)
+            emote_html = emotes.text_to_html(code, emote_map, "", False)
+            placeholders.append((placeholder, emote_html))
+
+    annotated = reading.annotate_html(source, "auto")
+    if not annotated:
+        return text_html
+    if msg.get("sticker_url") and msg.get("sticker_caption") and render_images:
+        caption_prefix = html.escape(text) + "<br>"
+        if text_html.startswith(caption_prefix):
+            return f'<span class="simple-feed-reading">{annotated}</span>{text_html[len(caption_prefix):]}'
+        return text_html
+    for placeholder, emote_html in placeholders:
+        annotated = annotated.replace(
+            placeholder,
+            emote_html if render_images else html.escape(placeholder),
+        )
+    return f'<span class="simple-feed-reading">{annotated}</span>'
+
+
+def _feed_author_html(author: str) -> str:
+    annotated = reading.annotate_html(author or "", "auto")
+    return (
+        f'<span class="simple-feed-reading">{annotated}</span>'
+        if annotated else html.escape(author or "")
+    )
+
+
 def _status_line(site: str, info: dict) -> None:
     label = _PLATFORM_NAMES[site]
     if site == "youtube" and not info:
@@ -677,10 +728,22 @@ def _status_line(site: str, info: dict) -> None:
             if live:
                 title = info.get("title", "")
                 viewers = _current_viewer_count(site, info, listener)
-                detail = (
-                    _t(" · {count} viewers", count=f"{viewers:,}")
-                    if viewers is not None else ""
-                )
+                if site == "bilibili":
+                    detail = (
+                        _t(" · {count} room audience", count=f"{viewers:,}")
+                        if viewers is not None else ""
+                    )
+                    guard_count = info.get("guard_count")
+                    if guard_count is not None:
+                        detail += _t(
+                            " · {count} Great Fleet",
+                            count=f"{guard_count:,}",
+                        )
+                else:
+                    detail = (
+                        _t(" · {count} viewers", count=f"{viewers:,}")
+                        if viewers is not None else ""
+                    )
                 text = _t("🟢 {site} live{detail} — {title}", site=label, detail=detail, title=title)
             else:
                 text = _t("⚫ Waiting for {username}", username=_source_username(site, info))
@@ -719,18 +782,13 @@ def _feed_messages_html(messages: list[dict], browser_timezone: str) -> str:
     for msg in reversed(visible_messages):
         platform = _PLATFORM_NAMES.get(msg.get("platform", ""), msg.get("platform", ""))
         raw_text = str(msg.get("text", ""))
-        text = (
-            emotes.text_to_html(
-                raw_text,
-                msg.get("emotes"),
-                msg.get("sticker_url", ""),
-                msg.get("sticker_caption", False),
-            )
-            if app_config.RENDER_CHAT_IMAGES
-            else html.escape(raw_text)
-        )
+        text = _feed_message_text_html(msg, raw_text)
         stamp = _format_message_time(str(msg.get("timestamp", "")), browser_timezone)
-        header = html.escape(f"{platform} · {msg.get('author', '')}" + (f" · {stamp}" if stamp else ""))
+        author_html = _feed_author_html(str(msg.get("author") or ""))
+        header = (
+            f'{html.escape(platform)} · {author_html}'
+            + (f' · {html.escape(stamp)}' if stamp else "")
+        )
         avatar_url = chat_avatars.message_avatar_url(
             msg, bili.get_user_avatar, emotes.safe_image_url, emotes.safe_badge_url
         )
@@ -744,7 +802,8 @@ def _feed_messages_html(messages: list[dict], browser_timezone: str) -> str:
         if st.session_state["simple_translation_enabled"] and msg.get("text"):
             result = tr.get_translation(msg["text"], _translation_target())
             if result:
-                translated = f'<div class="simple-feed-translated">{html.escape(result)}</div>'
+                translated_text = reading.annotate_html(result, "auto") or html.escape(result)
+                translated = f'<div class="simple-feed-translated">{translated_text}</div>'
         cards.append(
             '<article class="simple-feed-card">'
             f'<div class="simple-feed-row">{avatar}<div class="simple-feed-content">'
@@ -825,6 +884,7 @@ def _render_feeds() -> None:
         .simple-feed-content { min-width: 0; flex: 1 1 auto; }
         .simple-feed-meta { font-size: .8rem; opacity: .7; margin-bottom: .25rem; }
         .simple-feed-text { white-space: pre-wrap; overflow-wrap: anywhere; }
+        .simple-feed-reading rt, .simple-feed-translated rt { font-size: .68em; color: #f0a030; }
         .simple-feed-price { font-size: .9rem; font-weight: 600; color: #42d392; }
         .simple-feed-translated { color: #60a5fa; white-space: pre-wrap; overflow-wrap: anywhere; }
         .simple-feed-empty { opacity: .7; }

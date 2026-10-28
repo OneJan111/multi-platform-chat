@@ -139,6 +139,43 @@ def _missevan_viewer_count(api_count, listener_count):
     return api_count if listener_count is None else listener_count
 
 
+def _bilibili_gift_revenue(message: dict) -> float | None:
+    if (
+        message.get("platform") != "bilibili"
+        or message.get("type") != "gift"
+        or message.get("currency") != "¥"
+    ):
+        return None
+    try:
+        amount = float(message.get("value") or 0)
+    except (TypeError, ValueError):
+        return None
+    return amount if amount >= 0 else None
+
+
+def _accumulate_bilibili_gift_revenue(window, messages: list[dict]) -> None:
+    totals = getattr(window, "_bilibili_gift_revenue", None)
+    if totals is None:
+        totals = window._bilibili_gift_revenue = {}
+    events = getattr(window, "_bilibili_gift_events", None)
+    if events is None:
+        events = window._bilibili_gift_events = {}
+    for message in messages:
+        amount = _bilibili_gift_revenue(message)
+        monitor_id = str(message.get("_monitor_id") or "")
+        if amount is None or not monitor_id:
+            continue
+        event_id = str(message.get("id") or "")
+        if event_id:
+            event_key = (monitor_id, event_id)
+            if event_key in events:
+                totals[monitor_id] += amount - events[event_key]
+                events[event_key] = amount
+                continue
+            events[event_key] = amount
+        totals[monitor_id] = totals.get(monitor_id, 0.0) + amount
+
+
 def _archive_monitor_target(
     message: dict, monitor_targets: list[dict], groups: dict[str, tuple[str, ...]]
 ) -> dict | None:
@@ -1936,7 +1973,22 @@ if QtCore is not None:
                                     "live": info.get("live_status") == 1 if platform == "bilibili" else bool(info.get("live")),
                                     "room_name": info.get("uname", "") or status.get("room_name", ""),
                                     "title": info.get("title", ""),
-                                    "viewers": info.get("online", info.get("viewers", "")),
+                                    "viewers": (
+                                        ""
+                                        if platform == "bilibili"
+                                        else info.get("online", info.get("viewers", ""))
+                                    ),
+                                    "room_audience": (
+                                        None if platform == "bilibili" else ""
+                                    ),
+                                    "popularity": (
+                                        info.get("popularity", info.get("online", ""))
+                                        if platform == "bilibili" else ""
+                                    ),
+                                    "guard_count": (
+                                        info.get("guard_count")
+                                        if platform == "bilibili" else None
+                                    ),
                                     "thumbnail": info.get("cover", ""),
                                     "avatar": info.get("face", ""),
                                     "area_name": info.get("area_name", ""),
@@ -1963,6 +2015,11 @@ if QtCore is not None:
                                         getattr(listener, "online", None),
                                     )
                                 if platform == "bilibili":
+                                    status["room_audience"] = getattr(
+                                        listener, "online_count", None
+                                    )
+                                    if status["room_audience"] is not None:
+                                        status["viewers"] = status["room_audience"]
                                     if listener.connected_uid is not None:
                                         self._listener_errors.pop(monitor_id, None)
                                     elif listener.error:
@@ -2059,6 +2116,8 @@ if QtCore is not None:
             self._emote_cache = DesktopEmoteCache()
             self._messages = []
             self._paid = []
+            self._bilibili_gift_revenue = {}
+            self._bilibili_gift_events = {}
             self._joins = []
             self._chat_image_cache = {}
             self._chat_images_pending = set()
@@ -4256,6 +4315,8 @@ if QtCore is not None:
             self.statusBar().showMessage("Monitor targets updated.", 5000)
 
         def _update_statuses(self, statuses):
+            from src import gifts
+
             self._combined_monitor_ids = _youtube_monitor_groups(
                 self._monitor_targets, statuses
             )
@@ -4355,7 +4416,11 @@ if QtCore is not None:
                 detail = f"ID {display_target}"
                 if viewers not in ("", None):
                     detail += self.i18n.translate(
-                        " · {count} viewers",
+                        (
+                            " · {count} room audience"
+                            if entry["platform"] == "bilibili"
+                            else " · {count} viewers"
+                        ),
                         self._ui_language,
                         count=viewers,
                     )
@@ -4374,6 +4439,52 @@ if QtCore is not None:
                         "Also monitoring: " + "\n".join(related_targets)
                     )
                 if entry["platform"] == "bilibili":
+                    room_audience = info.get("room_audience")
+                    if room_audience is None:
+                        tooltip_lines.append(
+                            self.i18n.translate(
+                                "Room audience: waiting for live data",
+                                self._ui_language,
+                            )
+                        )
+                    else:
+                        tooltip_lines.append(
+                            self.i18n.translate(
+                                "Room audience: {value}",
+                                self._ui_language,
+                                value=room_audience,
+                            )
+                        )
+                    guard_count = info.get("guard_count")
+                    if guard_count is not None:
+                        tooltip_lines.append(
+                            self.i18n.translate(
+                                "Great Fleet: {value}",
+                                self._ui_language,
+                                value=guard_count,
+                            )
+                        )
+                    popularity = info.get("popularity")
+                    if popularity not in (None, ""):
+                        tooltip_lines.append(
+                            self.i18n.translate(
+                                "Popularity: {value}",
+                                self._ui_language,
+                                value=popularity,
+                            )
+                        )
+                    tooltip_lines.append(
+                        self.i18n.translate(
+                            "Captured gift revenue (session): {value}",
+                            self._ui_language,
+                            value=gifts.format_amount(
+                                "¥",
+                                getattr(self, "_bilibili_gift_revenue", {}).get(
+                                    monitor_id, 0.0
+                                ),
+                            ),
+                        )
+                    )
                     zone = _bilibili_zone(
                         info.get("parent_area_name", ""),
                         info.get("area_name", ""),
@@ -4508,6 +4619,7 @@ if QtCore is not None:
             )
             if not messages:
                 return
+            _accumulate_bilibili_gift_revenue(self, messages)
             if self.config.ANALYTICS_ENABLED:
                 from src import highlights
 

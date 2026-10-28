@@ -1,10 +1,13 @@
 import unittest
 from collections import OrderedDict
+from types import SimpleNamespace
 
 import desktop_app
 from desktop_app import (
     _CHAT_LAYOUT_BREAKPOINT,
     _bilibili_zone,
+    _accumulate_bilibili_gift_revenue,
+    _bilibili_gift_revenue,
     _chat_splitter_layout,
     _dedupe_combined_monitor_messages,
     _monitor_card_columns,
@@ -53,6 +56,53 @@ class DesktopResponsiveLayoutTests(unittest.TestCase):
         self.assertEqual(_bilibili_zone("手游", ""), "手游")
         self.assertEqual(_bilibili_zone("手游", "手游"), "手游")
         self.assertEqual(_bilibili_zone("", ""), "")
+
+    def test_bilibili_gift_revenue_only_counts_paid_bilibili_gifts(self):
+        window = SimpleNamespace()
+        messages = [
+            {
+                "id": "gift-1",
+                "_monitor_id": "bilibili:123",
+                "platform": "bilibili",
+                "type": "gift",
+                "currency": "¥",
+                "value": 2.5,
+            },
+            {
+                "id": "gift-free",
+                "_monitor_id": "bilibili:123",
+                "platform": "bilibili",
+                "type": "gift",
+                "currency": "¥",
+                "value": 0,
+            },
+            {
+                "id": "youtube-gift",
+                "_monitor_id": "youtube:456",
+                "platform": "youtube",
+                "type": "gift",
+                "currency": "¥",
+                "value": 100,
+            },
+            {
+                "id": "chat",
+                "_monitor_id": "bilibili:123",
+                "platform": "bilibili",
+                "type": "danmaku",
+                "currency": "¥",
+                "value": 50,
+            },
+        ]
+
+        _accumulate_bilibili_gift_revenue(window, messages)
+        _accumulate_bilibili_gift_revenue(window, [messages[0]])
+
+        self.assertEqual(window._bilibili_gift_revenue, {"bilibili:123": 2.5})
+        self.assertEqual(_bilibili_gift_revenue(messages[1]), 0.0)
+        corrected = {**messages[0], "value": 3.5}
+        _accumulate_bilibili_gift_revenue(window, [corrected])
+        self.assertEqual(window._bilibili_gift_revenue, {"bilibili:123": 3.5})
+        self.assertIsNone(_bilibili_gift_revenue(messages[2]))
 
     def test_default_feed_panels_fit_two_rows(self):
         self.assertEqual(_two_row_group_height(220, 180, 30), 100)

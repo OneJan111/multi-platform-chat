@@ -113,6 +113,7 @@ class LightweightRenderingTests(unittest.TestCase):
             "gift_utils": SimpleNamespace(amount_label=Mock(return_value="")),
             "is_paid": lambda _: False,
             "is_gift": lambda _: False,
+            "_feed_message_text_html": lambda _msg, text: html.escape(text),
             "html": html,
             "app_config": SimpleNamespace(RENDER_CHAT_IMAGES=True),
         }
@@ -154,6 +155,9 @@ class LightweightRenderingTests(unittest.TestCase):
             "gift_utils": SimpleNamespace(amount_label=Mock(return_value="")),
             "is_paid": lambda _: False,
             "is_gift": lambda _: False,
+            "_feed_message_text_html": lambda msg, text: emotes.text_to_html(
+                text, msg.get("emotes"), msg.get("sticker_url", ""), msg.get("sticker_caption", False)
+            ),
             "html": html,
             "app_config": SimpleNamespace(RENDER_CHAT_IMAGES=True),
         }

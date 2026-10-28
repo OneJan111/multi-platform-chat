@@ -5,7 +5,12 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
 from src import bilibili as bili
-from src.bilibili import DanmakuListener, _decode_interact_word_v2, _decode_send_gift_v2
+from src.bilibili import (
+    DanmakuListener,
+    _bili_online_count,
+    _decode_interact_word_v2,
+    _decode_send_gift_v2,
+)
 
 
 class BilibiliSendTests(unittest.TestCase):
@@ -100,7 +105,9 @@ class BilibiliSendTests(unittest.TestCase):
         api_user = Mock()
         api_user.get_user_info.return_value = "profile coroutine"
         with patch.object(bili, "BILIBILI_LIB_OK", True), \
-                patch.object(bili.user, "User", return_value=api_user) as user_type, \
+                patch.object(
+                    bili, "user", SimpleNamespace(User=Mock(return_value=api_user)), create=True
+                ) as api_module, \
                 patch.object(bili, "_credential", return_value="credential") as credential, \
                 patch.object(bili, "_run", return_value=profile) as run:
             avatar = bili.get_user_avatar("42")
@@ -108,27 +115,51 @@ class BilibiliSendTests(unittest.TestCase):
         self.assertEqual(
             avatar, "https://i0.hdslb.com/bfs/face/avatar.png"
         )
-        user_type.assert_called_once_with(uid=42, credential="credential")
+        api_module.User.assert_called_once_with(uid=42, credential="credential")
         credential.assert_called_once_with()
         run.assert_called_once_with("profile coroutine")
 
     def test_get_user_avatar_rejects_invalid_uid_and_untrusted_face(self):
         with patch.object(bili, "BILIBILI_LIB_OK", True), \
-                patch.object(bili.user, "User") as user_type, \
+                patch.object(bili, "user", SimpleNamespace(User=Mock()), create=True) as api_module, \
+                patch.object(bili, "_credential", return_value="credential"), \
                 patch.object(
                     bili, "_run", return_value={"face": "https://example.com/avatar.png"}
-                ):
+                ), patch("src.bilibili.requests.get") as get:
+            response = Mock()
+            response.json.return_value = {"data": {"face": "https://example.com/avatar.png"}}
+            get.return_value = response
             self.assertEqual(bili.get_user_avatar("not-a-uid"), "")
             self.assertEqual(bili.get_user_avatar("42"), "")
 
-        user_type.assert_called_once()
+        api_module.User.assert_called_once()
+
+    def test_get_user_avatar_falls_back_to_public_profile_api(self):
+        response = Mock()
+        response.json.return_value = {
+            "code": 0,
+            "data": {"face": "http://i0.hdslb.com/bfs/face/avatar.png"},
+        }
+        with patch.object(bili, "BILIBILI_LIB_OK", True), \
+                patch.object(bili, "user", SimpleNamespace(User=Mock()), create=True), \
+                patch.object(bili, "_credential", return_value="credential"), \
+                patch.object(bili, "_run", side_effect=RuntimeError("profile lookup failed")), \
+                patch("src.bilibili.requests.get", return_value=response) as get, \
+                patch.object(bili.log, "warning"):
+            avatar = bili.get_user_avatar("42")
+
+        self.assertEqual(avatar, "https://i0.hdslb.com/bfs/face/avatar.png")
+        self.assertEqual(get.call_args.kwargs["params"], {"mid": 42})
 
     def test_get_user_avatar_reports_missing_api_library(self):
+        response = Mock()
+        response.json.return_value = {"data": {}}
         with patch.object(bili, "BILIBILI_LIB_OK", False), \
-                patch.object(bili.user, "User") as user_type:
+                patch.object(bili, "user", SimpleNamespace(User=Mock()), create=True) as api_module, \
+                patch("src.bilibili.requests.get", return_value=response):
             self.assertEqual(bili.get_user_avatar("42"), "")
 
-        user_type.assert_not_called()
+        api_module.User.assert_not_called()
 
     def test_waits_between_consecutive_sends_for_same_user_and_room(self):
         with patch.object(bili, "_cookie_values", return_value=("session", "", "", "42")), \
@@ -185,6 +216,30 @@ class BilibiliSendTests(unittest.TestCase):
 
 
 class BilibiliRoomInfoTests(unittest.TestCase):
+    @patch("src.bilibili.requests.get")
+    def test_guard_count_uses_public_guard_tab_api(self, get):
+        response = Mock()
+        response.json.return_value = {
+            "code": 0,
+            "data": {"info": {"num": 205}},
+        }
+        get.return_value = response
+
+        self.assertEqual(bili._get_guard_count("123", 456), 205)
+        self.assertEqual(
+            get.call_args.kwargs["params"],
+            {"roomid": "123", "ruid": 456, "page": 1, "page_size": 1},
+        )
+
+    def test_online_rank_event_contains_current_room_audience(self):
+        self.assertEqual(
+            _bili_online_count({
+                "data": {"data": {"online_count": "3395"}},
+            }),
+            3395,
+        )
+        self.assertIsNone(_bili_online_count({"data": {"data": {}}}))
+
     def test_room_info_falls_back_to_user_cover(self):
         from src import bilibili as bili
 

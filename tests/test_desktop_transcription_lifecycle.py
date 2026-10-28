@@ -94,7 +94,7 @@ class TranscriptionLifecycleTests(unittest.TestCase):
         window._begin_transcription.assert_called_once_with(target)
         for key in ("widget", "title", "stream_title", "detail"):
             window._monitor_cards[monitor_id][key].setToolTip.assert_called_with(
-                "ID 123\nZone: 手游 / 原神"
+                "ID 123\nRoom audience: waiting for live data\nZone: 手游 / 原神"
             )
         desktop_app._DesktopWindow._update_statuses(
             window, {monitor_id: {"live": False}}
@@ -164,6 +164,69 @@ class TranscriptionLifecycleTests(unittest.TestCase):
         )
         for key in ("widget", "title", "stream_title", "detail"):
             card[key].setToolTip.assert_called_once_with(expected_tooltip)
+
+    def test_bilibili_actual_audience_and_guard_count_are_in_monitor_tooltip(self):
+        monitor_id = "bilibili:123"
+        card = {
+            "widget": Mock(),
+            "title": Mock(),
+            "stream_title": Mock(),
+            "detail": Mock(),
+            "connection": Mock(),
+            "unload_stream": Mock(),
+        }
+        window = SimpleNamespace(
+            _combined_monitor_ids={},
+            _monitor_cards={monitor_id: card},
+            _monitor_targets=[{
+                "id": monitor_id,
+                "platform": "bilibili",
+                "target": "123",
+                "enabled": True,
+            }],
+            _room_names={},
+            _room_titles={},
+            _live_states={monitor_id: True},
+            _transcription_armed_id=None,
+            _record_enabled_ids=set(),
+            _recorders={},
+            _worker=None,
+            _viewer_samples=[],
+            _bilibili_gift_revenue={monitor_id: 12.5},
+            _ui_language="en",
+            _refresh_chat_room_selectors=Mock(),
+            _refresh_transcription_rooms=Mock(),
+            _refresh_archive_session_labels=Mock(),
+            config=SimpleNamespace(ANALYTICS_ENABLED=False),
+            notify_live_check=Mock(),
+            _notify_live_stream=Mock(),
+            live_status=Mock(),
+            i18n=SimpleNamespace(
+                translate=lambda text, language, **kwargs: text.format(**kwargs)
+            ),
+        )
+
+        desktop_app._DesktopWindow._update_statuses(window, {
+            monitor_id: {
+                "live": True,
+                "viewers": 3395,
+                "room_audience": 3395,
+                "guard_count": 205,
+                "popularity": 146417,
+                "connection": "Connected",
+            },
+        })
+
+        expected_tooltip = (
+            "ID 123 · 3395 room audience\n"
+            "Room audience: 3395\n"
+            "Great Fleet: 205\n"
+            "Popularity: 146417\n"
+            "Captured gift revenue (session): ¥12.5"
+        )
+        for key in ("widget", "title", "stream_title", "detail"):
+            card[key].setToolTip.assert_called_once_with(expected_tooltip)
+        self.assertIn("3395 room audience", card["detail"].setFullText.call_args.args[0])
 
     def test_unload_stream_removes_stream_target_but_keeps_channel(self):
         channel_id = "youtube:channel"

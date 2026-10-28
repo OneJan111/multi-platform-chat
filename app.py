@@ -2791,9 +2791,29 @@ def _stream_status():
                 if area:
                     st.caption(t("Category: {area} › {sub}", area=area, sub=info.get("area_name", "")))
                 _render_room_cover(info.get("cover", ""))
-                viewers = info.get("online", 0)
-                bili_viewers_now = viewers
-                st.metric(t("Viewers"), f"{viewers:,}")
+                room_audience = (
+                    getattr(listener, "online_count", None) if listener else None
+                )
+                popularity = info.get("popularity", info.get("online", 0))
+                bili_viewers_now = room_audience or 0
+                audience_col, guard_col, popularity_col = st.columns(3)
+                with audience_col:
+                    st.metric(
+                        t("Room audience"),
+                        f"{room_audience:,}" if room_audience is not None else "—",
+                    )
+                with guard_col:
+                    guard_count = info.get("guard_count")
+                    st.metric(
+                        t("Great Fleet"),
+                        f"{guard_count:,}" if guard_count is not None else "—",
+                    )
+                with popularity_col:
+                    st.metric(t("Popularity"), f"{popularity:,}")
+                if room_audience is None:
+                    st.caption(t(
+                        "Room audience count appears after the Bilibili listener receives live data."
+                    ))
                 if info.get("start_time") and live_status == 1:
                     st.caption(t("Live since: {t}", t=info["start_time"]))
                     _note_stream_start("bilibili", str(info["start_time"]), "Asia/Shanghai")
