@@ -513,6 +513,27 @@ def _format_chat_timestamp(timestamp) -> str:
             return str(timestamp)
 
 
+def _archive_messages_as_tsv(messages: list[dict], headers: tuple[str, ...]) -> str:
+    rows = ["\t".join(headers)]
+    for message in messages:
+        values = (
+            _format_chat_timestamp(message.get("timestamp", "")),
+            str(message.get("platform", "")),
+            str(message.get("author", "")),
+            str(message.get("text", "")),
+        )
+        rows.append(
+            "\t".join(
+                value.replace("\r\n", " ")
+                .replace("\r", " ")
+                .replace("\n", " ")
+                .replace("\t", " ")
+                for value in values
+            )
+        )
+    return "\n".join(rows)
+
+
 _DESKTOP_STRINGS: dict[str, tuple[str, str]] = {
     "Theme": ("主题", "テーマ"),
     "Light": ("浅色", "ライト"),
@@ -769,6 +790,8 @@ def _format_message_for_copy(message: dict) -> str:
 
 
 def _chat_event_card_colors(message: dict) -> tuple[str, str, str] | None:
+    if message.get("platform") == "missevan" and message.get("is_super_admin"):
+        return "#b42318", "#ffffff", "#ef8178"
     message_type = str(message.get("type", "")).lower()
     if message_type in {"superchat", "superchatevent", "superstickerevent"}:
         return "#f4dfaa", "#5a3d20", "#dfbd70"
@@ -1721,6 +1744,8 @@ if QtCore is not None:
             self.targets = [dict(target) for target in targets]
             self._running = True
             self._listeners = {}
+            self._listeners_lock = threading.Lock()
+            self._chat_delivery_stop = threading.Event()
             self._listener_errors = {}
             self._youtube = {}
             self._login_fingerprint = json.dumps(login_data, sort_keys=True)
@@ -1735,9 +1760,51 @@ if QtCore is not None:
 
         def stop(self) -> None:
             self._running = False
-            for listener in self._listeners.values():
+            self._chat_delivery_stop.set()
+            for listener in self._listeners_snapshot().values():
                 listener.stop()
             self.wait(10000)
+
+        def _listeners_snapshot(self):
+            with self._listeners_lock:
+                return dict(self._listeners)
+
+        def _deliver_room_messages(self, interval: float) -> None:
+            from src import bilibili, missevan
+
+            next_poll = time.monotonic()
+            while not self._chat_delivery_stop.is_set():
+                targets = {
+                    target["id"]: target for target in self._targets_snapshot()
+                }
+                for monitor_id, listener in self._listeners_snapshot().items():
+                    target = targets.get(monitor_id)
+                    if not target:
+                        continue
+                    platform = target.get("platform")
+                    if platform not in ("bilibili", "missevan"):
+                        continue
+                    module = bilibili if platform == "bilibili" else missevan
+                    room_id = module.parse_room_id(str(target.get("target", "")))
+                    if not room_id or str(listener.room_id) != str(room_id):
+                        continue
+                    try:
+                        messages = listener.pop_messages()
+                        for message in messages:
+                            message["_monitor_id"] = monitor_id
+                            message["room_id"] = room_id
+                        if messages:
+                            self.messages.emit(messages)
+                    except Exception as exc:
+                        self.failed.emit(
+                            f"{platform} ({room_id}) chat delivery error: "
+                            f"{type(exc).__name__}: {exc}"
+                        )
+                next_poll += interval
+                now = time.monotonic()
+                if next_poll < now:
+                    next_poll = now + interval
+                self._chat_delivery_stop.wait(next_poll - now)
 
         def _targets_snapshot(self):
             with self._targets_lock:
@@ -1746,7 +1813,7 @@ if QtCore is not None:
         def _sync_room_listener(self, monitor_id: str, platform: str, room_id: str, module):
             from src import user_login
 
-            listener = self._listeners.get(monitor_id)
+            listener = self._listeners_snapshot().get(monitor_id)
             if listener and str(listener.room_id) == str(room_id) and listener.running:
                 return listener
             if listener:
@@ -1755,7 +1822,8 @@ if QtCore is not None:
                     self._listener_errors[monitor_id] = error
                 listener.stop()
             if not room_id:
-                self._listeners.pop(monitor_id, None)
+                with self._listeners_lock:
+                    self._listeners.pop(monitor_id, None)
                 self._listener_errors.pop(monitor_id, None)
                 return None
             with user_login.using(self.login_data):
@@ -1766,16 +1834,35 @@ if QtCore is not None:
                     error = "Bilibili chat listener could not start."
                 if error:
                     self._listener_errors[monitor_id] = error
-                self._listeners.pop(monitor_id, None)
+                with self._listeners_lock:
+                    self._listeners.pop(monitor_id, None)
                 self.failed.emit(f"{platform} ({room_id}): {error or 'listener failed to start'}")
                 return None
             previous_error = self._listener_errors.get(monitor_id, "")
             if previous_error and hasattr(listener, "error") and not listener.error:
                 listener.error = previous_error
-            self._listeners[monitor_id] = listener
+            with self._listeners_lock:
+                self._listeners[monitor_id] = listener
             return listener
 
         def run(self):
+            from src.config import CHAT_POLL_INTERVAL
+
+            delivery = threading.Thread(
+                target=self._deliver_room_messages,
+                args=(max(0.05, float(CHAT_POLL_INTERVAL)),),
+                name="desktop-room-chat-delivery",
+            )
+            delivery.start()
+            try:
+                self._run_monitor()
+            finally:
+                self._chat_delivery_stop.set()
+                delivery.join()
+                for listener in self._listeners_snapshot().values():
+                    listener.stop()
+
+        def _run_monitor(self):
             from src import bilibili, missevan, user_login, youtube, youtube_web
             from src.config import CHAT_POLL_INTERVAL, ROOM_STATUS_POLL_INTERVAL
 
@@ -1795,15 +1882,19 @@ if QtCore is not None:
                         login_data = dict(self.login_data)
                     login_fingerprint = json.dumps(login_data, sort_keys=True)
                     if login_fingerprint != self._login_fingerprint:
-                        for listener in self._listeners.values():
+                        with self._listeners_lock:
+                            old_listeners = list(self._listeners.values())
+                            self._listeners.clear()
+                        for listener in old_listeners:
                             listener.stop()
-                        self._listeners.clear()
                         self._listener_errors.clear()
                         listener_attempt_at.clear()
                         self._login_fingerprint = login_fingerprint
-                    for monitor_id in list(self._listeners):
+                    for monitor_id in self._listeners_snapshot():
                         if monitor_id not in targets:
-                            self._listeners.pop(monitor_id).stop()
+                            with self._listeners_lock:
+                                listener = self._listeners.pop(monitor_id)
+                            listener.stop()
                             self._listener_errors.pop(monitor_id, None)
                             listener_attempt_at.pop(monitor_id, None)
                     for monitor_id in list(self._youtube):
@@ -1961,6 +2052,17 @@ if QtCore is not None:
                                 self._sync_room_listener(monitor_id, platform, "", bilibili if platform == "bilibili" else missevan)
                                 listener_attempt_at.pop(monitor_id, None)
                                 continue
+                            module = bilibili if platform == "bilibili" else missevan
+                            listener = self._listeners_snapshot().get(monitor_id)
+                            if (
+                                listener is None
+                                or not listener.running
+                                or str(listener.room_id) != str(room_id)
+                            ) and now - listener_attempt_at.get(monitor_id, 0) >= CHAT_POLL_INTERVAL:
+                                listener_attempt_at[monitor_id] = now
+                                listener = self._sync_room_listener(
+                                    monitor_id, platform, room_id, module
+                                )
                             if now - status_poll_at.get(monitor_id, 0) >= ROOM_STATUS_POLL_INTERVAL:
                                 status_poll_at[monitor_id] = now
                                 with user_login.using(login_data):
@@ -1999,15 +2101,6 @@ if QtCore is not None:
                                     "revenue": info.get("revenue", ""),
                                     "error": info.get("error", ""),
                                 })
-                            module = bilibili if platform == "bilibili" else missevan
-                            listener = self._listeners.get(monitor_id)
-                            if (
-                                listener is None or not listener.running
-                            ) and now - listener_attempt_at.get(monitor_id, 0) >= CHAT_POLL_INTERVAL:
-                                listener_attempt_at[monitor_id] = now
-                                listener = self._sync_room_listener(
-                                    monitor_id, platform, room_id, module
-                                )
                             if listener:
                                 if platform == "missevan":
                                     status["viewers"] = _missevan_viewer_count(
@@ -2042,12 +2135,6 @@ if QtCore is not None:
                                         "Connecting" if listener.running else "Disconnected"
                                     )
                                 status["error"] = getattr(listener, "error", "") or self._listener_errors.get(monitor_id, "")
-                                if now - chat_poll_at.get(monitor_id, 0) >= CHAT_POLL_INTERVAL:
-                                    chat_poll_at[monitor_id] = now
-                                    for message in listener.pop_messages():
-                                        message["_monitor_id"] = monitor_id
-                                        message["room_id"] = room_id
-                                        new_messages.append(message)
                             else:
                                 status["connection"] = self._listener_errors.get(monitor_id, "") or "Disconnected"
                                 status["error"] = self._listener_errors.get(monitor_id, "")
@@ -2065,8 +2152,6 @@ if QtCore is not None:
                 except Exception as exc:
                     self.failed.emit(f"Chat monitor error: {type(exc).__name__}: {exc}")
                 self.msleep(250)
-            for listener in self._listeners.values():
-                listener.stop()
 
 
     class _ChannelTargetProxy:
@@ -2131,6 +2216,15 @@ if QtCore is not None:
             self._worker = None
             self._transcriber = None
             self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=4)
+            self._tts_executor = concurrent.futures.ThreadPoolExecutor(
+                max_workers=2, thread_name_prefix="desktop-tts"
+            )
+            self._obs_executor = concurrent.futures.ThreadPoolExecutor(
+                max_workers=1, thread_name_prefix="desktop-obs"
+            )
+            self._archive_executor = concurrent.futures.ThreadPoolExecutor(
+                max_workers=1, thread_name_prefix="desktop-archive"
+            )
             self._emote_image_pool = concurrent.futures.ThreadPoolExecutor(
                 max_workers=16, thread_name_prefix="emote-images"
             )
@@ -4283,6 +4377,11 @@ if QtCore is not None:
                 lambda: self._save_archive(refresh_view=True)
             )
             row.addWidget(save_button)
+            copy_button = QtWidgets.QPushButton(
+                self.i18n.translate("Copy table for Excel", self._ui_language)
+            )
+            copy_button.clicked.connect(self._copy_archive_session)
+            row.addWidget(copy_button)
             delete_button = QtWidgets.QPushButton(
                 "Delete all saved messages for this channel / room"
             )
@@ -4594,16 +4693,17 @@ if QtCore is not None:
                         "room or channel ID in Stream Monitoring."
                     )
                     continue
-                result = self._archive.append_messages(
-                    f"{platform}:{identity}",
-                    room_messages,
-                    platform=platform,
-                    room_id=room_id,
-                    channel_id=channel_id,
-                    room_name=self._room_names.get(monitor_id, ""),
+                room_name = self._room_names.get(monitor_id, "")
+                self._run_archive_task(
+                    lambda platform=platform, identity=identity,
+                    room_messages=room_messages, room_id=room_id,
+                    channel_id=channel_id, room_name=room_name:
+                    self._archive.append_messages(
+                        f"{platform}:{identity}", room_messages,
+                        platform=platform, room_id=room_id,
+                        channel_id=channel_id, room_name=room_name,
+                    )
                 )
-                if not result.get("ok"):
-                    errors.append(result["error"])
 
             if errors:
                 self._show_error(" ".join(errors))
@@ -4801,7 +4901,8 @@ if QtCore is not None:
             try:
                 _count_memory_work(self, "tts_tasks_pending")
                 self._run_task(
-                    function, callback, on_finished=self._tts_task_finished
+                    function, callback, on_finished=self._tts_task_finished,
+                    executor=self._tts_executor,
                 )
             except RuntimeError:
                 self._tts_task_finished()
@@ -5177,7 +5278,11 @@ if QtCore is not None:
                 flags = []
                 if msg.get("is_owner"):
                     flags.append("OWNER")
-                if msg.get("is_moderator"):
+                if msg.get("platform") == "missevan" and msg.get("is_super_admin"):
+                    flags.append(self.i18n.translate("Super admin"))
+                elif msg.get("platform") == "missevan" and msg.get("is_moderator"):
+                    flags.append(self.i18n.translate("Room admin"))
+                elif msg.get("is_moderator"):
                     flags.append("MOD")
                 if msg.get("is_verified"):
                     flags.append("VERIFIED")
@@ -6214,7 +6319,7 @@ if QtCore is not None:
             with self._login_context():
                 return function()
 
-        def _run_task(self, function, callback=None, *, on_finished=None):
+        def _run_task(self, function, callback=None, *, on_finished=None, executor=None):
             _count_memory_work(self, "background_tasks_submitted_total")
             bridge = _TaskBridge(self)
             self._task_bridges = getattr(self, "_task_bridges", [])
@@ -6230,7 +6335,21 @@ if QtCore is not None:
                     bridge, value, error, callback, on_finished
                 )
             )
-            self._executor.submit(function).add_done_callback(completed)
+            pool = executor if executor is not None else self._executor
+            pool.submit(function).add_done_callback(completed)
+
+        def _run_archive_task(self, function, callback=None):
+            def checked():
+                try:
+                    result = function()
+                    if not result.get("ok"):
+                        raise RuntimeError(result["error"])
+                    return result
+                except Exception:
+                    logging.getLogger(__name__).exception("Desktop chat archive operation failed")
+                    raise
+
+            self._run_task(checked, callback, executor=self._archive_executor)
 
         def _task_finished(self, bridge, value, error, callback, on_finished=None):
             _count_memory_work(self, "background_tasks_completed_total")
@@ -6776,7 +6895,7 @@ if QtCore is not None:
                     state["error"] = ("unreachable", str(exc))
                 return state
 
-            self._run_task(fetch, self._obs_poll_finished)
+            self._run_task(fetch, self._obs_poll_finished, executor=self._obs_executor)
 
         def _obs_poll_finished(self, state):
             self._obs_poll_running = False
@@ -6900,6 +7019,8 @@ if QtCore is not None:
                 self.obs_text_warning.setVisible(False)
 
         def _sync_obs_chat(self):
+            if getattr(self, "_obs_chat_push_running", False):
+                return
             if (
                 not self.obs_enabled.isChecked()
                 or not self.obs_chat_enabled.isChecked()
@@ -6941,7 +7062,11 @@ if QtCore is not None:
                     return str(exc)
                 return ""
 
-            self._run_task(push, self._obs_chat_pushed)
+            self._obs_chat_push_running = True
+            self._run_task(
+                push, self._obs_chat_pushed, executor=self._obs_executor,
+                on_finished=lambda: setattr(self, "_obs_chat_push_running", False),
+            )
 
         def _obs_chat_pushed(self, error):
             if error:
@@ -6965,7 +7090,7 @@ if QtCore is not None:
                     self._show_error(self._obs_text(failure))
                 self._obs_poll()
 
-            self._run_task(run, done)
+            self._run_task(run, done, executor=self._obs_executor)
 
         def _obs_toggle_stream(self):
             if self._obs_streaming:
@@ -7375,10 +7500,9 @@ if QtCore is not None:
                 self.statusBar().showMessage(f"Exported EDL to {path}.", 5000)
 
         def _load_archive_view(self):
-            result = self._archive.load_archive()
-            if not result.get("ok"):
-                self._show_error(result["error"])
-                return
+            self._run_archive_task(self._archive.load_archive, self._archive_view_loaded)
+
+        def _archive_view_loaded(self, result):
             self._saved_archive = result["archive"]
             self.archive_sessions.blockSignals(True)
             self.archive_sessions.clear()
@@ -7483,6 +7607,41 @@ if QtCore is not None:
                         row, col, QtWidgets.QTableWidgetItem(value)
                     )
 
+        def _copy_archive_session(self):
+            session_id = self.archive_sessions.currentData()
+            session = next(
+                (
+                    item
+                    for item in getattr(self, "_saved_archive", {}).get(
+                        "sessions", []
+                    )
+                    if item.get("session_id") == session_id
+                ),
+                None,
+            )
+            messages = session.get("messages", []) if session else []
+            if not messages:
+                self.statusBar().showMessage(
+                    self.i18n.translate("No saved messages to copy.", self._ui_language),
+                    5000,
+                )
+                return
+            headers = tuple(
+                self.i18n.translate(label, self._ui_language)
+                for label in ("Time", "Platform", "Author", "Message")
+            )
+            QtWidgets.QApplication.clipboard().setText(
+                _archive_messages_as_tsv(messages, headers)
+            )
+            self.statusBar().showMessage(
+                self.i18n.translate(
+                    "Copied {count} saved chat messages as a table.",
+                    self._ui_language,
+                    count=len(messages),
+                ),
+                5000,
+            )
+
         def _delete_saved_session(self):
             session_id = self.archive_sessions.currentData()
             if not session_id:
@@ -7513,11 +7672,14 @@ if QtCore is not None:
             if confirm != QtWidgets.QMessageBox.StandardButton.Yes:
                 return
 
-            result = self._archive.delete_session(session_id)
-            if not result.get("ok"):
-                self._show_error(result["error"])
-                return
+            self._run_archive_task(
+                lambda: self._archive.delete_session(session_id),
+                lambda result: self._saved_session_deleted(
+                    session_id, platform, identity, result
+                ),
+            )
 
+        def _saved_session_deleted(self, session_id, platform, identity, result):
             platform_key, _, saved_identity = session_id.partition(":")
             monitor_ids = set()
             for entry in self._monitor_targets:
@@ -7599,7 +7761,6 @@ if QtCore is not None:
                 return
 
             errors = []
-            saved_any = False
             for monitor_id, messages in messages_by_target.items():
                 entry = next(
                     target for target in self._monitor_targets if target["id"] == monitor_id
@@ -7625,24 +7786,20 @@ if QtCore is not None:
                     )
                     continue
                 session_id = f"{platform}:{identity}"
-                result = self._archive.save_snapshot(
-                    session_id,
-                    messages[-_MAX_SESSION_MESSAGES:],
-                    platform=platform,
-                    room_id=room_id,
-                    channel_id=channel_id,
-                    room_name=self._room_names.get(monitor_id, ""),
+                snapshot = messages[-_MAX_SESSION_MESSAGES:]
+                room_name = self._room_names.get(monitor_id, "")
+                self._run_archive_task(
+                    lambda session_id=session_id, snapshot=snapshot,
+                    platform=platform, room_id=room_id, channel_id=channel_id,
+                    room_name=room_name: self._archive.save_snapshot(
+                        session_id, snapshot, platform=platform, room_id=room_id,
+                        channel_id=channel_id, room_name=room_name,
+                    ),
+                    (lambda _result: self._load_archive_view()) if refresh_view else None,
                 )
-                if not result.get("ok"):
-                    errors.append(result["error"])
-                    continue
-                self._saved_archive = result["archive"]
-                saved_any = True
 
             if errors:
                 self._show_error(" ".join(errors))
-            if saved_any and refresh_view:
-                self._load_archive_view()
 
         def changeEvent(self, event):
             if event.type() == QtCore.QEvent.Type.WindowDeactivate:
@@ -7679,6 +7836,10 @@ if QtCore is not None:
                 recorder.stop(wait=3)
             self._save_monitor_targets()
             self._save_archive()
+            # Finish accepted writes before the window and its callbacks are destroyed.
+            self._archive_executor.shutdown(wait=True)
+            self._tts_executor.shutdown(wait=False, cancel_futures=True)
+            self._obs_executor.shutdown(wait=False, cancel_futures=True)
             self._executor.shutdown(wait=False, cancel_futures=True)
             self._emote_image_pool.shutdown(wait=False, cancel_futures=True)
             event.accept()

@@ -9,12 +9,115 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from src import emotes, reading
 from src.tts import resolve_language
+from src.background_poll import BackgroundPoll
 
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 class SimpleAppConfigTests(unittest.TestCase):
+    def test_dashboard_super_admin_message_uses_highlight_class(self):
+        source = (ROOT / "app.py").read_text(encoding="utf-8")
+        function = next(
+            node for node in ast.parse(source).body
+            if isinstance(node, ast.FunctionDef) and node.name == "_bubble_class"
+        )
+        namespace = {}
+        exec(compile(ast.Module(body=[function], type_ignores=[]), "app.py", "exec"), namespace)
+
+        highlighted = namespace["_bubble_class"]({
+            "platform": "missevan",
+            "is_super_admin": True,
+            "type": "danmaku",
+        })
+        room_admin = namespace["_bubble_class"]({
+            "platform": "missevan",
+            "is_moderator": True,
+            "type": "danmaku",
+        })
+
+        self.assertIn("chat-super-admin", highlighted)
+        self.assertNotIn("chat-super-admin", room_admin)
+
+    def test_dashboard_uses_distinct_missevan_admin_badges(self):
+        source = (ROOT / "app.py").read_text(encoding="utf-8")
+        function = next(
+            node for node in ast.parse(source).body
+            if isinstance(node, ast.FunctionDef) and node.name == "_role_badges"
+        )
+        namespace = {
+            "html_lib": html,
+            "emotes": emotes,
+            "t": lambda text: {"Room admin": "房管", "Super admin": "超管"}[text],
+        }
+        exec(compile(ast.Module(body=[function], type_ignores=[]), "app.py", "exec"), namespace)
+
+        room_admin = namespace["_role_badges"]({
+            "platform": "missevan",
+            "is_moderator": True,
+        })
+        super_admin = namespace["_role_badges"]({
+            "platform": "missevan",
+            "is_super_admin": True,
+        })
+
+        self.assertIn('class="badge badge-me-room-admin">房管</span>', room_admin)
+        self.assertIn('class="badge badge-me-super-admin">超管</span>', super_admin)
+
+    def test_missevan_feed_shows_distinct_room_admin_badges(self):
+        source = (ROOT / "simple_app.py").read_text(encoding="utf-8")
+        function = next(
+            node for node in ast.parse(source).body
+            if isinstance(node, ast.FunctionDef) and node.name == "_feed_messages_html"
+        )
+        namespace = {
+            "_SERVER_HISTORY_ENABLED": False,
+            "st": SimpleNamespace(session_state={"simple_translation_enabled": False}),
+            "html": html,
+            "_PLATFORM_NAMES": {"missevan": "MissEvan"},
+            "_format_message_time": lambda *_: "",
+            "_t": lambda text, **kwargs: {
+                "Room admin": "房管",
+                "Super admin": "超管",
+            }.get(text, text).format(**kwargs),
+            "tr": SimpleNamespace(),
+            "_translation_target": lambda: "en",
+            "app_config": SimpleNamespace(RENDER_CHAT_IMAGES=False),
+            "MAX_CHAT_DISPLAY": 50,
+            "_feed_message_text_html": lambda _msg, text: html.escape(text),
+            "_feed_author_html": lambda author: html.escape(author),
+            "chat_avatars": SimpleNamespace(
+                message_avatar_url=lambda *_: "",
+                avatar_html=lambda *_: "",
+            ),
+            "bili": SimpleNamespace(get_user_avatar=Mock()),
+            "gift_utils": SimpleNamespace(amount_label=lambda _: ""),
+            "is_paid": lambda _: False,
+            "is_gift": lambda _: False,
+            "emotes": emotes,
+            "reading": SimpleNamespace(annotate_html=lambda *_: ""),
+        }
+        exec(compile(ast.Module(body=[function], type_ignores=[]), "simple_app.py", "exec"), namespace)
+
+        rendered = namespace["_feed_messages_html"]([
+            {
+                "platform": "missevan",
+                "author": "Room admin",
+                "text": "hello",
+                "is_moderator": True,
+            },
+            {
+                "platform": "missevan",
+                "author": "Super admin",
+                "text": "hello",
+                "is_super_admin": True,
+            },
+        ], "")
+
+        self.assertIn('class="simple-feed-role simple-feed-role-room">房管</span>', rendered)
+        self.assertIn('class="simple-feed-role simple-feed-role-super">超管</span>', rendered)
+        self.assertIn('class="simple-feed-card simple-feed-card-super-admin"', rendered)
+
     def test_feed_author_always_gets_reading_aids_and_escapes_plain_names(self):
         source = (ROOT / "simple_app.py").read_text(encoding="utf-8")
         function = next(
@@ -664,10 +767,11 @@ class SimpleAppConfigTests(unittest.TestCase):
 
     def test_youtube_channel_refresh_loads_current_live_video_viewers(self):
         source = (ROOT / "simple_app.py").read_text(encoding="utf-8")
-        function = next(
+        functions = [
             node for node in ast.parse(source).body
-            if isinstance(node, ast.FunctionDef) and node.name == "_refresh_youtube"
-        )
+            if isinstance(node, ast.FunctionDef)
+            and node.name in {"_refresh_youtube", "_fetch_youtube_status"}
+        ]
         live_video = {
             "live": True,
             "video_id": "livevideo01",
@@ -686,14 +790,17 @@ class SimpleAppConfigTests(unittest.TestCase):
         viewer_lookup = Mock(return_value={"viewers": 42})
         namespace = {
             "time": SimpleNamespace(monotonic=lambda: 61.0),
+            "BackgroundPoll": BackgroundPoll,
             "st": SimpleNamespace(session_state=state),
             "_STATUS_INTERVAL": 60,
             "ytw": SimpleNamespace(find_live_video=lambda _channel: live_video),
             "yt": SimpleNamespace(get_video_live_status=viewer_lookup),
             "_track_live_status": Mock(),
         }
-        exec(compile(ast.Module(body=[function], type_ignores=[]), "simple_app.py", "exec"), namespace)
+        exec(compile(ast.Module(body=functions, type_ignores=[]), "simple_app.py", "exec"), namespace)
 
+        namespace["_refresh_youtube"]()
+        state["_simple_yt_status_poll"]._future.result(timeout=2)
         namespace["_refresh_youtube"]()
 
         viewer_lookup.assert_called_once_with("livevideo01")

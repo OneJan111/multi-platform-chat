@@ -31,6 +31,7 @@ A multilingual dashboard for monitoring **YouTube, Bilibili and MissEvan** live 
 | 🍪 **Cookies** | Import login cookies for Bilibili, MissEvan and YouTube — read from a browser on this computer (Chrome / Edge / Firefox), or paste / upload cookies exported from any browser (for servers). |
 
 In the desktop app, all configured rooms continue receiving live chat whether **Allow saving** is checked or not. That checkbox only controls whether chat from the room can be saved to Saved Chat; it does not stop reception, recording, or transcription.
+Desktop TTS, OBS requests, and saved-chat archive operations use separate background worker pools instead of sharing translation/general tasks. Chat archive reads, writes, and deletes run in order on one worker; closing the app waits for accepted archive writes to finish. Transcription recognition keeps its own worker, while UI rendering and audio playback callbacks remain on the Qt UI thread.
 In the desktop app, adding a YouTube scheduled stream URL monitors that exact stream first, then follows its channel again after the stream ends. If that stream and its channel are both configured, the channel card stays visible and represents the exact stream while both monitors remain active; use **Unload stream** to remove the exact-stream target and keep monitoring the channel. Bilibili monitor hover details include the observed gift revenue accumulated during the current app session; this is not a platform lifetime-revenue total.
 In the desktop app, the Chat and Gifts / Super Chats panes sit side by side on wider windows. When the window is narrower than 1000 px, Gifts / Super Chats moves above Chat; the default narrow layout fits two gift entries and two Joins entries, giving the remaining height to Chat. The minimum window width is 720 px. Drag the splitters to adjust the feed proportions.
 Desktop window size, feed splitter proportions, room selections, send targets and other app preferences are remembered. Active recording, scroll pause and playback are session-only and do not resume automatically.
@@ -86,10 +87,13 @@ The template only contains placeholder values (`your-…`, `xxx`). **Replace the
 | `TTS_AUDIO_QUEUE_LIMIT` | Desktop online audio waiting for playback; drops oldest waiting audio when full | `20` |
 | `SIMPLE_CHAT_POLL_INTERVAL` | Chat polling and feed refresh interval for `simple_app.py` and `simple_server_app.py`, in seconds; minimum `1` | `15` |
 | `SIMPLE_STATUS_POLL_INTERVAL` | Live-status and current viewer-count refresh interval for simple monitors (continues while live), in seconds; minimum `1` | `60` |
-| `CHAT_POLL_INTERVAL` | Chat refresh interval in seconds | `5` |
+| `CHAT_POLL_INTERVAL` | Chat refresh interval in seconds. Desktop Bilibili/MissEvan WebSocket queues are delivered independently of room-status and YouTube API requests. Restart after changing. | `5` |
 | `ROOM_STATUS_POLL_INTERVAL` | Live-status, title and viewer-count polling/cache interval in seconds for desktop status checks and browser status data, including YouTube channel monitoring. Minimum `1`; restart after changing. The main dashboard status and transcription panels no longer have background refresh timers; live alerts are checked when the app reruns. | `60` |
 | `CHAT_TRANSLATION_DISPLAY_MODE` | `immediate` shows chat right away and adds translations when ready; `wait` shows each message when its translation is ready | `immediate` |
 | `LOGIN_SECRET` | Key that encrypts each user's logins in their browser. Changing it logs everyone out | random, in `.login_secret` |
+
+Browser chat timers collect completed YouTube requests without waiting for the network, so slow YouTube requests no longer hold up Bilibili/MissEvan messages. Simple-app status requests also run in the background. The simple server drains WebSocket queues independently of status/YouTube polling and uses start-to-start polling intervals. Server collection and browser rendering have separate timers, so visible latency can include both intervals as well as platform latency.
+In the main browser app, manual gTTS audio generation, OBS text updates, OBS controls, and OBS status lookups have independent, single-flight background jobs. Audio and OBS fragments collect results on the UI thread; stopping speech discards late audio, and OBS text delivery coalesces changes while a request is pending. Offline speech and transcription recognition retain their own workers. The simple apps use browser speech synthesis and do not provide OBS controls, transcription, or disk chat archives; simple-server history is in memory only.
 
 > ⚠️ `.env` and `.login_secret` contain secrets and are listed in `.gitignore`. Never commit or share them.
 > TTS queue limits must be positive integers; restart after changing. Audio limits count clips, not bytes. Currently playing audio is not included in the waiting queue.
@@ -233,7 +237,7 @@ Sending to YouTube with browser cookies is unofficial (it works like youtube.com
 - In the desktop app, right-click a chat or gift to open its actions (Block, Read, Copy, and any room-specific actions) in a popup without changing the chat row height.
 - On narrow screens, the separate Joins controls and feed are hidden; the latest arrival appears as one line in chat.
 - The YouTube / Bilibili / MissEvan checkboxes above the feeds show or hide each site's messages.
-- Only the Chat tab's chat/gift feed fragment has a background refresh timer (`CHAT_POLL_INTERVAL`, default 5 seconds). Status and transcription panels update on user interaction or a normal app rerun; live alerts are not checked in the background. Other tabs and controls are not re-run by the chat timer. *Max messages displayed* in the sidebar limits how many chat lines are kept on screen.
+- The Chat tab's chat/gift feed, generated-audio player, and OBS controls have separate refresh timers (`CHAT_POLL_INTERVAL`, default 5 seconds). Stream status and transcription panels update on user interaction or a normal app rerun; live alerts are not checked in the background. Other tabs and controls are not re-run by the chat timer. *Max messages displayed* in the sidebar limits how many chat lines are kept on screen.
 - *🗑️ Clear chat history* (sidebar) empties Chat and Joins but keeps Gifts & Super Chats, so nobody you still need to thank is lost.
 
 ### Gifts & Super Chats

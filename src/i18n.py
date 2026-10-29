@@ -13,6 +13,8 @@ UI_LANGUAGES: dict[str, str] = {
 
 # English -> (Chinese, Japanese)
 _STRINGS: dict[str, tuple[str, str]] = {
+    "Room admin": ("房管", "ルーム管理者"),
+    "Super admin": ("超管", "スーパー管理者"),
     "All sites are hidden. Select a site above to display its chat and gifts.": (
         "所有网站都已隐藏。请勾选上方的网站以显示其弹幕和礼物。",
         "すべてのサイトが非表示です。上のサイトを選択するとチャットとギフトが表示されます。",
@@ -1009,6 +1011,19 @@ OBS に何も表示されない場合は、ダッシュボードのプログラ�
     "Saved login status": ("已保存的登录状态", "保存済みログイン状態"),
     "OBS controls connect only when you request an action.": ("仅在请求操作时连接 OBS。", "操作を要求したときのみ OBS に接続します。"),
     "Refresh OBS status": ("刷新 OBS 状态", "OBS の状態を更新"),
+    "Connecting to OBS…": ("正在连接 OBS…", "OBS に接続中…"),
+    "An OBS operation is already in progress.": (
+        "已有 OBS 操作正在进行。", "OBS の操作が進行中です。",
+    ),
+    "OBS operation failed: {error}": (
+        "OBS 操作失败：{error}", "OBS の操作に失敗しました: {error}",
+    ),
+    "TTS audio generation is busy; try again shortly.": (
+        "TTS 正在生成音频，请稍后重试。", "TTS 音声を生成中です。しばらくしてから再試行してください。",
+    ),
+    "TTS audio generation failed: {error}": (
+        "TTS 音频生成失败：{error}", "TTS 音声の生成に失敗しました: {error}",
+    ),
     "Start stream": ("开始直播", "配信を開始"),
     "Stop stream": ("停止直播", "配信を停止"),
     "Start recording": ("开始录制", "録画を開始"),
@@ -1028,6 +1043,12 @@ OBS に何も表示されない場合は、ダッシュボードのプログラ�
     "Type": ("类型", "種類"),
     "Reload saved sessions": ("重新加载已保存的会话", "保存済みセッションを再読み込み"),
     "Save current chat": ("保存当前聊天", "現在のチャットを保存"),
+    "Copy table for Excel": ("复制为 Excel 表格", "Excel 用の表としてコピー"),
+    "No saved messages to copy.": ("没有可复制的已保存消息。", "コピーできる保存済みメッセージがありません。"),
+    "Copied {count} saved chat messages as a table.": (
+        "已将 {count} 条已保存聊天消息复制为表格。",
+        "保存済みチャット {count} 件を表としてコピーしました。",
+    ),
     "Clear Chat window": ("清空聊天窗口", "チャットウィンドウをクリア"),
     "Delete all saved messages for this channel / room": ("删除此频道 / 房间的所有已保存消息", "このチャンネル / ルームの保存済みメッセージをすべて削除"),
     "Paste a Cookie header or exported cookies JSON (single line)": (

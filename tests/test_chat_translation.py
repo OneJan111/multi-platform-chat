@@ -96,7 +96,7 @@ class ChatTranslationTests(unittest.TestCase):
 
     def test_new_chat_is_stored_while_translation_is_still_pending(self):
         self.message["platform"] = "bilibili"
-        listener = SimpleNamespace(pop_messages=Mock(return_value=[self.message]))
+        listener = SimpleNamespace(pop_messages=Mock(side_effect=[[self.message], []]))
         self.state.update({
             "last_poll": 0, "selected_chat_id": "", "bili_listener": listener,
             "tts_skip_emoji": False, "tts_lang": "auto",
@@ -129,11 +129,11 @@ class ChatTranslationTests(unittest.TestCase):
         # Ready speech is processed even when no new chat poll is due.
         self.namespace["_poll_chat"]()
         self.deliver.assert_called_once_with(self.message, "你好", "zh", False, False)
-        self.assertEqual(listener.pop_messages.call_count, 1)
+        self.assertEqual(listener.pop_messages.call_count, 2)
 
     def test_wait_mode_hides_chat_until_translation_is_ready(self):
         self.message["platform"] = "bilibili"
-        listener = SimpleNamespace(pop_messages=Mock(return_value=[self.message]))
+        listener = SimpleNamespace(pop_messages=Mock(side_effect=[[self.message], []]))
         self.state.update({
             "last_poll": 0, "selected_chat_id": "", "bili_listener": listener,
             "tts_skip_emoji": False, "tts_lang": "auto", "translate_enabled": True,
@@ -164,7 +164,7 @@ class ChatTranslationTests(unittest.TestCase):
         self.namespace["_poll_chat"]()
         self.assertEqual(self.state["chat_messages"], [self.message])
         self.assertEqual(self.state["_chat_translation_pending"], [])
-        self.assertEqual(listener.pop_messages.call_count, 1)
+        self.assertEqual(listener.pop_messages.call_count, 2)
 
     def test_stop_clears_pending_translated_speech(self):
         self.queue()

@@ -71,6 +71,40 @@ class MissEvanHistoryTests(unittest.TestCase):
         self.assertTrue(listener.messages[0]["history"])
 
 
+class MissEvanAdminRoleTests(unittest.TestCase):
+    def test_chatroom_meta_separates_room_admins_and_super_admins(self):
+        response = Mock()
+        response.json.return_value = {
+            "info": {
+                "members": {
+                    "admin": [{"user_id": 5}, {"user_id": 6}],
+                    "super_admin": [{"user_id": 6}, {"user_id": 7}],
+                },
+            },
+        }
+        session = Mock()
+        session.get.return_value = response
+
+        admins, super_admins = missevan._admin_roles(session, "123")
+
+        self.assertEqual(admins, {5})
+        self.assertEqual(super_admins, {6, 7})
+
+    def test_messages_include_distinct_admin_role_flags(self):
+        listener = MissEvanListener.__new__(MissEvanListener)
+        listener._creator_id = 0
+        listener._admins = {5}
+        listener._super_admins = {6}
+
+        room_admin = listener._base("room-admin", {"user_id": 5}, "", "danmaku", None)
+        super_admin = listener._base("super-admin", {"user_id": 6}, "", "danmaku", None)
+
+        self.assertTrue(room_admin["is_moderator"])
+        self.assertFalse(room_admin["is_super_admin"])
+        self.assertFalse(super_admin["is_moderator"])
+        self.assertTrue(super_admin["is_super_admin"])
+
+
 class MissEvanSendTests(unittest.TestCase):
     def test_native_preset_kaomoji_are_available(self):
         kaomoji = missevan.preset_kaomoji()

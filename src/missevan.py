@@ -450,12 +450,36 @@ def get_live_audio_url(room_id: str) -> str:
     return stream_url
 
 
-def _admins(s: requests.Session, room_id: str) -> set[int]:
+def _member_user_ids(members) -> set[int]:
+    if isinstance(members, dict):
+        members = [members]
+    if not isinstance(members, list):
+        return set()
+    user_ids = set()
+    for member in members:
+        raw_id = member.get("user_id") if isinstance(member, dict) else member
+        try:
+            user_id = int(raw_id)
+        except (TypeError, ValueError):
+            continue
+        if user_id:
+            user_ids.add(user_id)
+    return user_ids
+
+
+def _admin_roles(s: requests.Session, room_id: str) -> tuple[set[int], set[int]]:
     try:
         d = s.get(MISSEVAN_CHATROOM_META_URL, params={"room_id": room_id}, timeout=10).json()
-        return {a["user_id"] for a in (d.get("info") or {}).get("members", {}).get("admin", [])}
+        members = (d.get("info") or {}).get("members") or {}
+        if not isinstance(members, dict):
+            return set(), set()
+        super_admins = _member_user_ids(
+            members.get("super_admin") or members.get("superadmin") or []
+        )
+        admins = _member_user_ids(members.get("admin") or []) - super_admins
+        return admins, super_admins
     except Exception:
-        return set()
+        return set(), set()
 
 
 def _decode(raw) -> list:
@@ -506,6 +530,7 @@ class MissEvanListener:
         self._thread: Optional[threading.Thread] = None
         self._creator_id: Optional[int] = None
         self._admins: set[int] = set()
+        self._super_admins: set[int] = set()
         self._seen: set[str] = set()
         # The starting user's login, captured here: the listener thread has no Streamlit session.
         self._cookies = login_cookies()
@@ -553,7 +578,7 @@ class MissEvanListener:
         while self._running:
             try:
                 s = _session(self._cookies)
-                self._admins = _admins(s, self.room_id)
+                self._admins, self._super_admins = _admin_roles(s, self.room_id)
                 if first:
                     self._load_history(s)
                     first = False
@@ -630,13 +655,15 @@ class MissEvanListener:
 
     def _base(self, mid: str, user: dict, text: str, mtype: str, ts) -> dict:
         uid = user.get("user_id") or 0
+        super_admins = getattr(self, "_super_admins", set())
         return {
             "id": mid,
             "platform": "missevan",
             "author": user.get("username") or "?",
             "author_id": str(uid),
             "is_owner": bool(uid) and uid == self._creator_id,
-            "is_moderator": uid in self._admins,
+            "is_moderator": uid in self._admins and uid not in super_admins,
+            "is_super_admin": uid in super_admins,
             "is_verified": False,
             "membership": _membership(user),
             "text": text,

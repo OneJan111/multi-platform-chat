@@ -48,6 +48,7 @@ from src import transcription as transcribe
 from src import user_login
 from src import youtube as yt
 from src import youtube_web as ytw
+from src.background_poll import BackgroundPoll, BackgroundTask
 
 
 def _fresh(mod):
@@ -343,6 +344,12 @@ body { --send-composer-left: 16px; }
 }
 /* Full-width transparent rows; platform and paid-event badges carry the visual distinction. */
 .chat-yt, .chat-bili, .chat-me { background: transparent; }
+.chat-super-admin {
+    background: #b42318 !important;
+    color: #fff;
+    border-radius: 6px;
+    padding: 6px 8px;
+}
 .chat-gift { background: rgba(156,39,176,0.08) !important; }
 .chat-thanked { opacity: 0.45; }
 /* Gifts / Super Chats: clicking the bubble toggles thanked (see _render_message) */
@@ -402,6 +409,8 @@ h3 .site-icon { margin-right: 0.15em; position: relative; top: -0.08em; }
 .badge-icon { margin-right: 4px; }
 .badge-mod  { background:#ffd700; color:#000; }
 .badge-owner{ background:#cc0000; color:#fff; }
+.badge-me-room-admin { background:#45c46b; color:#111; }
+.badge-me-super-admin { background:#ff564a; color:#111; }
 .badge-sc   { background:#ff6600; color:#fff; }
 .badge-member { background:#2e7d32; color:#fff; }
 .badge-member-icon { height:1.3em; width:auto; vertical-align:middle; margin-right:2px; }
@@ -1002,10 +1011,22 @@ def _platform_badge(msg: dict) -> str:
 
 def _role_badges(msg: dict) -> str:
     parts = []
-    if msg.get("is_owner"):
-        parts.append('<span class="badge badge-owner">OWNER</span>')
-    if msg.get("is_moderator"):
-        parts.append('<span class="badge badge-mod">MOD</span>')
+    if msg.get("platform") == "missevan":
+        if msg.get("is_owner"):
+            parts.append('<span class="badge badge-owner">OWNER</span>')
+        if msg.get("is_super_admin"):
+            parts.append(
+                f'<span class="badge badge-me-super-admin">{html_lib.escape(t("Super admin"))}</span>'
+            )
+        elif msg.get("is_moderator"):
+            parts.append(
+                f'<span class="badge badge-me-room-admin">{html_lib.escape(t("Room admin"))}</span>'
+            )
+    else:
+        if msg.get("is_owner"):
+            parts.append('<span class="badge badge-owner">OWNER</span>')
+        if msg.get("is_moderator"):
+            parts.append('<span class="badge badge-mod">MOD</span>')
     if msg.get("membership"):
         icon = emotes.safe_badge_url(msg.get("membership_icon"))
         mark = (
@@ -1028,7 +1049,9 @@ def _type_badge(msg: dict) -> str:
 
 def _bubble_class(msg: dict) -> str:
     base = {"youtube": "chat-yt", "missevan": "chat-me"}.get(msg.get("platform", ""), "chat-bili")
-    if msg.get("is_moderator") or msg.get("is_owner"):
+    if msg.get("platform") == "missevan" and msg.get("is_super_admin"):
+        base += " chat-super-admin"
+    if msg.get("is_moderator") or msg.get("is_owner") or msg.get("is_super_admin"):
         base += " chat-mod"
     t = msg.get("type", "")
     if "super" in t.lower():
@@ -1263,13 +1286,35 @@ def _play_tts(text: str, lang: str):
     if _browser_tts():
         _tts_say(text, lang, priority=True)
         return
-    audio = speak(
-        text,
-        rate=st.session_state["tts_rate"],
-        volume=st.session_state["tts_volume"],
-        lang=lang,
-    )
-    if audio:
+    if not app_config.TTS_USE_GTTS:
+        speak_async(
+            text, rate=st.session_state["tts_rate"],
+            volume=st.session_state["tts_volume"], lang=lang, priority=True,
+        )
+        return
+    task = st.session_state.setdefault("_tts_audio_task", BackgroundTask())
+    rate, volume = st.session_state["tts_rate"], st.session_state["tts_volume"]
+
+    def generate():
+        audio = speak(text, rate=rate, volume=volume, lang=lang)
+        if not audio:
+            raise RuntimeError("TTS audio generation failed.")
+        return audio
+
+    if not task.submit(generate, name="browser-tts-audio"):
+        st.warning(t("TTS audio generation is busy; try again shortly."))
+
+
+def _take_tts_audio() -> None:
+    task = st.session_state.get("_tts_audio_task")
+    if task is None:
+        return
+    try:
+        ready, audio = task.take()
+    except Exception as exc:
+        st.warning(t("TTS audio generation failed: {error}", error=str(exc)))
+        return
+    if ready and audio:
         st.session_state["_tts_audio"] = audio
 
 
@@ -1277,6 +1322,9 @@ def _stop_tts(clear: bool):
     """Cut off the message being read (e.g. a sensitive comment); clear=True also drops the queue."""
     if clear:
         st.session_state["_tts_translation_pending"] = []
+    task = st.session_state.get("_tts_audio_task")
+    if task is not None:
+        task.invalidate()
     if _browser_tts():
         st.session_state["_tts_browser"] = []
         st.session_state["_tts_browser_cmd"] = "stop" if clear else "skip"
@@ -1335,8 +1383,21 @@ def _display_order(items):
 
 
 def _sync_obs_chat():
+    task = st.session_state.setdefault("_obs_text_task", BackgroundTask())
+    try:
+        ready, sent = task.take()
+    except Exception as exc:
+        st.session_state["obs_chat_last"] = None
+        st.warning(t("Couldn't update OBS chat text: {err}", err=str(exc)))
+        return
+    if ready:
+        st.session_state["obs_chat_last"] = sent
+        st.session_state["obs_chat_last_at"] = time.monotonic()
     if not st.session_state["obs_enabled"] or not st.session_state["obs_chat_enabled"]:
         st.session_state["obs_chat_last"] = None
+        task.invalidate()
+        return
+    if task.busy:
         return
     source = st.session_state["obs_chat_source"]
     if not source:
@@ -1354,13 +1415,85 @@ def _sync_obs_chat():
     now = time.monotonic()
     if last == (source, text) and now - st.session_state["obs_chat_last_at"] < 30:
         return
-    try:
+    def push():
         obs.set_text_source(source, text)
-    except Exception as exc:
-        st.warning(t("Couldn't update OBS chat text: {err}", err=str(exc)))
+        return source, text
+
+    task.submit(push, name="browser-obs-text")
+
+
+def _queue_obs_action(operation) -> None:
+    task = st.session_state.setdefault("_obs_action_task", BackgroundTask())
+    if not task.submit(operation, name="browser-obs-control"):
+        st.warning(t("An OBS operation is already in progress."))
+
+
+def _change_obs_scene() -> None:
+    scene = st.session_state["_obs_scene"]
+    _queue_obs_action(lambda: obs.switch_scene(scene))
+
+
+def _change_obs_visibility(scene: str, name: str, key: str) -> None:
+    visible = st.session_state[key]
+    _queue_obs_action(lambda: obs.set_source_visibility(scene, name, visible))
+
+
+def _take_obs_action() -> None:
+    task = st.session_state.get("_obs_action_task")
+    if task is None:
         return
-    st.session_state["obs_chat_last"] = (source, text)
-    st.session_state["obs_chat_last_at"] = now
+    try:
+        ready, ok = task.take()
+        if ready and not ok:
+            raise RuntimeError("OBS rejected the operation.")
+    except Exception as exc:
+        st.warning(t("OBS operation failed: {error}", error=str(exc)))
+    else:
+        if ready:
+            st.session_state.pop("_obs_snapshot", None)
+            poller = st.session_state.get("_obs_status_poll")
+            if poller is not None:
+                poller.invalidate()
+
+
+def _fetch_obs_snapshot(scene: str, include_text: bool) -> dict:
+    status = obs.get_status()
+    result = {
+        "status": status, "error": tuple(obs.last_error), "scenes": [],
+        "scene": scene, "sources": [], "text_sources": [], "text_error": "",
+    }
+    if not status.get("connected"):
+        return result
+    result["scenes"] = obs.get_scenes()
+    selected_scene = scene or status.get("current_scene", "")
+    result["scene"] = selected_scene
+    if selected_scene:
+        result["sources"] = obs.get_sources(selected_scene)
+    if include_text:
+        try:
+            result["text_sources"] = obs.get_text_sources()
+        except Exception as exc:
+            result["text_error"] = str(exc)
+    return result
+
+
+def _obs_snapshot() -> dict:
+    poller = st.session_state.setdefault("_obs_status_poll", BackgroundPoll())
+    scene = st.session_state.get("_obs_scene", "")
+    include_text = st.session_state["obs_chat_enabled"]
+    try:
+        ready, result = poller.poll(
+            (scene, include_text), CHAT_POLL_INTERVAL,
+            lambda: _fetch_obs_snapshot(scene, include_text),
+        )
+        if ready and result is not None:
+            st.session_state["_obs_snapshot"] = result
+    except Exception as exc:
+        st.warning(t("OBS operation failed: {error}", error=str(exc)))
+    return st.session_state.get("_obs_snapshot", {
+        "status": {"connected": False}, "error": ("", ""), "scenes": [],
+        "scene": "", "sources": [], "text_sources": [], "text_error": "",
+    })
 
 
 def _tts_stop_buttons(container, prefix: str):
@@ -1528,8 +1661,6 @@ def _poll_chat():
     _flush_translated_speech()
     _flush_chat_translation_pending()
     now = time.time()
-    if now - st.session_state["last_poll"] < CHAT_POLL_INTERVAL:
-        return
     st.session_state["last_poll"] = now
 
     new_msgs: list[dict] = []
@@ -1540,13 +1671,22 @@ def _poll_chat():
     chat_id = st.session_state.get("selected_chat_id", "")
     if chat_id:
         first_fetch = not st.session_state["yt_page_token"]
-        msgs, next_tok, _ = yt.get_chat_messages(
-            chat_id, st.session_state["yt_page_token"]
+        poller = st.session_state.setdefault("_yt_chat_poll", BackgroundPoll())
+        page_token = st.session_state["yt_page_token"]
+        ready, result = poller.poll(
+            (chat_id, page_token), CHAT_POLL_INTERVAL,
+            lambda: yt.get_chat_messages(chat_id, page_token),
         )
-        st.session_state["yt_page_token"] = next_tok
-        new_msgs.extend(msgs)
-        if first_fetch:  # backlog of earlier chat — show it, but don't read it aloud
-            history_ids = {m["id"] for m in msgs}
+        if ready and result is not None:
+            msgs, next_tok, _ = result
+            st.session_state["yt_page_token"] = next_tok
+            new_msgs.extend(msgs)
+            if first_fetch:  # backlog of earlier chat — show it, but don't read it aloud
+                history_ids = {m["id"] for m in msgs}
+            poller.poll(
+                (chat_id, next_tok), CHAT_POLL_INTERVAL,
+                lambda: yt.get_chat_messages(chat_id, next_tok),
+            )
 
     # Bilibili
     listener: Optional[bili.DanmakuListener] = st.session_state.get("bili_listener")
@@ -1686,6 +1826,10 @@ def _yt_video_id() -> str:
 
 def _stop_yt_listener():
     _stop_transcription_for("youtube")
+    for key in ("_yt_chat_poll", "_yt_watch_poll"):
+        poller = st.session_state.get(key)
+        if poller is not None:
+            poller.invalidate()
     st.session_state["selected_chat_id"] = ""
     st.session_state["yt_page_token"] = ""
     st.session_state["yt_live_video"] = ""
@@ -1817,32 +1961,50 @@ def _emit_browser_tts() -> None:
 def _check_watched_channel(force: bool = False):
     """Attach to the watched channel's stream once it goes live; detach when it ends."""
     channel = st.session_state["yt_watch_channel"]
-    now = time.time()
-    if not channel or (not force and now - st.session_state["yt_watch_last"] < YT_WATCH_INTERVAL):
+    if not channel:
         return
-    st.session_state["yt_watch_last"] = now
     live_vid = st.session_state["yt_live_video"]
-    if st.session_state["selected_chat_id"] and live_vid:
-        status = ytw.get_video_status(live_vid)
+    watching_live = bool(st.session_state["selected_chat_id"] and live_vid)
+    poller = st.session_state.setdefault("_yt_watch_poll", BackgroundPoll())
+    ready, result = poller.poll(
+        (channel, live_vid, watching_live), 0 if force else YT_WATCH_INTERVAL,
+        lambda: _fetch_watched_channel(channel, live_vid, watching_live, force),
+    )
+    if not ready or result is None:
+        return
+    st.session_state["yt_watch_last"] = time.time()
+    if watching_live:
+        status = result[0]
         if status and status.get("broadcast") != "live":  # {} = network hiccup, keep listening
             _stop_yt_listener()
             st.toast(t("The YouTube stream ended — watching the channel for the next one."))
         return
-    info = ytw.find_live_video(channel)
+    info, chat_id, err, request_forced = result
     st.session_state["yt_watch_info"] = info
     if not info["live"]:
         return
-    chat_id, err = yt.resolve_live_chat_id(info["video_id"])
     st.session_state["yt_chat_error"] = err
     if chat_id:
         st.session_state["selected_chat_id"] = chat_id
         st.session_state["yt_page_token"] = ""
         st.session_state["yt_live_video"] = info["video_id"]
         msg = t("{channel} is live — reading chat", channel=info["channel"] or "YouTube")
-        if not force and st.session_state["live_notify"]:
+        if not request_forced and st.session_state["live_notify"]:
             _alert_live(msg)  # it went live while we were watching
         else:
             st.toast(msg)
+
+
+def _fetch_watched_channel(
+    channel: str, live_vid: str, watching_live: bool, force: bool
+) -> tuple[dict, str, str, bool]:
+    if watching_live:
+        return ytw.get_video_status(live_vid), "", "", force
+    info = ytw.find_live_video(channel)
+    if info.get("live"):
+        chat_id, error = yt.resolve_live_chat_id(info["video_id"])
+        return info, chat_id, error, force
+    return info, "", "", force
 
 
 @st.cache_data(ttl=ROOM_STATUS_POLL_INTERVAL, show_spinner=False)
@@ -2359,8 +2521,13 @@ with st.sidebar:
         _samples = {"zh": "你好，欢迎来到直播间", "ja": "こんにちは、配信へようこそ", "ko": "안녕하세요, 방송에 오신 것을 환영합니다", "en": "Hello, welcome to the stream"}
         _sample = _samples.get(st.session_state["tts_lang"], _samples["en"])
         _play_tts(format_message("Streamer", _sample, st.session_state["tts_lang"]), st.session_state["tts_lang"])
-    if st.session_state.get("_tts_audio"):
-        st.audio(st.session_state["_tts_audio"], format="audio/mp3", autoplay=True)
+    @st.fragment(run_every=CHAT_POLL_INTERVAL)
+    def _tts_audio_player():
+        _take_tts_audio()
+        if st.session_state.get("_tts_audio"):
+            st.audio(st.session_state["_tts_audio"], format="audio/mp3", autoplay=True)
+
+    _tts_audio_player()
     st.session_state["tts_rate"] = st.slider(
         t("Speed (WPM)"), 80, 300, st.session_state["tts_rate"]
     )
@@ -3649,13 +3816,22 @@ with page_obs:
             t("Connect to OBS"), key="obs_enabled", on_change=obs.retry_now,
             help=t("Off: the dashboard never contacts OBS. On: stream, recording, scene and Text source controls appear here once OBS is connected."),
         )
-    obs_status = obs.get_status() if st.session_state["obs_enabled"] else {"connected": False}
-    if not _obs_local:
-        st.session_state["obs_chat_last"] = None
-    elif not obs_status.get("connected"):
-        st.session_state["obs_chat_last"] = None
-        if st.session_state["obs_enabled"]:
-            code, detail = obs.last_error
+    @st.fragment(run_every=CHAT_POLL_INTERVAL)
+    def _obs_controls():
+        _take_obs_action()
+        if not st.session_state["obs_enabled"] or not _obs_local:
+            st.session_state["obs_chat_last"] = None
+            poller = st.session_state.get("_obs_status_poll")
+            if poller is not None:
+                poller.invalidate()
+            st.session_state.pop("_obs_snapshot", None)
+            st.caption(t("OBS functions are off."))
+            return
+        data = _obs_snapshot()
+        obs_status = data["status"]
+        if not obs_status.get("connected"):
+            st.session_state["obs_chat_last"] = None
+            code, detail = data["error"]
             addr = f"{OBS_HOST}:{OBS_PORT}"
             if code == "no_lib":
                 st.warning(t("⚠️ OBS is not connected: obsws-python is not installed. Run `pip install obsws-python`."))
@@ -3664,6 +3840,8 @@ with page_obs:
             elif code == "auth":
                 st.warning(t("⚠️ OBS at {addr} refused the login — check OBS_PASSWORD. ({detail})",
                              addr=addr, detail=detail))
+            elif not code:
+                st.info(t("Connecting to OBS…"))
             else:
                 st.warning(t("⚠️ OBS is not connected: nothing answered at {addr}.", addr=addr))
                 st.caption(t(
@@ -3672,11 +3850,9 @@ with page_obs:
                     "OBS_HOST to the address of the PC running OBS, reachable from the server (same network, "
                     "VPN such as Tailscale, or a port forward), and allow port {port} in that PC's firewall.", port=OBS_PORT,
                 ))
-        else:
-            st.caption(t("OBS functions are off."))
-        with st.expander(t("Setup instructions")):
-            st.markdown(
-                t("obs_setup_md") if st.session_state["ui_lang"] != "en" else """
+            with st.expander(t("Setup instructions")):
+                st.markdown(
+                    t("obs_setup_md") if st.session_state["ui_lang"] != "en" else """
 1. Open OBS → **Tools → WebSocket Server Settings**
 2. Enable the WebSocket server
 3. Set a password and note the port (default 4455)
@@ -3687,8 +3863,8 @@ with page_obs:
    OBS_PASSWORD=your_password
    ```
 """
-            )
-    else:
+                )
+            return
         st.success(t("OBS connected ✓"))
         # ── Status metrics ────────────────────────────────────────────────────
         m1, m2, m3, m4 = st.columns(4)
@@ -3710,13 +3886,11 @@ with page_obs:
             if streaming:
                 st.success(t("Streaming is LIVE"))
                 if st.button(t("⏹ Stop Stream")):
-                    obs.stop_stream()
-                    st.rerun()
+                    _queue_obs_action(obs.stop_stream)
             else:
                 st.info(t("Not streaming"))
                 if st.button(t("▶️ Start Stream")):
-                    obs.start_stream()
-                    st.rerun()
+                    _queue_obs_action(obs.start_stream)
 
         with ctrl_col2:
             st.subheader(t("⏺ Recording"))
@@ -3724,33 +3898,38 @@ with page_obs:
             if recording:
                 st.success(t("Recording in progress"))
                 if st.button(t("⏹ Stop Recording")):
-                    obs.stop_recording()
-                    st.rerun()
+                    _queue_obs_action(obs.stop_recording)
             else:
                 st.info(t("Not recording"))
                 if st.button(t("▶️ Start Recording")):
-                    obs.start_recording()
-                    st.rerun()
+                    _queue_obs_action(obs.start_recording)
 
         st.divider()
 
         # ── Scene / Source management ─────────────────────────────────────────
         st.subheader(t("🎭 Scenes & Sources"))
-        scenes = obs.get_scenes()
+        scenes = data["scenes"]
         cur_scene = obs_status.get("current_scene", "")
         if scenes:
-            new_scene = st.radio(t("Active scene"), scenes, index=scenes.index(cur_scene) if cur_scene in scenes else 0, horizontal=True)
-            if new_scene != cur_scene:
-                obs.switch_scene(new_scene)
-                st.rerun()
+            action_task = st.session_state.get("_obs_action_task")
+            action_busy = action_task is not None and action_task.busy
+            new_scene = st.radio(
+                t("Active scene"), scenes,
+                index=scenes.index(cur_scene) if cur_scene in scenes else 0,
+                horizontal=True, key="_obs_scene", on_change=_change_obs_scene,
+                disabled=action_busy,
+            )
 
-            sources = obs.get_sources(new_scene)
+            sources = data["sources"] if data["scene"] == new_scene else []
             if sources:
                 st.caption(t("Sources in selected scene:"))
                 for src in sources:
-                    vis = st.checkbox(src["name"], value=src["visible"], key=f"src_{src['id']}")
-                    if vis != src["visible"]:
-                        obs.set_source_visibility(new_scene, src["name"], vis)
+                    key = f"src_{new_scene}_{src['id']}"
+                    st.checkbox(
+                        src["name"], value=src["visible"], key=key,
+                        disabled=action_busy, on_change=_change_obs_visibility,
+                        args=(new_scene, src["name"], key),
+                    )
 
         st.divider()
 
@@ -3758,11 +3937,10 @@ with page_obs:
         st.subheader(t("📝 OBS Text source"))
         st.toggle(t("Send chat to OBS Text source"), key="obs_chat_enabled")
         if st.session_state["obs_chat_enabled"]:
-            try:
-                text_sources = obs.get_text_sources()
-            except Exception as exc:
-                st.warning(t("Couldn't list OBS Text sources: {err}", err=str(exc)))
+            if data["text_error"]:
+                st.warning(t("Couldn't list OBS Text sources: {err}", err=data["text_error"]))
             else:
+                text_sources = data["text_sources"]
                 if text_sources:
                     if st.session_state["obs_chat_source"] not in text_sources:
                         st.session_state["obs_chat_source"] = text_sources[0]
@@ -3770,6 +3948,8 @@ with page_obs:
                 else:
                     st.session_state["obs_chat_source"] = ""
                     st.warning(t("Add a Text source in OBS to display chat."))
+
+    _obs_controls()
 
     st.divider()
 

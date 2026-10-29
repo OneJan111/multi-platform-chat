@@ -30,6 +30,7 @@ from src.server_chat_history import ServerChatHistory, ServerChatPoller
 from src import translate as tr
 from src import youtube as yt
 from src import youtube_web as ytw
+from src.background_poll import BackgroundPoll
 from src.config import (
     MAX_CHAT_DISPLAY,
     SIMPLE_CHAT_POLL_INTERVAL,
@@ -290,20 +291,22 @@ def _import_bilibili_cookie() -> None:
 
 
 def _refresh_youtube() -> None:
-    now = time.monotonic()
-    if now - st.session_state["simple_last_status"] < _STATUS_INTERVAL:
-        return
-    st.session_state["simple_last_status"] = now
-
     channel = st.session_state["simple_yt_channel"]
     video_id = st.session_state["simple_yt_video_id"]
+    chat_id = st.session_state["simple_yt_chat_id"]
+    if not channel and not video_id:
+        return
+    poller = st.session_state.setdefault("_simple_yt_status_poll", BackgroundPoll())
+    ready, result = poller.poll(
+        (channel, video_id, chat_id), _STATUS_INTERVAL,
+        lambda: _fetch_youtube_status(channel, video_id, chat_id),
+    )
+    if not ready or result is None:
+        return
+    info, current, resolved_chat_id, resolved_error = result
+    st.session_state["simple_last_status"] = time.monotonic()
     join_video_id = ""
     if channel:
-        info = ytw.find_live_video(channel)
-        if info.get("live") and info.get("video_id"):
-            live_status = yt.get_video_live_status(info["video_id"])
-            if "viewers" in live_status:
-                info["viewers"] = live_status["viewers"]
         st.session_state["simple_yt_status"] = info
         if not info.get("error"):
             st.session_state["simple_yt_error"] = ""
@@ -317,7 +320,6 @@ def _refresh_youtube() -> None:
             st.session_state["simple_yt_video_id"] = video_id
             join_video_id = video_id
         elif st.session_state["simple_yt_chat_id"]:
-            current = ytw.get_video_status(st.session_state["simple_yt_video_id"])
             if current and current.get("broadcast") != "live":
                 st.session_state["simple_yt_chat_id"] = ""
                 st.session_state["simple_yt_page_token"] = ""
@@ -325,7 +327,6 @@ def _refresh_youtube() -> None:
                 st.session_state["simple_yt_video_id"] = ""
                 video_id = ""
     elif video_id:
-        info = yt.get_video_live_status(video_id)
         st.session_state["simple_yt_status"] = info
         if info and info.get("broadcast") == "live":
             join_video_id = video_id
@@ -340,26 +341,58 @@ def _refresh_youtube() -> None:
             st.session_state["simple_yt_error"] = "Couldn't fetch YouTube stream status."
 
     if join_video_id and not st.session_state["simple_yt_chat_id"]:
-        chat_id, error = yt.resolve_live_chat_id(join_video_id)
-        st.session_state["simple_yt_chat_id"] = chat_id
-        st.session_state["simple_yt_error"] = error
+        st.session_state["simple_yt_chat_id"] = resolved_chat_id
+        st.session_state["simple_yt_error"] = resolved_error
         st.session_state["simple_yt_page_token"] = ""
     elif st.session_state["simple_yt_chat_id"]:
         st.session_state["simple_yt_error"] = ""
 
 
+def _fetch_youtube_status(
+    channel: str, video_id: str, chat_id: str
+) -> tuple[dict, dict, str, str]:
+    current = {}
+    join_video_id = ""
+    if channel:
+        info = ytw.find_live_video(channel)
+        if info.get("live") and info.get("video_id"):
+            join_video_id = info["video_id"]
+            live_status = yt.get_video_live_status(join_video_id)
+            if "viewers" in live_status:
+                info["viewers"] = live_status["viewers"]
+        elif chat_id and video_id:
+            current = ytw.get_video_status(video_id)
+    else:
+        info = yt.get_video_live_status(video_id)
+        if info and info.get("broadcast") == "live":
+            join_video_id = video_id
+    if join_video_id and (not chat_id or join_video_id != video_id):
+        resolved_chat_id, error = yt.resolve_live_chat_id(join_video_id)
+    else:
+        resolved_chat_id, error = chat_id, ""
+    return info, current, resolved_chat_id, error
+
+
 def _refresh_room_status() -> None:
     statuses = st.session_state["simple_room_status"]
-    if _SOURCES.get("bilibili"):
-        info = bili.get_room_info(_SOURCES["bilibili"])
-        statuses["bilibili"] = info
+    for site, module in (("bilibili", bili), ("missevan", me)):
+        room_id = _SOURCES.get(site)
+        if not room_id:
+            continue
+        poller = st.session_state.setdefault(f"_simple_{site}_status_poll", BackgroundPoll())
+        ready, info = poller.poll(
+            room_id, _STATUS_INTERVAL,
+            lambda module=module, room_id=room_id: module.get_room_info(room_id),
+        )
+        if not ready or info is None:
+            continue
+        statuses[site] = info
         if info:
-            _track_live_status("bilibili", info.get("live_status") == 1, info.get("uname") or info.get("title", ""))
-    if _SOURCES.get("missevan"):
-        info = me.get_room_info(_SOURCES["missevan"])
-        statuses["missevan"] = info
-        if info:
-            _track_live_status("missevan", bool(info.get("live")), info.get("uname") or info.get("title", ""))
+            _track_live_status(
+                site,
+                info.get("live_status") == 1 if site == "bilibili" else bool(info.get("live")),
+                info.get("uname") or info.get("title", ""),
+            )
 
 
 def _current_viewer_count(site: str, info: dict, listener=None):
@@ -551,18 +584,31 @@ def _poll_messages() -> None:
         _flush_tts_pending()
         return
     now = time.monotonic()
-    if now - st.session_state["simple_last_poll"] < SIMPLE_CHAT_POLL_INTERVAL:
-        return
     st.session_state["simple_last_poll"] = now
 
     video_id = st.session_state["simple_yt_video_id"]
     chat_id = st.session_state["simple_yt_chat_id"]
     if chat_id and video_id:
         first_fetch = not st.session_state["simple_yt_backlog_loaded"]
-        messages, token, _ = yt.get_chat_messages(chat_id, st.session_state["simple_yt_page_token"])
-        st.session_state["simple_yt_page_token"] = token
-        st.session_state["simple_yt_backlog_loaded"] = True
-        _accept_messages(messages, is_backlog=first_fetch)
+        poller = st.session_state.setdefault("_simple_yt_chat_poll", BackgroundPoll())
+        page_token = st.session_state["simple_yt_page_token"]
+        ready, result = poller.poll(
+            (video_id, chat_id, page_token), SIMPLE_CHAT_POLL_INTERVAL,
+            lambda: yt.get_chat_messages(chat_id, page_token),
+        )
+        if ready and result is not None:
+            messages, token, _ = result
+            st.session_state["simple_yt_page_token"] = token
+            st.session_state["simple_yt_backlog_loaded"] = True
+            _accept_messages(messages, is_backlog=first_fetch)
+            poller.poll(
+                (video_id, chat_id, token), SIMPLE_CHAT_POLL_INTERVAL,
+                lambda: yt.get_chat_messages(chat_id, token),
+            )
+    else:
+        poller = st.session_state.get("_simple_yt_chat_poll")
+        if poller is not None:
+            poller.invalidate()
 
     bili_listener: Optional[bili.DanmakuListener] = st.session_state["simple_bili_listener"]
     if bili_listener:
@@ -787,6 +833,14 @@ def _feed_messages_html(messages: list[dict], browser_timezone: str) -> str:
         author_html = _feed_author_html(str(msg.get("author") or ""))
         header = (
             f'{html.escape(platform)} · {author_html}'
+            + (
+                f' <span class="simple-feed-role simple-feed-role-super">'
+                f'{html.escape(_t("Super admin"))}</span>'
+                if msg.get("platform") == "missevan" and msg.get("is_super_admin") else
+                f' <span class="simple-feed-role simple-feed-role-room">'
+                f'{html.escape(_t("Room admin"))}</span>'
+                if msg.get("platform") == "missevan" and msg.get("is_moderator") else ""
+            )
             + (f' · {html.escape(stamp)}' if stamp else "")
         )
         avatar_url = chat_avatars.message_avatar_url(
@@ -804,8 +858,13 @@ def _feed_messages_html(messages: list[dict], browser_timezone: str) -> str:
             if result:
                 translated_text = reading.annotate_html(result, "auto") or html.escape(result)
                 translated = f'<div class="simple-feed-translated">{translated_text}</div>'
+        card_class = (
+            "simple-feed-card simple-feed-card-super-admin"
+            if msg.get("platform") == "missevan" and msg.get("is_super_admin")
+            else "simple-feed-card"
+        )
         cards.append(
-            '<article class="simple-feed-card">'
+            f'<article class="{card_class}">'
             f'<div class="simple-feed-row">{avatar}<div class="simple-feed-content">'
             f'<div class="simple-feed-meta">{header}</div>'
             f'<div class="simple-feed-text">{text}</div>{amount_html}{translated}'
@@ -867,6 +926,11 @@ def _render_feeds() -> None:
             padding: .5rem;
             margin: .25rem 0;
         }
+        .simple-feed-card-super-admin {
+            background: #b42318;
+            border-color: #ef8178;
+            color: #fff;
+        }
         .simple-feed-row { display: flex; align-items: flex-start; gap: .5rem; }
         .simple-feed-avatar {
             display: block;
@@ -883,6 +947,15 @@ def _render_feeds() -> None:
         }
         .simple-feed-content { min-width: 0; flex: 1 1 auto; }
         .simple-feed-meta { font-size: .8rem; opacity: .7; margin-bottom: .25rem; }
+        .simple-feed-role {
+            display: inline-block;
+            padding: 0 .35rem;
+            border-radius: .25rem;
+            font-weight: 700;
+            opacity: 1;
+        }
+        .simple-feed-role-room { background: #45c46b; color: #111; }
+        .simple-feed-role-super { background: #ff564a; color: #111; }
         .simple-feed-text { white-space: pre-wrap; overflow-wrap: anywhere; }
         .simple-feed-reading rt, .simple-feed-translated rt { font-size: .68em; color: #f0a030; }
         .simple-feed-price { font-size: .9rem; font-weight: 600; color: #42d392; }
@@ -914,7 +987,7 @@ def _render_feeds() -> None:
 _STATUS_AUTO_REFRESH = _STATUS_INTERVAL
 
 
-@st.fragment(run_every=_STATUS_AUTO_REFRESH)
+@st.fragment(run_every=min(_STATUS_AUTO_REFRESH, SIMPLE_CHAT_POLL_INTERVAL))
 def _update_status() -> None:
     _refresh_youtube()
     _refresh_room_status()

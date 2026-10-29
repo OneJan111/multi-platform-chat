@@ -1,11 +1,78 @@
 import unittest
 import threading
+import queue
 from unittest.mock import Mock, patch
 
 from src.server_chat_history import ServerChatHistory, ServerChatPoller
 
 
 class ServerChatHistoryTests(unittest.TestCase):
+    def test_room_messages_arrive_while_status_request_is_blocked(self):
+        started = threading.Event()
+        release = threading.Event()
+        received = threading.Event()
+        history = ServerChatHistory()
+        pending = queue.Queue()
+
+        def pop_messages():
+            try:
+                return [pending.get_nowait()]
+            except queue.Empty:
+                return []
+
+        listener = Mock(pop_messages=pop_messages)
+
+        def start_listeners(poller):
+            poller._bili_listener = listener
+
+        def blocked_status(poller):
+            started.set()
+            if not release.wait(5):
+                raise TimeoutError("Test did not release room status")
+            return False
+
+        append = history.append_many
+
+        def store(messages, **kwargs):
+            append(messages, **kwargs)
+            if messages:
+                received.set()
+
+        with (
+            patch("src.server_chat_history.SIMPLE_CHAT_POLL_INTERVAL", 1),
+            patch.object(ServerChatPoller, "_start_listeners", start_listeners),
+            patch.object(ServerChatPoller, "_refresh_youtube", return_value=False),
+            patch.object(ServerChatPoller, "_refresh_room_status", blocked_status),
+            patch.object(history, "append_many", side_effect=store),
+        ):
+            poller = ServerChatPoller(history, {})
+            try:
+                self.assertTrue(started.wait(1))
+                for number in range(2):
+                    received.clear()
+                    pending.put({"id": str(number), "platform": "bilibili"})
+                    self.assertTrue(received.wait(1.5))
+                    self.assertFalse(release.is_set())
+                self.assertEqual(len(history.chat()), 2)
+            finally:
+                release.set()
+                poller.stop()
+        self.assertFalse(poller._room_thread.is_alive())
+        self.assertFalse(poller._thread.is_alive())
+        listener.stop.assert_called_once()
+
+    def test_network_poll_interval_does_not_add_request_duration(self):
+        poller = object.__new__(ServerChatPoller)
+        poller._stop = Mock()
+        poller._stop.is_set.side_effect = [False, True]
+        poller.poll_once = Mock()
+        with (
+            patch("src.server_chat_history.SIMPLE_CHAT_POLL_INTERVAL", 2),
+            patch("src.server_chat_history.time.monotonic", side_effect=[100, 100.75]),
+        ):
+            poller._run()
+        poller._stop.wait.assert_called_once_with(1.25)
+
     def test_retains_all_messages_and_separates_chat_from_gifts(self):
         history = ServerChatHistory()
         for index in range(75):

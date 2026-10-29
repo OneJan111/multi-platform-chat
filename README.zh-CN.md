@@ -76,9 +76,9 @@ pip install -r requirements.txt
 | `TTS_PRIORITY_QUEUE_LIMIT` | 离线礼物和 Super Chat 优先队列上限；满时丢弃最早的优先消息 | `50` |
 | `TTS_TASK_LIMIT` | 桌面版运行中及等待中的语音生成任务总上限；满时跳过新播报 | `20` |
 | `TTS_AUDIO_QUEUE_LIMIT` | 桌面版在线音频待播放队列上限；满时丢弃最早的待播放音频 | `20` |
-| `SIMPLE_CHAT_POLL_INTERVAL` | `simple_app.py` 和 `simple_server_app.py` 的聊天轮询及界面刷新间隔（秒），最小值为 `1` | `15` |
+| `SIMPLE_CHAT_POLL_INTERVAL` | `simple_app.py` 和 `simple_server_app.py` 的聊天轮询及界面刷新间隔（秒），最小值为 `1`。YouTube 网络请求不会阻塞 Bilibili / 猫耳消息投递；简易服务器独立读取 WebSocket 队列，并按轮询开始时间计算间隔。服务器采集和浏览器刷新使用独立定时器，显示延迟可能包含两者间隔及平台延迟。 | `15` |
 | `SIMPLE_STATUS_POLL_INTERVAL` | 精简版直播状态和频道检查间隔（秒），最小值为 `1` | `60` |
-| `CHAT_POLL_INTERVAL` | 弹幕刷新间隔（秒） | `5` |
+| `CHAT_POLL_INTERVAL` | 弹幕刷新间隔（秒）。桌面版 Bilibili / 猫耳 WebSocket 消息独立于房间状态和 YouTube API 请求投递。修改后需重启。 | `5` |
 | `ROOM_STATUS_POLL_INTERVAL` | 桌面版状态检查及浏览器版状态数据缓存间隔（秒），也用于 YouTube 频道监控。最小为 `1`，修改后需重启。主界面的状态和转录面板不再后台定时刷新，而是在用户交互或应用正常重新运行时更新；开播通知也不再后台检查。 | `60` |
 | `CHAT_TRANSLATION_DISPLAY_MODE` | 翻译显示方式：`immediate` 立即显示弹幕，译文就绪后补上；`wait` 等译文就绪后再显示弹幕 | `immediate` |
 | `LOGIN_SECRET` | 加密每个用户保存在浏览器中的登录信息的密钥。更改后所有人都会被登出 | 随机生成，保存在 `.login_secret` |
@@ -176,7 +176,7 @@ Windows 完成安装后，可双击 [Start_Simple_Monitor.bat](Start_Simple_Moni
 - 滚动弹幕时，实时转录预览会吸顶显示；普通弹幕保留时间戳，隐藏会员文字标签，弱化用户名并突出弹幕正文。
 - 窄屏单排会隐藏独立的进场列表和相关控件，只在弹幕中显示最新进入的一位。
 - 列表上方的 YouTube / Bilibili / 猫耳FM 复选框用于显示或隐藏各网站的消息。
-- 只有聊天标签页中的弹幕/礼物信息片段会按 `CHAT_POLL_INTERVAL` 秒后台刷新（默认 5 秒）。状态和转录面板仅在用户交互或应用正常重新运行时更新；开播通知不再后台检查。聊天定时器不会重新运行其他标签页和上方控件。侧边栏的 *最多显示消息数* 限制屏幕上保留的弹幕条数。
+- 聊天标签页中的弹幕/礼物信息片段、生成音频播放器和 OBS 控件分别按 `CHAT_POLL_INTERVAL` 秒刷新（默认 5 秒）。主浏览器应用的 gTTS 音频生成、OBS 文本投递、OBS 控制及状态请求使用独立后台任务，不阻塞聊天；停止朗读会丢弃迟到的音频结果。离线语音和转录识别保留各自的工作线程。直播状态和转录面板仅在用户交互或应用正常重新运行时更新；聊天定时器不会重新运行其他标签页。简易应用使用浏览器语音，不提供 OBS 控制、转录或磁盘聊天归档；简易服务器历史仅保存在内存中。
 - 侧边栏的 *🗑️ 清空弹幕记录* 会清空弹幕和进场，但保留礼物和醒目留言，以免漏掉还需要感谢的人。
 
 启用翻译后，默认优先使用 Index-Translate，服务不可用或响应无效时会自动回退到 Google。若要使用 LM Studio 或托管模型 API，请在 `.env` 中设置 `TRANSLATION_PROVIDER=openai_compatible`，并配置 API 地址、模型标识和（如需要）API 密钥；此模式只使用配置的 API，不会回退到其他服务。内置直播术语表会覆盖常见直播词汇的机器翻译。

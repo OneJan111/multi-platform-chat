@@ -5,12 +5,32 @@ from unittest.mock import Mock, patch
 import desktop_app
 from desktop_app import (
     _chat_event_card_colors,
+    _archive_messages_as_tsv,
     _format_message_for_copy,
     _message_avatar_url,
 )
 
 
 class DesktopChatCopyTests(unittest.TestCase):
+    def test_saved_chat_table_is_tsv_with_headers_and_safe_cells(self):
+        copied = _archive_messages_as_tsv(
+            [
+                {
+                    "timestamp": "not-a-time",
+                    "platform": "bilibili",
+                    "author": "viewer\t1",
+                    "text": "first line\nsecond line",
+                }
+            ],
+            ("Time", "Platform", "Author", "Message"),
+        )
+
+        self.assertEqual(
+            copied,
+            "Time\tPlatform\tAuthor\tMessage\n"
+            "not-a-time\tbilibili\tviewer 1\tfirst line second line",
+        )
+
     def test_copy_format_includes_timestamp_room_author_and_message(self):
         message = {
             "timestamp": "1792321020",
@@ -37,6 +57,14 @@ class DesktopChatCopyTests(unittest.TestCase):
         self.assertIn("Translation: 你好", copied)
 
     def test_paid_and_membership_events_get_distinct_card_styles(self):
+        self.assertEqual(
+            _chat_event_card_colors({
+                "platform": "missevan",
+                "is_super_admin": True,
+                "type": "danmaku",
+            }),
+            ("#b42318", "#ffffff", "#ef8178"),
+        )
         self.assertEqual(
             _chat_event_card_colors({"type": "superchat"}),
             ("#f4dfaa", "#5a3d20", "#dfbd70"),

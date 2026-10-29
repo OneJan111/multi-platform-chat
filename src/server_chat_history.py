@@ -85,8 +85,12 @@ class ServerChatPoller:
         self._listener_lock = threading.Lock()
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, name="server-chat-poller", daemon=True)
+        self._room_thread = threading.Thread(
+            target=self._run_rooms, name="server-room-chat-delivery", daemon=True
+        )
         self._start_listeners()
         self._thread.start()
+        self._room_thread.start()
 
     def _start_listeners(self) -> None:
         if self._sources.get("bilibili"):
@@ -106,11 +110,22 @@ class ServerChatPoller:
 
     def _run(self) -> None:
         while not self._stop.is_set():
+            started = time.monotonic()
             try:
                 self.poll_once()
             except Exception:
                 _LOGGER.exception("Unexpected error polling server chat")
-            self._stop.wait(SIMPLE_CHAT_POLL_INTERVAL)
+            self._stop.wait(max(
+                0, SIMPLE_CHAT_POLL_INTERVAL - (time.monotonic() - started)
+            ))
+
+    def _run_rooms(self) -> None:
+        while not self._stop.is_set():
+            started = time.monotonic()
+            self._poll_room_messages()
+            self._stop.wait(max(
+                0, SIMPLE_CHAT_POLL_INTERVAL - (time.monotonic() - started)
+            ))
 
     @property
     def status_polling_paused(self) -> bool:
@@ -126,6 +141,8 @@ class ServerChatPoller:
                 listener.stop()
         if self._thread.is_alive():
             self._thread.join(timeout=2)
+        if self._room_thread.is_alive():
+            self._room_thread.join(timeout=2)
 
     def restart_bilibili(self) -> None:
         with self._listener_lock:
@@ -164,19 +181,16 @@ class ServerChatPoller:
             except Exception:
                 _LOGGER.exception("Unexpected error polling YouTube chat")
 
+    def _poll_room_messages(self) -> None:
         with self._listener_lock:
-            bili_listener = self._bili_listener
-            me_listener = self._me_listener
-        if bili_listener:
-            try:
-                self._history.append_many(bili_listener.pop_messages())
-            except Exception:
-                _LOGGER.exception("Unexpected error polling Bilibili chat")
-        if me_listener:
-            try:
-                self._history.append_many(me_listener.pop_messages())
-            except Exception:
-                _LOGGER.exception("Unexpected error polling MissEvan chat")
+            for name, listener in (
+                ("Bilibili", self._bili_listener), ("MissEvan", self._me_listener)
+            ):
+                if listener:
+                    try:
+                        self._history.append_many(listener.pop_messages())
+                    except Exception:
+                        _LOGGER.exception("Unexpected error polling %s chat", name)
 
     def _refresh_youtube(self) -> bool:
         join_video_id = ""
