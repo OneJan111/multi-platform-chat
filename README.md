@@ -42,6 +42,7 @@ Bilibili diagnostics additionally report `bilibili_http_clients` and `bilibili_h
 ## Requirements
 
 - Python 3.10+ (developed on 3.14)
+- On Windows Python 3.12+, app-owned Bilibili HTTP/chat loops use socket-only selector loops to avoid Proactor socket-teardown errors after a peer reset. Streamlit's loop policy is unchanged; genuine request and connection errors are still reported.
 - Windows, macOS or Linux (offline TTS voices depend on the OS)
 - Optional live transcription: FFmpeg installed and available on `PATH`; faster-whisper and yt-dlp are installed with the requirements. The Whisper model is downloaded on first use.
 - Optional: [OBS Studio](https://obsproject.com/) 28+ with WebSocket server enabled

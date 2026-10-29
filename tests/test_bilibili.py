@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import sys
 import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
@@ -14,6 +15,106 @@ from src.bilibili import (
 
 
 class BilibiliSendTests(unittest.TestCase):
+    @unittest.skipUnless(
+        sys.platform == "win32" and sys.version_info >= (3, 12),
+        "Windows loop_factory support requires Python 3.12+",
+    )
+    def test_windows_owned_loop_uses_selector_without_changing_caller_loop(self):
+        async def caller():
+            caller_loop = asyncio.get_running_loop()
+            caller_type = type(caller_loop)
+
+            async def request():
+                loop = asyncio.get_running_loop()
+                self.assertIsInstance(loop, asyncio.SelectorEventLoop)
+                self.assertIsNot(loop, caller_loop)
+                return loop
+
+            owned_loop = bili._run(request())
+            self.assertTrue(owned_loop.is_closed())
+            self.assertIs(asyncio.get_running_loop(), caller_loop)
+            self.assertIs(type(caller_loop), caller_type)
+            self.assertFalse(caller_loop.is_closed())
+
+        asyncio.run(caller())
+
+    def test_owned_loop_preserves_connection_reset_errors(self):
+        async def request():
+            raise ConnectionResetError(10054, "Connection reset by peer")
+
+        with self.assertRaisesRegex(ConnectionResetError, "Connection reset by peer"):
+            bili._run_owned_loop(request())
+
+    def test_owned_loop_supports_http_websocket_and_peer_reset_cleanup(self):
+        import aiohttp
+        from aiohttp import web
+
+        loop_errors = []
+
+        async def request():
+            loop = asyncio.get_running_loop()
+            loop.set_exception_handler(lambda _loop, context: loop_errors.append(context))
+
+            async def handler(request):
+                if request.path == "/reset":
+                    request.transport.abort()
+                    return web.Response()
+                if request.path == "/ws":
+                    ws = web.WebSocketResponse()
+                    await ws.prepare(request)
+                    await ws.send_str("connected")
+                    await ws.close()
+                    return ws
+                return web.Response(text="ok")
+
+            app = web.Application()
+            app.router.add_get("/{path:.*}", handler)
+            runner = web.AppRunner(app)
+            await runner.setup()
+            try:
+                # Bind to loopback only; no platform or third-party calls.
+                async with await loop.create_server(
+                    runner.server, "127.0.0.1", 0
+                ) as server:
+                    port = server.sockets[0].getsockname()[1]
+                    origin = f"http://127.0.0.1:{port}"
+                    async with aiohttp.ClientSession() as session:
+                        async with session.get(origin) as response:
+                            self.assertEqual(await response.text(), "ok")
+                        async with session.ws_connect(origin + "/ws") as ws:
+                            self.assertEqual((await ws.receive()).data, "connected")
+                        with self.assertRaises(aiohttp.ServerDisconnectedError):
+                            await session.get(origin + "/reset")
+            finally:
+                await runner.cleanup()
+            await asyncio.sleep(0)
+            return loop
+
+        loop = bili._run_owned_loop(request())
+        self.assertTrue(loop.is_closed())
+        self.assertEqual(loop_errors, [])
+
+    def test_owned_loop_cleans_up_clients_when_request_is_cancelled(self):
+        from bilibili_api.utils import network
+
+        client = SimpleNamespace(close=AsyncMock())
+        pools = {"test": {}}
+        settings = {"test": {}}
+
+        async def request():
+            loop = asyncio.get_running_loop()
+            pools["test"][loop] = client
+            settings["test"][loop] = {}
+            raise asyncio.CancelledError()
+
+        with patch.object(network, "session_pool", pools), \
+                patch.object(network, "lazy_settings", settings):
+            with self.assertRaises(asyncio.CancelledError):
+                bili._run_owned_loop(request())
+        self.assertEqual(pools["test"], {})
+        self.assertEqual(settings["test"], {})
+        client.close.assert_awaited_once()
+
     def test_owned_loops_close_and_remove_cached_clients(self):
         from bilibili_api.utils import network
 

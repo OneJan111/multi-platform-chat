@@ -11,6 +11,7 @@ import base64
 import hashlib
 import logging
 import re
+import sys
 import threading
 import time
 from collections import deque
@@ -183,6 +184,12 @@ def _run_owned_loop(coro):
                     if clients:
                         await asyncio.sleep(0.25)
 
+    if sys.platform == "win32" and sys.version_info >= (3, 12):
+        # These loops only handle sockets. Avoid Proactor socket shutdown failures
+        # on peer resets without changing Streamlit's process-wide loop policy.
+        return asyncio.run(
+            run_and_close_clients(), loop_factory=asyncio.SelectorEventLoop
+        )
     return asyncio.run(run_and_close_clients())
 
 
