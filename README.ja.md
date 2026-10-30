@@ -123,6 +123,8 @@ Streamlit サーバーが動作している間、チャットとギフトの履�
 | `SIMPLE_NOTIFY_LIVE` | `true` | 配信開始通知を有効化（ブラウザーの許可が必要） |
 | `SIMPLE_OVERLAY_COUNT` | `10` | 簡易モニターの OBS リンクで表示するチャット・ギフトの合計上限（1–50） |
 
+Streamlit Community Cloud（`*.streamlit.app`）では、ポート 8502 ではなく同じ HTTPS アドレスの `?view=overlay` を使用します。更新後はサイドバーの新しい URL を OBS にコピーしてください。`OVERLAY_PUBLIC_URL` を指定した場合はそちらを優先します。背景が透明でない場合は OBS のカスタム CSS に `body, .stApp { background: transparent !important; }` を設定してください。
+
 両方の簡易モニターのサイドバーに OBS 用スタンドアロンオーバーレイを追加しました。サイトを選択し、チャット・Super Chat・ギフトをまとめた All リンクだけを表示します。OBS のブラウザーソースに貼り付けてください。サーバーが起動中ならページを閉じても動作し、アバター（取得できない場合は頭文字）も表示します。`.env` の `SIMPLE_OVERLAY_COUNT` を変更したら再起動し、更新されたリンクを OBS にコピーしてください。別の PC の OBS から使う場合は `OVERLAY_HOST` / `OVERLAY_PUBLIC_URL` を接続可能な値に設定してください。
 
 変更後は再起動してください。既存のセッションではサイドバーの選択を保持します。TTS 自体は既定でオフです。

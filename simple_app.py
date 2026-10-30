@@ -52,6 +52,37 @@ from src.tts import (
 st.set_page_config(page_title="Live Chat Monitor", page_icon="🎙️", layout="wide")
 
 
+def _render_overlay_page() -> None:
+    """Serve standalone overlays on the Streamlit port when no other port is exposed."""
+    query = {name: st.query_params.get_all(name) for name in st.query_params}
+    st.markdown(
+        "<style>"
+        "header, footer, [data-testid='stHeader'], [data-testid='stToolbar'], [data-testid='stDecoration'],"
+        "[data-testid='stStatusWidget'], [data-testid='stSidebar'], [data-testid='stSidebarCollapsedControl']"
+        "{display:none !important;}"
+        "html, body, .stApp, [data-testid='stAppViewContainer'], [data-testid='stMain'], [data-testid='stBottom']"
+        "{background:transparent !important;}"
+        "[data-testid='stMainBlockContainer'], .block-container {padding:0 !important;}"
+        "[data-stale='true'] {opacity:1 !important; transition:none !important;}"
+        + overlay_server._PAGE_CSS + "</style>",
+        unsafe_allow_html=True,
+    )
+
+    @st.fragment(run_every=2)
+    def _live() -> None:
+        st.markdown(
+            overlay_server.render_html(overlay_server.overlay_data(query)),
+            unsafe_allow_html=True,
+        )
+
+    _live()
+
+
+if st.query_params.get("view") == "overlay":
+    _render_overlay_page()
+    st.stop()
+
+
 def _configured_platforms() -> dict[str, str]:
     """Return configured sources; invalid configured room IDs remain visible as errors."""
     sources = {}
@@ -113,16 +144,31 @@ def _render_obs_overlay() -> None:
     }
     if not sources:
         return
-    try:
-        overlay_server.ensure_started()
-    except OSError as exc:
-        st.error(_t("Couldn't start OBS overlay: {error}", error=str(exc)))
-        return
     host = urlsplit("//" + (st.context.headers.get("Host") or "localhost")).hostname or "localhost"
     host_url = f"[{host}]" if ":" in host else host
+    loopback = ("127.0.0.1", "localhost", "::1")
+    via_dashboard = (
+        not app_config.OVERLAY_PUBLIC_URL
+        and (host.endswith(".streamlit.app") or (
+            app_config.OVERLAY_HOST in loopback and host not in loopback
+        ))
+    )
     base = app_config.OVERLAY_PUBLIC_URL or f"http://{host_url}:{overlay_server.PORT}"
     params = {**sources, "n": app_config.SIMPLE_OVERLAY_COUNT}
-    url = f"{base}/overlay?{urlencode(params)}"
+    if via_dashboard:
+        parts = urlsplit(st.context.url or "")
+        dashboard_base = (
+            f"{parts.scheme}://{parts.netloc}{parts.path or '/'}"
+            if parts.netloc else f"https://{host_url}/"
+        )
+        url = f"{dashboard_base}?{urlencode({'view': 'overlay', **params})}"
+    else:
+        try:
+            overlay_server.ensure_started()
+        except OSError as exc:
+            st.error(_t("Couldn't start OBS overlay: {error}", error=str(exc)))
+            return
+        url = f"{base}/overlay?{urlencode(params)}"
     st.caption(_t("All (Super Chats, gifts and chat together)"))
     st.code(url, language=None)
     st.link_button(_t("↗ Open"), url)
@@ -131,7 +177,14 @@ def _render_obs_overlay() -> None:
         "Keep the server running; the browser page can be closed.",
         count=app_config.SIMPLE_OVERLAY_COUNT,
     ))
-    if not app_config.OVERLAY_PUBLIC_URL and app_config.OVERLAY_HOST in ("127.0.0.1", "localhost", "::1"):
+    if via_dashboard:
+        st.caption(_t(
+            "This server only lets browsers reach the dashboard's own address, so these overlay links open the "
+            "dashboard in overlay-only mode (?view=overlay). If its background isn't transparent in OBS, add "
+            "this to the Browser Source's Custom CSS: {css}",
+            css="body, .stApp { background: transparent !important; }",
+        ))
+    elif not app_config.OVERLAY_PUBLIC_URL and app_config.OVERLAY_HOST in loopback:
         st.caption(_t(
             "The overlay only accepts connections from this computer. If OBS runs on another machine, "
             "set OVERLAY_HOST=0.0.0.0 in .env and restart."

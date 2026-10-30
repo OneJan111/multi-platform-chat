@@ -125,6 +125,8 @@ pip install -r requirements.txt
 | `SIMPLE_NOTIFY_LIVE` | `true` | 默认开启开播通知；仍需浏览器授权 |
 | `SIMPLE_OVERLAY_COUNT` | `10` | 精简版 OBS 链接中聊天和礼物的合计显示上限（1–50） |
 
+在 Streamlit Community Cloud（`*.streamlit.app`）上，精简版使用同一 HTTPS 地址的 `?view=overlay`，不再依赖 8502 端口。更新后请将侧边栏的新链接复制到 OBS。显式配置的 `OVERLAY_PUBLIC_URL` 优先。如背景不透明，可在 OBS 自定义 CSS 中添加 `body, .stApp { background: transparent !important; }`。
+
 两个精简版的侧边栏均提供 OBS 独立叠加层，可选择网站，仅显示合并聊天、醒目留言和礼物的 All 链接，不提供其他类型链接。将链接粘贴到 OBS 浏览器源；服务器运行时，即使关闭页面也会独立读取所选网站。共享 OBS 叠加层会显示可信用户头像，无法获取时显示名字首字。修改 `.env` 中的 `SIMPLE_OVERLAY_COUNT` 后重启，再将新链接复制到 OBS。远程 OBS 需要可访问的 `OVERLAY_HOST` / `OVERLAY_PUBLIC_URL`。
 
 修改后请重启。已有会话保留侧边栏中的选择，TTS 本身仍默认关闭。

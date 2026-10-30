@@ -4,7 +4,7 @@ import runpy
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import Mock, patch
+from unittest.mock import MagicMock, Mock, patch
 from urllib.parse import parse_qs, urlencode, urlsplit
 
 
@@ -25,7 +25,10 @@ class SimpleObsOverlayTests(unittest.TestCase):
                     config = runpy.run_path(str(ROOT / "src" / "config.py"))
                     self.assertEqual(config["SIMPLE_OVERLAY_COUNT"], 10 if value is None else int(value))
 
-    def render_sidebar(self, selected, count=10, public_url=""):
+    def render_sidebar(
+        self, selected, count=10, public_url="", host="localhost:8501",
+        page_url="http://localhost:8501/", overlay_host="127.0.0.1",
+    ):
         tree = ast.parse((ROOT / "simple_app.py").read_text(encoding="utf-8"))
         function = next(
             node for node in tree.body
@@ -33,7 +36,8 @@ class SimpleObsOverlayTests(unittest.TestCase):
         )
         st = Mock()
         st.multiselect.return_value = selected
-        st.context.headers = {"Host": "localhost:8501"}
+        st.context.headers = {"Host": host}
+        st.context.url = page_url
         overlay = Mock(PORT=8502)
         namespace = {
             "st": st,
@@ -42,14 +46,17 @@ class SimpleObsOverlayTests(unittest.TestCase):
             "_SOURCES": {"youtube": "@example", "bilibili": "123", "missevan": "456"},
             "_PLATFORM_NAMES": {"youtube": "YouTube", "bilibili": "Bilibili", "missevan": "MissEvan"},
             "app_config": SimpleNamespace(
-                SIMPLE_OVERLAY_COUNT=count, OVERLAY_PUBLIC_URL=public_url, OVERLAY_HOST="127.0.0.1",
+                SIMPLE_OVERLAY_COUNT=count, OVERLAY_PUBLIC_URL=public_url, OVERLAY_HOST=overlay_host,
             ),
             "urlencode": urlencode,
             "urlsplit": urlsplit,
         }
         exec(compile(ast.Module(body=[function], type_ignores=[]), "simple_app.py", "exec"), namespace)
         namespace["_render_obs_overlay"]()
-        overlay.ensure_started.assert_called_once()
+        if parse_qs(urlsplit(st.code.call_args.args[0]).query).get("view") == ["overlay"]:
+            overlay.ensure_started.assert_not_called()
+        else:
+            overlay.ensure_started.assert_called_once()
         st.link_button.assert_called_once()
         return st, st.code.call_args.args[0]
 
@@ -70,6 +77,82 @@ class SimpleObsOverlayTests(unittest.TestCase):
             parse_qs(urlsplit(url).query),
             {"youtube": ["@example"], "bilibili": ["123"], "missevan": ["456"], "n": ["25"]},
         )
+
+    def test_cloud_link_uses_https_streamlit_address_without_overlay_port(self):
+        for overlay_host in ("127.0.0.1", "0.0.0.0"):
+            with self.subTest(overlay_host=overlay_host):
+                _, url = self.render_sidebar(
+                    ["bilibili"], host="monitor.streamlit.app",
+                    page_url="https://monitor.streamlit.app/?old=setting",
+                    overlay_host=overlay_host,
+                )
+                self.assertEqual(urlsplit(url).scheme, "https")
+                self.assertEqual(urlsplit(url).netloc, "monitor.streamlit.app")
+                self.assertEqual(
+                    parse_qs(urlsplit(url).query),
+                    {"view": ["overlay"], "bilibili": ["123"], "n": ["10"]},
+                )
+
+    def test_remote_fallback_preserves_app_path(self):
+        _, url = self.render_sidebar(
+            ["missevan"], host="example.org",
+            page_url="https://example.org/monitor?old=setting",
+        )
+        self.assertEqual(urlsplit(url).path, "/monitor")
+        self.assertEqual(parse_qs(urlsplit(url).query)["view"], ["overlay"])
+
+    def test_public_url_takes_precedence_on_cloud(self):
+        _, url = self.render_sidebar(
+            ["youtube"], host="monitor.streamlit.app",
+            page_url="https://monitor.streamlit.app/",
+            public_url="https://overlay.example",
+        )
+        self.assertEqual(urlsplit(url).netloc, "overlay.example")
+        self.assertNotIn("view", parse_qs(urlsplit(url).query))
+
+    def test_overlay_page_renders_standalone_data_without_binding_port(self):
+        tree = ast.parse((ROOT / "simple_app.py").read_text(encoding="utf-8"))
+        function = next(
+            node for node in tree.body
+            if isinstance(node, ast.FunctionDef) and node.name == "_render_overlay_page"
+        )
+        st = Mock()
+        query = {"view": ["overlay"], "bilibili": ["123"], "n": ["10"]}
+        st.query_params = MagicMock()
+        st.query_params.__iter__.return_value = iter(query)
+        st.query_params.get_all.side_effect = query.__getitem__
+        st.fragment.side_effect = lambda **kwargs: lambda callback: callback
+        overlay = Mock(_PAGE_CSS=".avatar {width:32px}")
+        overlay.overlay_data.return_value = {"messages": [{"text": "hello"}]}
+        overlay.render_html.return_value = "<div>hello</div>"
+        namespace = {"st": st, "overlay_server": overlay}
+        exec(compile(ast.Module(body=[function], type_ignores=[]), "simple_app.py", "exec"), namespace)
+        namespace["_render_overlay_page"]()
+        overlay.ensure_started.assert_not_called()
+        overlay.overlay_data.assert_called_once_with(query)
+        st.fragment.assert_called_once_with(run_every=2)
+        st.markdown.assert_any_call("<div>hello</div>", unsafe_allow_html=True)
+        self.assertIn("background:transparent", st.markdown.call_args_list[0].args[0])
+
+    def test_both_entrypoints_serve_overlay_without_monitor_controls(self):
+        from streamlit.testing.v1 import AppTest
+        from src import overlay_server
+
+        for filename in ("simple_app.py", "simple_server_app.py"):
+            with self.subTest(filename=filename), patch.dict(os.environ), patch.object(
+                overlay_server, "overlay_data",
+                return_value={"messages": [{"text": "overlay test", "author": "Alice"}]},
+            ) as data, patch.object(overlay_server, "ensure_started") as start:
+                app = AppTest.from_file(str(ROOT / filename))
+                app.query_params.update({"view": "overlay", "bilibili": "123", "n": "10"})
+                app.run(timeout=30)
+                self.assertEqual(len(app.exception), 0)
+                self.assertEqual(len(app.sidebar.selectbox), 0)
+                self.assertTrue(any("overlay test" in item.value for item in app.markdown))
+                data.assert_called_once_with(
+                    {"view": ["overlay"], "bilibili": ["123"], "n": ["10"]}
+                )
+                start.assert_not_called()
 
 
 if __name__ == "__main__":

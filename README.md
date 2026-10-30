@@ -189,6 +189,8 @@ Configure its new-session defaults in `.env` (see `env.template`):
 
 Both simple monitors include a **Standalone overlay for OBS** sidebar section with site selection and only the **All (Super Chats, gifts and chat together)** link. Paste it into an OBS Browser Source; there are no separate chat-only or gift-only links here. The selected sites are read independently while the server is running, even after the browser page closes. Overlay messages show trusted user avatars (or an initial when unavailable), including in the shared OBS overlay module. Restart after changing `SIMPLE_OVERLAY_COUNT` in `.env`, then copy the updated link into OBS. Remote OBS clients require a reachable `OVERLAY_HOST`/`OVERLAY_PUBLIC_URL`.
 
+On Streamlit Community Cloud (`*.streamlit.app`), the simple monitors use their own HTTPS address with `?view=overlay` instead of port 8502. Copy the new sidebar URL into OBS after updating. Remote access with the default loopback overlay binding also uses this same-address fallback; an explicit `OVERLAY_PUBLIC_URL` takes precedence. If needed, use OBS Custom CSS `body, .stApp { background: transparent !important; }`.
+
 Restart after changing these settings. Existing sessions retain their sidebar selections. TTS itself remains off by default.
 
 On Windows, after setup, double-click [Start_Simple_Monitor.bat](Start_Simple_Monitor.bat).
