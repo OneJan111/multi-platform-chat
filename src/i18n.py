@@ -165,6 +165,16 @@ _STRINGS: dict[str, tuple[str, str]] = {
         "OBS の操作はこのダッシュボードを実行しているパソコンでのみ利用できます。下のチャットオーバーレイはどこからでも使えます。",
     ),
     "🖥️ Standalone overlay for OBS": ("🖥️ OBS 独立弹幕层", "🖥️ OBS 用スタンドアロンオーバーレイ"),
+    "Couldn't start OBS overlay: {error}": (
+        "无法启动 OBS 叠加层：{error}",
+        "OBS オーバーレイを起動できませんでした: {error}",
+    ),
+    "Paste this URL into an OBS Browser Source. Shows the latest {count} messages. "
+    "Keep the server running; the browser page can be closed.": (
+        "将此链接粘贴到 OBS 浏览器源。显示最近 {count} 条消息。请保持服务器运行；可以关闭浏览器页面。",
+        "この URL を OBS のブラウザーソースに貼り付けます。最新 {count} 件を表示します。"
+        "サーバーを起動したままにしてください。ブラウザーページは閉じても構いません。",
+    ),
     "Enter a YouTube channel, Bilibili room or MissEvan room in the 📡 Stream Monitoring tab "
     "to get your overlay link.": (
         "在 📡 直播监控 标签页输入 YouTube 频道、B站房间或猫耳FM 房间，即可获得弹幕层链接。",

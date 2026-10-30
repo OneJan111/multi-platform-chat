@@ -123,6 +123,9 @@ pip install -r requirements.txt
 | `SIMPLE_TRANSLATION_ENABLED` | `true` | 默认开启弹幕翻译 |
 | `SIMPLE_TTS_TRANSLATE` | `true` | 启用 TTS 时朗读翻译后的弹幕 |
 | `SIMPLE_NOTIFY_LIVE` | `true` | 默认开启开播通知；仍需浏览器授权 |
+| `SIMPLE_OVERLAY_COUNT` | `10` | 精简版 OBS 链接中聊天和礼物的合计显示上限（1–50） |
+
+两个精简版的侧边栏均提供 OBS 独立叠加层，可选择网站，仅显示合并聊天、醒目留言和礼物的 All 链接，不提供其他类型链接。将链接粘贴到 OBS 浏览器源；服务器运行时，即使关闭页面也会独立读取所选网站。共享 OBS 叠加层会显示可信用户头像，无法获取时显示名字首字。修改 `.env` 中的 `SIMPLE_OVERLAY_COUNT` 后重启，再将新链接复制到 OBS。远程 OBS 需要可访问的 `OVERLAY_HOST` / `OVERLAY_PUBLIC_URL`。
 
 修改后请重启。已有会话保留侧边栏中的选择，TTS 本身仍默认关闭。
 

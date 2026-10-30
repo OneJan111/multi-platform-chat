@@ -13,7 +13,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Callable
 from urllib.parse import parse_qs, urlparse
 
-from src import emotes, overlay_feeds, reading
+from src import chat_avatars, emotes, overlay_feeds, reading
 from src.config import OVERLAY_HOST, OVERLAY_PORT
 
 PORT = OVERLAY_PORT
@@ -97,6 +97,8 @@ def snapshot(messages: list[dict], translate_enabled: bool, target: str,
     `reading_mode` (a reading.OVERLAY_MODES entry) adds pinyin / furigana for the message text
     and translations as `ruby` / `translation_ruby` ([characters, reading] pairs).
     """
+    from src import bilibili
+
     count = max(0, min(int(count), MAX_MESSAGES))
     paid_count = max(0, min(int(paid_count), MAX_MESSAGES))
     chat = _last_per_site([
@@ -123,6 +125,11 @@ def snapshot(messages: list[dict], translate_enabled: bool, target: str,
             item["kind"] = "gift"
         if show_username:
             item["author"] = str(msg.get("author", ""))
+        avatar = chat_avatars.message_avatar_url(
+            msg, bilibili.get_user_avatar, emotes.safe_image_url, emotes.safe_badge_url
+        )
+        if avatar:
+            item["avatar"] = avatar
         sticker = emotes.safe_chat_image_url(msg.get("sticker_url"))
         if sticker:
             item["sticker"] = sticker
@@ -264,6 +271,10 @@ _PAGE_CSS = """
   #chat { bottom: 20px; max-height: calc(50vh - 30px); display: flex; flex-direction: column; justify-content: flex-end; }
   .message { margin: 4px 0; text-shadow: 1px 1px 3px #000; overflow-wrap: anywhere; white-space: pre-wrap; }
   .author { font-weight: bold; }
+  .message-row { display: flex; align-items: flex-start; gap: 8px; }
+  .message-content { flex: 1; min-width: 0; }
+  .avatar { display: block; flex: 0 0 32px; width: 32px; height: 32px; border-radius: 50%;
+            object-fit: cover; background: rgba(128,128,128,.25); text-align: center; line-height: 32px; }
   .youtube { color: #ff6b6b; }
   .bilibili { color: #5bc8f5; }
   .missevan { color: #ffad74; }
@@ -323,7 +334,15 @@ def _html_list(messages: list[dict], cls: str) -> str:
             body = (_html_ruby(msg["translation_ruby"]) if msg.get("translation_ruby")
                     else html.escape(str(msg["translation"])))
             parts.append(f'<div class="translation">{body}</div>')
-        rows.append(f'<div class="{row_cls}">{"".join(parts)}</div>')
+        avatar_url = emotes.safe_chat_image_url(msg.get("avatar"))
+        avatar = (
+            chat_avatars.avatar_html(msg, avatar_url, "avatar")
+            if avatar_url or msg.get("author") else ""
+        )
+        rows.append(
+            f'<div class="{row_cls}"><div class="message-row">{avatar}'
+            f'<div class="message-content">{"".join(parts)}</div></div></div>'
+        )
     return "".join(rows)
 
 
@@ -351,6 +370,10 @@ _PAGE = """<!doctype html>
   #chat { bottom: 20px; max-height: calc(50vh - 30px); display: flex; flex-direction: column; justify-content: flex-end; }
   .message { margin: 4px 0; text-shadow: 1px 1px 3px #000; overflow-wrap: anywhere; white-space: pre-wrap; }
   .author { font-weight: bold; }
+  .message-row { display: flex; align-items: flex-start; gap: 8px; }
+  .message-content { flex: 1; min-width: 0; }
+  .avatar { display: block; flex: 0 0 32px; width: 32px; height: 32px; border-radius: 50%;
+            object-fit: cover; background: rgba(128,128,128,.25); text-align: center; line-height: 32px; }
   .youtube { color: #ff6b6b; }
   .bilibili { color: #5bc8f5; }
   .missevan { color: #ffad74; }
@@ -415,22 +438,49 @@ function renderList(id, messages, cls) {
   for (const msg of messages || []) {
     const row = document.createElement("div");
     row.className = cls + (msg.paid ? " paid-item" : "") + (msg.kind === "gift" ? " gift" : "");
+    const body = document.createElement("div");
+    body.className = "message-row";
+    let avatarUrl = "";
+    if (msg.avatar) {
+      try {
+        const url = new URL(msg.avatar);
+        const hosts = ["hdslb.com", "ggpht.com", "googleusercontent.com", "maoercdn.com", "ytimg.com"];
+        if (url.protocol === "https:" && hosts.some(h => url.hostname === h || url.hostname.endsWith("." + h))) {
+          avatarUrl = url.href;
+        }
+      } catch (error) {
+        console.error("Invalid overlay avatar URL", error);
+      }
+    }
+    if (avatarUrl) {
+      body.append(image(avatarUrl, msg.author || "", "avatar"));
+    } else if (msg.author) {
+      const initial = document.createElement("span");
+      initial.className = "avatar";
+      initial.title = msg.author;
+      initial.textContent = Array.from(msg.author)[0].toUpperCase();
+      body.append(initial);
+    }
+    const content = document.createElement("div");
+    content.className = "message-content";
     if (msg.author) {
       const author = document.createElement("div");
       author.className = "author " + (["youtube", "bilibili", "missevan"].includes(msg.platform) ? msg.platform : "");
       author.textContent = msg.author;
-      row.append(author);
+      content.append(author);
     }
     const text = document.createElement("div");
     text.className = "text";
     appendText(text, msg);
-    row.append(text);
+    content.append(text);
     if (msg.translation) {
       const translated = document.createElement("div");
       translated.className = "translation";
       if (msg.translation_ruby) rubyText(translated, msg.translation_ruby); else translated.textContent = msg.translation;
-      row.append(translated);
+      content.append(translated);
     }
+    body.append(content);
+    row.append(body);
     list.append(row);
   }
 }

@@ -145,3 +145,6 @@ if SIMPLE_PAGE_LANGUAGE not in ("en", "zh", "ja"):
 SIMPLE_TRANSLATION_ENABLED: bool = os.getenv("SIMPLE_TRANSLATION_ENABLED", "true").strip().lower() == "true"
 SIMPLE_TTS_TRANSLATE: bool = os.getenv("SIMPLE_TTS_TRANSLATE", "true").strip().lower() == "true"
 SIMPLE_NOTIFY_LIVE: bool = os.getenv("SIMPLE_NOTIFY_LIVE", "true").strip().lower() == "true"
+SIMPLE_OVERLAY_COUNT: int = int(os.getenv("SIMPLE_OVERLAY_COUNT", "10"))
+if not 1 <= SIMPLE_OVERLAY_COUNT <= 50:
+    raise ValueError("SIMPLE_OVERLAY_COUNT must be between 1 and 50")

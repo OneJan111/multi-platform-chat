@@ -13,6 +13,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urlencode, urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import streamlit as st
@@ -25,6 +26,7 @@ from src import emotes
 from src import gifts as gift_utils
 from src import i18n
 from src import missevan as me
+from src import overlay_server
 from src import reading
 from src.server_chat_history import ServerChatHistory, ServerChatPoller
 from src import translate as tr
@@ -94,6 +96,46 @@ def _profit_totals() -> dict[str, float]:
     if not _SERVER_HISTORY_ENABLED:
         return st.session_state["simple_profit_totals"]
     return _server_history().profit_totals()
+
+
+def _render_obs_overlay() -> None:
+    st.header(_t("🖥️ Standalone overlay for OBS"))
+    sites = st.multiselect(
+        _t("Sites on this overlay"),
+        list(_SOURCES),
+        default=list(_SOURCES),
+        format_func=lambda site: _PLATFORM_NAMES[site],
+        key="simple_overlay_sites",
+    )
+    sources = {
+        site: source for site, source in _SOURCES.items()
+        if source and (not sites or site in sites)
+    }
+    if not sources:
+        return
+    try:
+        overlay_server.ensure_started()
+    except OSError as exc:
+        st.error(_t("Couldn't start OBS overlay: {error}", error=str(exc)))
+        return
+    host = urlsplit("//" + (st.context.headers.get("Host") or "localhost")).hostname or "localhost"
+    host_url = f"[{host}]" if ":" in host else host
+    base = app_config.OVERLAY_PUBLIC_URL or f"http://{host_url}:{overlay_server.PORT}"
+    params = {**sources, "n": app_config.SIMPLE_OVERLAY_COUNT}
+    url = f"{base}/overlay?{urlencode(params)}"
+    st.caption(_t("All (Super Chats, gifts and chat together)"))
+    st.code(url, language=None)
+    st.link_button(_t("↗ Open"), url)
+    st.caption(_t(
+        "Paste this URL into an OBS Browser Source. Shows the latest {count} messages. "
+        "Keep the server running; the browser page can be closed.",
+        count=app_config.SIMPLE_OVERLAY_COUNT,
+    ))
+    if not app_config.OVERLAY_PUBLIC_URL and app_config.OVERLAY_HOST in ("127.0.0.1", "localhost", "::1"):
+        st.caption(_t(
+            "The overlay only accepts connections from this computer. If OBS runs on another machine, "
+            "set OVERLAY_HOST=0.0.0.0 in .env and restart."
+        ))
 
 
 def _append_server_message(msg: dict, *, is_gift_message: bool) -> bool:
@@ -1052,6 +1094,8 @@ else:
         st.slider(_t("Speech speed (WPM)"), 80, 300, key="simple_tts_rate")
         st.slider(_t("Speech volume"), 0.0, 1.0, key="simple_tts_volume")
         st.caption(_t("Speech uses this browser's voices. Click the page once if your browser blocks audio."))
+        st.divider()
+        _render_obs_overlay()
 
 
 @st.fragment(run_every=SIMPLE_CHAT_POLL_INTERVAL)

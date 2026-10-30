@@ -274,6 +274,62 @@ if __name__ == "__main__":
 
 
 class OverlayHtmlTests(unittest.TestCase):
+    def test_snapshot_and_html_render_trusted_avatars(self):
+        for site, url in (
+            ("youtube", "https://yt3.ggpht.com/avatar.png"),
+            ("bilibili", "https://i0.hdslb.com/bfs/face/avatar.jpg"),
+            ("missevan", "https://static.maoercdn.com/avatar.png"),
+        ):
+            with self.subTest(site=site):
+                data = overlay_server.snapshot(
+                    [{"type": "danmaku", "platform": site, "text": "hi",
+                      "author": 'A<&"', "avatar": url}],
+                    False, "", lambda *_: "",
+                )
+                self.assertEqual(data["messages"][0]["avatar"], url)
+                rendered = overlay_server.render_html(data)
+                self.assertIn(f'src="{url}"', rendered)
+                self.assertIn('class="avatar"', rendered)
+                self.assertIn("A&lt;&amp;&quot;", rendered)
+        unsafe = overlay_server.snapshot(
+            [{"type": "danmaku", "platform": "youtube", "text": "hi",
+              "author": "Bob", "avatar": "https://evil.example/avatar.png"}],
+            False, "", lambda *_: "",
+        )
+        self.assertNotIn("avatar", unsafe["messages"][0])
+        self.assertIn('class="avatar" title="Bob">B</span>', overlay_server.render_html(unsafe))
+        rendered = overlay_server.render_html({
+            "messages": [{"text": "hi", "avatar": "javascript:alert(1)", "author": "Bob"}],
+        })
+        self.assertNotIn("javascript:", rendered)
+        self.assertIn('class="avatar" title="Bob">B</span>', rendered)
+        page = overlay_server._PAGE.decode("utf-8")
+        self.assertIn('image(avatarUrl, msg.author || "", "avatar")', page)
+
+    def test_standalone_all_link_limits_combined_messages_to_ten(self):
+        from unittest.mock import Mock, patch
+        from src import overlay_feeds
+
+        chat = [
+            {"type": "danmaku", "platform": "bilibili", "text": f"chat{i}", "_arrived": i}
+            for i in range(12)
+        ]
+        paid = [
+            {"type": "gift", "platform": "bilibili", "text": f"gift{i}", "_arrived": 100 + i}
+            for i in range(8)
+        ]
+        feed = Mock()
+        feed.messages.return_value = (chat, paid)
+        with patch.object(overlay_feeds, "get", return_value=feed):
+            data = overlay_server.overlay_data({"bilibili": ["123"], "n": ["10"]})
+        self.assertEqual(len(data["messages"]), 10)
+        self.assertEqual(data["paid"], [])
+        self.assertEqual(data["layout"], "mixed")
+        self.assertEqual(
+            [msg["text"] for msg in data["messages"]],
+            ["chat10", "chat11"] + [f"gift{i}" for i in range(8)],
+        )
+
     def test_render_html_escapes_and_inlines_safe_images(self):
         me_sticker = "https://static.maoercdn.com/stickers/room.png"
         out = overlay_server.render_html({

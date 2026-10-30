@@ -185,6 +185,9 @@ Configure its new-session defaults in `.env` (see `env.template`):
 | `SIMPLE_TRANSLATION_ENABLED` | `true` | Enable chat translation |
 | `SIMPLE_TTS_TRANSLATE` | `true` | Read translated chat when TTS is enabled |
 | `SIMPLE_NOTIFY_LIVE` | `true` | Enable live notifications; browser permission is still required |
+| `SIMPLE_OVERLAY_COUNT` | `10` | Combined message limit (1–50) for the simple monitors' standalone OBS link |
+
+Both simple monitors include a **Standalone overlay for OBS** sidebar section with site selection and only the **All (Super Chats, gifts and chat together)** link. Paste it into an OBS Browser Source; there are no separate chat-only or gift-only links here. The selected sites are read independently while the server is running, even after the browser page closes. Overlay messages show trusted user avatars (or an initial when unavailable), including in the shared OBS overlay module. Restart after changing `SIMPLE_OVERLAY_COUNT` in `.env`, then copy the updated link into OBS. Remote OBS clients require a reachable `OVERLAY_HOST`/`OVERLAY_PUBLIC_URL`.
 
 Restart after changing these settings. Existing sessions retain their sidebar selections. TTS itself remains off by default.
 
