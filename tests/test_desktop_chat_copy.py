@@ -6,12 +6,39 @@ import desktop_app
 from desktop_app import (
     _chat_event_card_colors,
     _archive_messages_as_tsv,
+    _archive_messages_newest_first,
     _format_message_for_copy,
     _message_avatar_url,
 )
 
 
 class DesktopChatCopyTests(unittest.TestCase):
+    def test_saved_chat_messages_display_newest_first(self):
+        messages = [{"text": "first"}, {"text": "second"}, {"text": "third"}]
+
+        ordered = _archive_messages_newest_first(messages)
+
+        self.assertEqual([m["text"] for m in ordered], ["third", "second", "first"])
+        self.assertEqual(messages[0]["text"], "first")
+
+    def test_saved_chat_display_keeps_only_latest_500_messages(self):
+        messages = [{"text": str(index)} for index in range(5000)]
+
+        ordered = _archive_messages_newest_first(messages)
+
+        self.assertEqual(len(ordered), 500)
+        self.assertEqual(ordered[0]["text"], "4999")
+        self.assertEqual(ordered[-1]["text"], "4500")
+        self.assertEqual(len(messages), 5000)
+
+    def test_saved_chat_toolbar_labels_are_short_and_translated(self):
+        from src import i18n
+
+        for label in ("Reload", "Save", "Copy table", "Delete"):
+            for lang in ("zh", "ja"):
+                translated = i18n.translate(label, lang)
+                self.assertNotEqual(translated, label)
+                self.assertLessEqual(len(translated), 5)
     def test_saved_chat_table_is_tsv_with_headers_and_safe_cells(self):
         copied = _archive_messages_as_tsv(
             [

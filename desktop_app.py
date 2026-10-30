@@ -33,6 +33,7 @@ except ImportError:
 _ROOT = Path(__file__).resolve().parent
 _MAX_ARCHIVE_SESSIONS = 200
 _MAX_SESSION_MESSAGES = 5000
+_MAX_ARCHIVE_DISPLAY_MESSAGES = 500
 
 
 _CHAT_LAYOUT_BREAKPOINT = 1000
@@ -511,6 +512,13 @@ def _format_chat_timestamp(timestamp) -> str:
             return parsed.astimezone().strftime("%H:%M:%S")
         except (TypeError, ValueError, OSError, OverflowError):
             return str(timestamp)
+
+
+def _archive_messages_newest_first(
+    messages: list[dict], limit: int = _MAX_ARCHIVE_DISPLAY_MESSAGES
+) -> list[dict]:
+    # Archives are appended chronologically, so the newest messages are last.
+    return list(reversed(messages[-limit:])) if limit > 0 else []
 
 
 def _archive_messages_as_tsv(messages: list[dict], headers: tuple[str, ...]) -> str:
@@ -2776,8 +2784,13 @@ if QtCore is not None:
                 filters_layout.addWidget(check, 1, column)
                 selector = QtWidgets.QComboBox()
                 selector.setMinimumWidth(0)
+                # Width comes from the equal column stretch, not the room name length.
+                selector.setSizeAdjustPolicy(
+                    QtWidgets.QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
+                )
+                selector.setMinimumContentsLength(8)
                 selector.setSizePolicy(
-                    QtWidgets.QSizePolicy.Policy.Expanding,
+                    QtWidgets.QSizePolicy.Policy.Ignored,
                     QtWidgets.QSizePolicy.Policy.Fixed,
                 )
                 selector.setToolTip(
@@ -2792,6 +2805,7 @@ if QtCore is not None:
                 )
                 self.chat_room_selectors[site] = selector
                 filters_layout.addWidget(selector, 2, column)
+                filters_layout.setColumnStretch(column, 1)
             self._refresh_chat_room_selectors()
             layout.addLayout(filters_layout)
 
@@ -2854,9 +2868,12 @@ if QtCore is not None:
                 )
                 entries = self._channels_for_platform(platform)
                 for entry in entries:
-                    selector.addItem(
-                        self._room_names.get(entry["id"]) or entry["target"],
-                        entry["id"],
+                    label = self._room_names.get(entry["id"]) or entry["target"]
+                    selector.addItem(label, entry["id"])
+                    selector.setItemData(
+                        selector.count() - 1,
+                        label,
+                        QtCore.Qt.ItemDataRole.ToolTipRole,
                     )
                 has_saved_selection = self._settings.contains(
                     f"chat_room_{platform}"
@@ -3558,6 +3575,9 @@ if QtCore is not None:
                         widget.setText,
                         "_desktop_source_text",
                     )
+                tooltip_source = widget.property("_desktop_source_tooltip")
+                if tooltip_source:
+                    widget.setToolTip(self.i18n.translate(tooltip_source, language))
                 if isinstance(widget, QtWidgets.QLineEdit):
                     translate_widget(
                         widget,
@@ -4369,24 +4389,25 @@ if QtCore is not None:
             row = QtWidgets.QHBoxLayout()
             self.archive_sessions = QtWidgets.QComboBox()
             row.addWidget(self.archive_sessions, 1)
-            reload_button = QtWidgets.QPushButton("Reload saved sessions")
-            reload_button.clicked.connect(self._load_archive_view)
-            row.addWidget(reload_button)
-            save_button = QtWidgets.QPushButton("Save current chat")
-            save_button.clicked.connect(
-                lambda: self._save_archive(refresh_view=True)
-            )
-            row.addWidget(save_button)
-            copy_button = QtWidgets.QPushButton(
-                self.i18n.translate("Copy table for Excel", self._ui_language)
-            )
-            copy_button.clicked.connect(self._copy_archive_session)
-            row.addWidget(copy_button)
-            delete_button = QtWidgets.QPushButton(
-                "Delete all saved messages for this channel / room"
-            )
-            delete_button.clicked.connect(self._delete_saved_session)
-            row.addWidget(delete_button)
+            for label, tooltip, handler in (
+                ("Reload", "Reload saved sessions", self._load_archive_view),
+                (
+                    "Save",
+                    "Save current chat",
+                    lambda: self._save_archive(refresh_view=True),
+                ),
+                ("Copy table", "Copy table for Excel", self._copy_archive_session),
+                (
+                    "Delete",
+                    "Delete all saved messages for this channel / room",
+                    self._delete_saved_session,
+                ),
+            ):
+                button = QtWidgets.QPushButton(label)
+                button.setProperty("_desktop_source_tooltip", tooltip)
+                button.setToolTip(self.i18n.translate(tooltip, self._ui_language))
+                button.clicked.connect(handler)
+                row.addWidget(button)
             layout.addLayout(row)
             self.archive_table = QtWidgets.QTableWidget(0, 4)
             self.archive_table.setHorizontalHeaderLabels(["Time", "Platform", "Author", "Message"])
@@ -7594,7 +7615,9 @@ if QtCore is not None:
             if session_id:
                 self._settings.setValue("archive_session", str(session_id))
             session = next((item for item in self._saved_archive["sessions"] if item["session_id"] == session_id), None)
-            messages = session.get("messages", []) if session else []
+            messages = _archive_messages_newest_first(
+                session.get("messages", []) if session else []
+            )
             self.archive_table.setRowCount(len(messages))
             for row, msg in enumerate(messages):
                 for col, key in enumerate(("timestamp", "platform", "author", "text")):
@@ -7619,7 +7642,9 @@ if QtCore is not None:
                 ),
                 None,
             )
-            messages = session.get("messages", []) if session else []
+            messages = _archive_messages_newest_first(
+                session.get("messages", []) if session else []
+            )
             if not messages:
                 self.statusBar().showMessage(
                     self.i18n.translate("No saved messages to copy.", self._ui_language),

@@ -16,6 +16,9 @@ log = logging.getLogger(__name__)
 
 _INVALID_NAME_CHARS = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
 _RETRY_DELAY = 5
+# A recording that ran this long ended because the stream link expired or dropped,
+# so reconnect at once; quicker failures keep the retry delay to avoid spinning.
+_IMMEDIATE_RECONNECT_AFTER = 30
 
 
 def _safe_name(value: str, limit: int = 80) -> str:
@@ -43,6 +46,7 @@ class MissEvanRecorder:
         title: str = "",
         ffmpeg_path: str | None = None,
         retry_delay: float = _RETRY_DELAY,
+        immediate_reconnect_after: float = _IMMEDIATE_RECONNECT_AFTER,
     ):
         self.room_id = str(room_id)
         self.output_dir = Path(output_dir)
@@ -51,6 +55,7 @@ class MissEvanRecorder:
         self._source_resolver = source_resolver
         self._ffmpeg_path = ffmpeg_path or shutil.which("ffmpeg")
         self._retry_delay = retry_delay
+        self._immediate_reconnect_after = immediate_reconnect_after
         self._stop = threading.Event()
         self._lock = threading.Lock()
         self._process_lock = threading.Lock()
@@ -120,6 +125,7 @@ class MissEvanRecorder:
                 return
 
             started = time.time()
+            reconnect_now = False
             path = recording_path(
                 self.output_dir, self.room_id, self.name, self.title,
                 datetime.fromtimestamp(started),
@@ -146,6 +152,7 @@ class MissEvanRecorder:
                     )
                     with self._process_lock:
                         self._process = process
+                    recording_started = time.monotonic()
                     with self._lock:
                         self._state["files"].append(str(path))
                         self._state.update(
@@ -171,6 +178,10 @@ class MissEvanRecorder:
                     if self._stop.is_set():
                         self._set(status="Stopped")
                         return
+                    reconnect_now = (
+                        time.monotonic() - recording_started
+                        >= self._immediate_reconnect_after
+                    )
                     if return_code != 0:
                         error_log.flush()
                         error_log.seek(0)
@@ -191,7 +202,8 @@ class MissEvanRecorder:
                 log.exception("MissEvan recording failed for room %s.", self.room_id)
                 self._set(status="Reconnecting", error=f"{type(exc).__name__}: {exc}")
 
-            self._stop.wait(self._retry_delay)
+            if not reconnect_now:
+                self._stop.wait(self._retry_delay)
 
         self._set(status="Stopped")
 

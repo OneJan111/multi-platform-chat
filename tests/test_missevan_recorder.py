@@ -63,6 +63,63 @@ class MissEvanRecorderTests(unittest.TestCase):
             self.assertEqual(state["total_bytes"], len(b"recorded"))
             self.assertEqual(Path(state["file"]).suffix, ".mkv")
 
+    def _run_two_recordings(self, immediate_reconnect_after, return_code=0):
+        urls = iter([
+            "https://cdn.example.test/one.m3u8",
+            "https://cdn.example.test/two.m3u8",
+        ])
+        resolved_at = []
+
+        def resolve_url():
+            resolved_at.append(time.monotonic())
+            try:
+                return next(urls)
+            except StopIteration:
+                raise RuntimeError("The MissEvan room is not live.")
+
+        class FinishedProcess:
+            def __init__(self, command, **_kwargs):
+                Path(command[-1]).write_bytes(b"recorded")
+
+            def poll(self):
+                return return_code
+
+            def wait(self, timeout=None):
+                return return_code
+
+        with tempfile.TemporaryDirectory() as folder, \
+                patch("src.missevan_recorder.subprocess.Popen", FinishedProcess), \
+                patch("src.missevan_recorder.recording_path",
+                      side_effect=lambda root, *_args: Path(root) / f"{len(resolved_at)}.mkv"):
+            recorder = MissEvanRecorder(
+                "123",
+                folder,
+                resolve_url,
+                ffmpeg_path="ffmpeg",
+                retry_delay=1,
+                immediate_reconnect_after=immediate_reconnect_after,
+            )
+            recorder.start()
+            recorder._thread.join(timeout=5)
+            state = recorder.snapshot()
+        return state, resolved_at
+
+    def test_long_recording_reconnects_without_retry_delay(self):
+        for return_code in (0, 1):
+            with self.subTest(return_code=return_code):
+                state, resolved_at = self._run_two_recordings(0, return_code)
+
+                self.assertEqual(state["status"], "Stream ended")
+                self.assertEqual(len(state["files"]), 2)
+                self.assertLess(resolved_at[1] - resolved_at[0], 0.5)
+                self.assertLess(resolved_at[2] - resolved_at[1], 0.5)
+
+    def test_short_recording_failure_keeps_retry_delay(self):
+        state, resolved_at = self._run_two_recordings(60)
+
+        self.assertEqual(state["status"], "Stream ended")
+        self.assertGreaterEqual(resolved_at[1] - resolved_at[0], 0.9)
+
     def test_stop_terminates_live_ffmpeg_process(self):
         class RunningProcess:
             def __init__(self, command, **_kwargs):
