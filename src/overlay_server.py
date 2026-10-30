@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import html
+import hmac
 import json
+import os
 import re
 import socket
 import sys
@@ -573,15 +575,25 @@ def overlay_data(query: dict, server: "OverlayServer | None" = None) -> dict:
 class _Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         url = urlparse(self.path)
+        if url.path not in ("/overlay", "/overlay/data"):
+            self.send_error(404)
+            return
+        token = os.getenv("OVERLAY_PROXY_TOKEN", "")
+        if token and not hmac.compare_digest(
+            self.headers.get("Authorization", ""), f"Bearer {token}"
+        ):
+            self.send_response(401)
+            self.send_header("Content-Length", "0")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.end_headers()
+            return
         if url.path == "/overlay":
             body, content_type = _PAGE, "text/html; charset=utf-8"
         elif url.path == "/overlay/data":
             data = overlay_data(parse_qs(url.query), self.server)
             body = json.dumps(data, ensure_ascii=False).encode("utf-8")
             content_type = "application/json; charset=utf-8"
-        else:
-            self.send_error(404)
-            return
         self.send_response(200)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))

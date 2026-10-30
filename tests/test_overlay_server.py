@@ -3,7 +3,8 @@ import threading
 import time
 import unittest
 from urllib.error import HTTPError
-from urllib.request import urlopen
+from urllib.request import Request, urlopen
+from unittest.mock import patch
 
 from src import overlay_server
 
@@ -102,6 +103,31 @@ class OverlayTests(unittest.TestCase):
                 urlopen(base + "/")
             self.assertEqual(error.exception.code, 404)
             error.exception.close()
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+
+    def test_http_overlay_can_require_proxy_token(self):
+        server = overlay_server.OverlayServer(0)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            base = f"http://127.0.0.1:{server.server_address[1]}"
+            with patch.dict("os.environ", {"OVERLAY_PROXY_TOKEN": "a" * 32}):
+                with self.assertRaises(HTTPError) as error:
+                    urlopen(base + "/overlay")
+                self.assertEqual(error.exception.code, 401)
+                self.assertEqual(error.exception.headers["Cache-Control"], "no-store")
+                error.exception.close()
+
+                request = Request(
+                    base + "/overlay",
+                    headers={"Authorization": f"Bearer {'a' * 32}"},
+                )
+                with urlopen(request) as response:
+                    self.assertEqual(response.status, 200)
+                    self.assertIn(b"background: transparent", response.read())
         finally:
             server.shutdown()
             server.server_close()
