@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Live Chat Translator</title>
+  <style>
+    :root { color-scheme: dark; font: 16px system-ui, sans-serif; background: #10131b; color: #eef2ff; }
+    body { max-width: 1000px; margin: auto; padding: 24px; }
+    h1, h2 { margin: 0 0 16px; }
+    header, section { background: #191e2a; border: 1px solid #2a3244; border-radius: 12px; padding: 18px; margin-bottom: 18px; }
+    .row { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+    label { display: inline-flex; align-items: center; gap: 8px; }
+    input[type=password], select { color: inherit; background: #10131b; border: 1px solid #414c63; border-radius: 6px; padding: 8px; }
+    input[type=password] { min-width: min(320px, 70vw); }
+    button { color: #fff; background: #5266df; border: 0; border-radius: 6px; padding: 9px 14px; cursor: pointer; }
+    button:disabled { opacity: .5; cursor: not-allowed; }
+    .muted { color: #aab4ca; }
+    #status { margin-top: 12px; }
+    .item { border-top: 1px solid #2a3244; padding: 12px 0; overflow-wrap: anywhere; }
+    .item:first-child { border-top: 0; }
+    .meta { color: #98a7c7; font-size: .85rem; margin-bottom: 4px; }
+    .translation { color: #a9d8ff; margin-top: 4px; }
+    .error { color: #ff9a9a; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Live Chat Translator</h1>
+    <div class="row">
+      <label>Access token <input id="token" type="password" autocomplete="current-password"></label>
+      <button id="connect">Connect</button>
+      <label>Chat translation
+        <select id="chat-target">
+          <option value="ja">Japanese</option>
+          <option value="zh">Chinese (Simplified)</option>
+        </select>
+      </label>
+    </div>
+    <div id="status" class="muted">Enter the app access token to connect.</div>
+  </header>
+
+  <section>
+    <h2>Live chat</h2>
+    <div id="chat" class="muted">Waiting for the collector…</div>
+  </section>
+
+  <section>
+    <h2>Live transcription</h2>
+    <div class="row">
+      <label>Audio language
+        <select id="audio-language">
+          <option value="ja">Japanese → Chinese</option>
+          <option value="zh">Chinese → Japanese</option>
+        </select>
+      </label>
+      <label><input id="transcription-enabled" type="checkbox"> Enable cloud transcription</label>
+      <button id="save-settings">Save settings</button>
+    </div>
+    <p id="transcription-note" class="muted">Transcription is opt-in and also controlled by the server environment kill switch.</p>
+    <div id="transcripts" class="muted">No transcription segments yet.</div>
+  </section>
+
+  <script>
+    const tokenInput = document.querySelector("#token");
+    const statusBox = document.querySelector("#status");
+    const chatBox = document.querySelector("#chat");
+    const transcriptBox = document.querySelector("#transcripts");
+    const chatTarget = document.querySelector("#chat-target");
+    const audioLanguage = document.querySelector("#audio-language");
+    const transcriptionEnabled = document.querySelector("#transcription-enabled");
+    const transcriptionNote = document.querySelector("#transcription-note");
+    let token = sessionStorage.getItem("edgeone_access_token") || "";
+    let timer;
+    tokenInput.value = token;
+
+    async function api(path, options = {}) {
+      const response = await fetch(path, {
+        ...options,
+        headers: {
+          Authorization: `Bearer ${token}`,
+          ...(options.body ? { "Content-Type": "application/json" } : {}),
+          ...options.headers,
+        },
+        cache: "no-store",
+      });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.error || `HTTP ${response.status}`);
+      return body;
+    }
+
+    function renderItems(container, items, isTranscript = false) {
+      container.replaceChildren();
+      if (!items.length) {
+        container.textContent = isTranscript ? "No transcription segments yet." : "No chat messages yet.";
+        container.className = "muted";
+        return;
+      }
+      container.className = "";
+      for (const item of items.slice().reverse()) {
+        const row = document.createElement("article");
+        row.className = "item";
+        const meta = document.createElement("div");
+        meta.className = "meta";
+        const time = item.time || item.timestamp || "";
+        meta.textContent = [time, item.platform, item.author].filter(Boolean).join(" · ");
+        row.append(meta);
+        const original = document.createElement("div");
+        original.textContent = isTranscript ? item.original : item.text;
+        row.append(original);
+        const translation = document.createElement("div");
+        translation.className = "translation";
+        translation.textContent = item.translated || item.translation || "";
+        if (translation.textContent) row.append(translation);
+        container.append(row);
+      }
+    }
+
+    async function refresh() {
+      try {
+        const state = await api(`/api/state?target=${encodeURIComponent(chatTarget.value)}`);
+        const liveSites = Object.entries(state.live || {})
+          .filter(([, live]) => live)
+          .map(([site]) => site);
+        statusBox.textContent = state.activeSource
+          ? `Transcribing: ${state.activeSource} · Live: ${liveSites.join(", ") || "none"}`
+          : `Collector connected · Live: ${liveSites.join(", ") || "none"} · No prioritized source currently live`;
+        chatTarget.value = state.chatTarget;
+        audioLanguage.value = state.audioLanguage;
+        transcriptionEnabled.checked = state.transcriptionEnabled;
+        transcriptionEnabled.disabled = !state.transcriptionEnabled && state.transcriptionEnabledByEnvironment === false;
+        transcriptionNote.textContent = state.transcriptionEnabledByEnvironment === false
+          ? "Transcription is disabled by EDGEONE_TRANSCRIPTION_ENABLED on the server."
+          : "When enabled, the collector selects Bilibili first, then YouTube, then MissEvan.";
+        renderItems(chatBox, state.messages || []);
+        renderItems(transcriptBox, state.transcripts || [], true);
+      } catch (error) {
+        statusBox.textContent = error.message;
+        statusBox.className = "error";
+      }
+    }
+
+    document.querySelector("#connect").addEventListener("click", async () => {
+      token = tokenInput.value.trim();
+      sessionStorage.setItem("edgeone_access_token", token);
+      clearInterval(timer);
+      await refresh();
+      timer = setInterval(refresh, 4000);
+    });
+
+    async function saveSettings(settings) {
+      try {
+        const saved = await api("/api/settings", {
+          method: "POST",
+          body: JSON.stringify(settings),
+        });
+        transcriptionEnabled.checked = saved.transcriptionEnabled;
+        await refresh();
+      } catch (error) {
+        statusBox.textContent = error.message;
+        statusBox.className = "error";
+      }
+    }
+
+    chatTarget.addEventListener("change", () => {
+      void saveSettings({ chatTarget: chatTarget.value });
+    });
+    document.querySelector("#save-settings").addEventListener("click", () => {
+      void saveSettings({
+        chatTarget: chatTarget.value,
+        audioLanguage: audioLanguage.value,
+        transcriptionEnabled: transcriptionEnabled.checked,
+      });
+    });
+
+    if (token) {
+      refresh().then(() => { timer = setInterval(refresh, 4000); });
+    }
+  </script>
+</body>
+</html>

@@ -103,7 +103,7 @@ def _load_model(model_size: str):
 
 
 class LiveTranscriber:
-    """One background live transcription session; audio recognition stays on this machine."""
+    """Capture live audio locally and transcribe segments with a local or injected recognizer."""
 
     def __init__(
         self,
@@ -114,6 +114,7 @@ class LiveTranscriber:
         model_size: str = "base",
         translation_enabled: bool = True,
         ffmpeg_path: str | None = None,
+        segment_recognizer: Callable[[Path], dict] | None = None,
     ):
         if platform not in ("youtube", "bilibili", "missevan"):
             raise ValueError(f"Unsupported transcription platform: {platform}")
@@ -125,6 +126,7 @@ class LiveTranscriber:
         self.translation_enabled = translation_enabled
         self.model_size = model_size
         self._source_resolver = source_resolver
+        self._segment_recognizer = segment_recognizer
         self._ffmpeg_path = ffmpeg_path or shutil.which("ffmpeg")
         self._lock = threading.Lock()
         self._process_lock = threading.Lock()
@@ -214,7 +216,7 @@ class LiveTranscriber:
                 return
 
             self._set_status("loading_model")
-            model = _load_model(self.model_size)
+            model = None if self._segment_recognizer else _load_model(self.model_size)
             if self._stop_event.is_set():
                 self._set_status("stopped")
                 return
@@ -304,21 +306,31 @@ class LiveTranscriber:
         timestamp = datetime.now().astimezone().strftime("%H:%M:%S")
         try:
             timestamp = datetime.fromtimestamp(audio_file.stat().st_mtime).astimezone().strftime("%H:%M:%S")
-            transcribed, info = model.transcribe(str(audio_file), beam_size=5, vad_filter=True)
-            parts = [part for part in transcribed if part.text.strip()]
-            original = " ".join(part.text.strip() for part in parts).strip()
+            recognized = self._segment_recognizer(audio_file) if self._segment_recognizer else None
+            if recognized is None:
+                transcribed, info = model.transcribe(str(audio_file), beam_size=5, vad_filter=True)
+                parts = [part for part in transcribed if part.text.strip()]
+                original = " ".join(part.text.strip() for part in parts).strip()
+                detected_language = getattr(info, "language", "")
+                segment_offset = parts[0].start if parts else 0
+            else:
+                original = str(recognized.get("original") or "").strip()
+                detected_language = str(recognized.get("detected_language") or "")
+                segment_offset = 0
             if not original:
                 return
             chunk_index = int(audio_file.stem.removeprefix("segment_"))
-            detected_language = getattr(info, "language", "")
             result = {
                 "time": timestamp,
-                "start_seconds": chunk_index * SEGMENT_SECONDS + parts[0].start,
+                "start_seconds": chunk_index * SEGMENT_SECONDS + segment_offset,
                 "original": original,
-                "translated": "",
+                "translated": str((recognized or {}).get("translated") or ""),
                 "translation_error": "",
                 "detected_language": detected_language,
             }
+            if recognized is not None:
+                self._append_segment(result)
+                return
             with self._lock:
                 translation_enabled = self.translation_enabled
                 target_language = self.target_language
