@@ -191,6 +191,8 @@ Both simple monitors include a **Standalone overlay for OBS** sidebar section wi
 
 On Streamlit Community Cloud (`*.streamlit.app`), the simple monitors use their own HTTPS address with `?view=overlay` instead of port 8502. Copy the new sidebar URL into OBS after updating. Remote access with the default loopback overlay binding also uses this same-address fallback; an explicit `OVERLAY_PUBLIC_URL` takes precedence. If needed, use OBS Custom CSS `body, .stApp { background: transparent !important; }`.
 
+The server-history monitor's overlay uses its retained in-memory chat and gifts, not a separate new-message-only feed. Opening OBS immediately shows the latest combined messages up to the URL's `n` limit, then continues with new arrivals, even with no monitor browser open. This works for both local and same-address cloud overlays; history is lost when the server restarts. A separately hosted overlay server cannot access another process's in-memory history.
+
 Restart after changing these settings. Existing sessions retain their sidebar selections. TTS itself remains off by default.
 
 On Windows, after setup, double-click [Start_Simple_Monitor.bat](Start_Simple_Monitor.bat).

@@ -78,11 +78,6 @@ def _render_overlay_page() -> None:
     _live()
 
 
-if st.query_params.get("view") == "overlay":
-    _render_overlay_page()
-    st.stop()
-
-
 def _configured_platforms() -> dict[str, str]:
     """Return configured sources; invalid configured room IDs remain visible as errors."""
     sources = {}
@@ -103,12 +98,33 @@ _SERVER_HISTORY_ENABLED = os.getenv("SIMPLE_SERVER_HISTORY") == "1"
 
 @st.cache_resource
 def _server_history() -> ServerChatHistory:
-    return ServerChatHistory()
+    history = ServerChatHistory()
+    key = overlay_server.overlay_feeds.parse_key({
+        site: [value] for site, value in _SOURCES.items()
+    })
+    if key:
+        overlay_server.register_history_source(
+            key,
+            lambda: overlay_server.snapshot(
+                history.chat(), False, "", lambda *_: "",
+                count=overlay_server.MAX_MESSAGES,
+                paid_count=overlay_server.MAX_MESSAGES,
+                paid_messages=history.gifts(),
+            ),
+        )
+    return history
 
 
 @st.cache_resource
 def _server_poller() -> ServerChatPoller:
     return ServerChatPoller(_server_history(), _SOURCES)
+
+
+if st.query_params.get("view") == "overlay":
+    if _SERVER_HISTORY_ENABLED and _SOURCES:
+        _server_poller()
+    _render_overlay_page()
+    st.stop()
 
 
 def _chat_messages() -> list[dict]:

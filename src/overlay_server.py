@@ -34,6 +34,27 @@ SITE_ALIASES = {
 # Streamlit re-imports edited modules, so module globals would forget the running
 # server; keep the singleton on `sys`, which survives reloads.
 _STATE = sys.__dict__.setdefault("_multi_platform_chat_overlay", {"lock": threading.Lock(), "server": None})
+_STATE.setdefault("history_sources", {})
+
+
+def register_history_source(
+    key: "overlay_feeds.FeedKey", get_snapshot: Callable[[], dict],
+) -> None:
+    """Share a server-lifetime history with overlays, without requiring an open dashboard."""
+    with _STATE["lock"]:
+        _STATE["history_sources"][key] = get_snapshot
+
+
+def _history_snapshot(key: "overlay_feeds.FeedKey") -> dict | None:
+    with _STATE["lock"]:
+        sources = _STATE["history_sources"]
+        provider = sources.get(key)
+        if provider is None:
+            provider = next((
+                callback for source, callback in sources.items()
+                if all(not wanted or wanted == configured for wanted, configured in zip(key, source))
+            ), None)
+    return provider() if provider is not None else None
 
 
 def clean_channel(name: str) -> str:
@@ -50,7 +71,7 @@ def order_key(msg: dict) -> int:
     """When a message arrived (ns), to merge Super Chats / gifts with chat in time order.
 
     Prefers the local arrival stamp; falls back to the platform timestamp (epoch seconds or ISO 8601)."""
-    arrived = msg.get("_arrived")
+    arrived = msg.get("_arrived", msg.get("_simple_arrived"))
     if isinstance(arrived, int):
         return arrived
     ts = str(msg.get("timestamp") or "").strip()
@@ -514,10 +535,21 @@ def overlay_data(query: dict, server: "OverlayServer | None" = None) -> dict:
     sites = parse_sites(query.get("site", []))
     key = overlay_feeds.parse_key(query)
     if key:
-        data = server.mirror(key) if server is not None else None
+        data = _history_snapshot(key)
+        from_history = data is not None
+        if data is not None:
+            requested_sites = {site for site, value in key._asdict().items() if value}
+            sites = sites & requested_sites if sites else requested_sites
+            data = {
+                **data,
+                "messages": [m for m in data.get("messages", []) if m.get("platform") in requested_sites],
+                "paid": [m for m in data.get("paid", []) if m.get("platform") in requested_sites],
+            }
+        else:
+            data = server.mirror(key) if server is not None else None
         if data is None:
             data = feed_snapshot(key, query)
-        else:
+        elif not from_history:
             # Keep the feed warm so the overlay continues seamlessly if the dashboard closes.
             feed = overlay_feeds.get(key)
             if feed is not None:

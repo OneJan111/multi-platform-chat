@@ -142,7 +142,9 @@ class SimpleObsOverlayTests(unittest.TestCase):
             with self.subTest(filename=filename), patch.dict(os.environ), patch.object(
                 overlay_server, "overlay_data",
                 return_value={"messages": [{"text": "overlay test", "author": "Alice"}]},
-            ) as data, patch.object(overlay_server, "ensure_started") as start:
+            ) as data, patch.object(overlay_server, "ensure_started") as start, patch(
+                "src.server_chat_history.ServerChatPoller"
+            ):
                 app = AppTest.from_file(str(ROOT / filename))
                 app.query_params.update({"view": "overlay", "bilibili": "123", "n": "10"})
                 app.run(timeout=30)
@@ -153,6 +155,54 @@ class SimpleObsOverlayTests(unittest.TestCase):
                     {"view": ["overlay"], "bilibili": ["123"], "n": ["10"]}
                 )
                 start.assert_not_called()
+
+    def test_server_history_overlay_includes_retained_chat_and_gifts(self):
+        from src import overlay_feeds, overlay_server
+        from src.server_chat_history import ServerChatHistory
+
+        history = ServerChatHistory()
+        history.append_many([
+            {"id": str(i), "type": "danmaku", "platform": "bilibili",
+             "text": f"old chat {i}", "_simple_arrived": i, "history": True}
+            for i in range(12)
+        ])
+        history.append_many([
+            {"id": "gift", "type": "gift", "platform": "bilibili",
+             "text": "old gift", "_simple_arrived": 20, "history": True},
+            {"id": "other", "type": "danmaku", "platform": "missevan",
+             "text": "other room", "_simple_arrived": 21},
+        ])
+        key = overlay_feeds.FeedKey(bilibili="123", missevan="456")
+        query = {"bilibili": ["123"], "n": ["10"]}
+        with patch.dict(overlay_server._STATE, {"history_sources": {}}), patch.object(
+            overlay_feeds, "get"
+        ) as standalone:
+            overlay_server.register_history_source(
+                key, lambda: overlay_server.snapshot(
+                    history.chat(), False, "", lambda *_: "",
+                    count=50, paid_count=50, paid_messages=history.gifts(),
+                ),
+            )
+            server = overlay_server.OverlayServer(0, "127.0.0.1")
+            try:
+                for transport in (None, server):
+                    data = overlay_server.overlay_data(query, transport)
+                    self.assertEqual(len(data["messages"]), 10)
+                    self.assertEqual(data["messages"][0]["text"], "old chat 3")
+                    self.assertEqual(data["messages"][-1]["text"], "old gift")
+                    self.assertEqual(data["paid"], [])
+                history.append_many([{
+                    "id": "new", "type": "danmaku", "platform": "bilibili",
+                    "text": "new chat", "_simple_arrived": 30,
+                }])
+                for transport in (None, server):
+                    self.assertEqual(
+                        overlay_server.overlay_data(query, transport)["messages"][-1]["text"],
+                        "new chat",
+                    )
+            finally:
+                server.server_close()
+            standalone.assert_not_called()
 
 
 if __name__ == "__main__":
