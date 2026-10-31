@@ -83,11 +83,15 @@ pip install -r requirements.txt
 | `CHAT_TRANSLATION_DISPLAY_MODE` | 翻译显示方式：`immediate` 立即显示弹幕，译文就绪后补上；`wait` 等译文就绪后再显示弹幕 | `immediate` |
 | `LOGIN_SECRET` | 加密每个用户保存在浏览器中的登录信息的密钥。更改后所有人都会被登出 | 随机生成，保存在 `.login_secret` |
 
+桌面版对每个房间（包括 YouTube 频道）独立请求直播状态。间隔按请求开始时间计算，每个房间最多同时执行一个状态请求；若请求耗时超过间隔，需完成后才能再次轮询该房间。已完成的结果会在下一次监控循环（约 250 毫秒）更新，无需等待其他房间或 YouTube 聊天请求。开播通知仍受平台状态更新及该房间自身请求耗时影响。
+
 > ⚠️ `.env` 和 `.login_secret` 包含机密信息，已列入 `.gitignore`。切勿提交或分享。
 >
 > 默认优先使用 Index-Translate，不可用或返回无效结果时会回退到 Google。要使用 LM Studio 或托管的 OpenAI 兼容模型，请设置 `TRANSLATION_PROVIDER=openai_compatible`，并配置 API 地址、模型标识，以及服务需要时的 API 密钥。兼容 API 模式只向配置的 API 发送文本，不会回退到其他服务。
 >
 > `CHAT_TRANSLATION_DISPLAY_MODE` 可设为 `immediate` 或 `wait`，修改 `.env` 后重启 Web app 生效。`wait` 模式下，翻译失败或目标语言改变时会显示原文，不会丢弃弹幕。
+
+桌面版设置中的「播放礼物图片动画」默认关闭，重启后保留选择。Bilibili 和猫耳礼物图片通过后台房间礼物目录加载；开启后播放可用的 GIF/WebP 动画，每条礼物最多播放 10 秒，关闭后显示静态图片。YouTube 礼物使用事件提供的图片。不支持完整 SVGA 连击特效、视频特效和 YouTube 动画浮层。
 
 ## 运行
 

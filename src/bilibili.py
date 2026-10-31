@@ -732,6 +732,7 @@ class DanmakuListener:
             data.get("uname", ""), data.get("uid", ""), data.get("face", ""),
             f"🎁 {gift_name} ×{count}{price}", free=not paid,
         )
+        msg["gift_id"] = str(data.get("giftId") or data.get("gift_id") or "")
         try:
             msg["gift_count"] = max(1, int(count))
         except (TypeError, ValueError):

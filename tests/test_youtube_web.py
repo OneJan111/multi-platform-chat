@@ -214,6 +214,50 @@ class YouTubeWebChatTests(unittest.TestCase):
         self.assertEqual((message["currency"], message["value"]), ("$", 2.0))
         self.assertEqual(message["avatar"], "https://example.com/avatar.jpg")
 
+    def test_jewel_gift_view_model_is_captured_as_gift(self):
+        from src import gifts, tts
+
+        message = _parse_action({"addChatItemAction": {"item": {
+            "giftMessageViewModel": {
+                "id": "jewel-123",
+                "authorName": {"content": "@Viewer"},
+                "text": {"content": "Sent Fired up for 1,000 Jewels"},
+                "giftImageA11yLabel": "Fired up",
+                "giftImage": {"sources": [{"url": "https://yt3.ggpht.com/gift.png"}]},
+                "authorAvatar": {"avatarViewModel": {
+                    "image": {"sources": [{"url": "https://yt3.ggpht.com/avatar.png"}]},
+                }},
+            },
+        }}})
+
+        self.assertEqual(message["id"], "jewel-123")
+        self.assertEqual(message["author"], "@Viewer")
+        self.assertEqual(message["text"], "Sent Fired up for 1,000 Jewels")
+        self.assertEqual(message["type"], "gift")
+        self.assertEqual(message["gift_count"], 1)
+        self.assertEqual(message["gift_name"], "Fired up")
+        self.assertEqual(message["sticker_url"], "https://yt3.ggpht.com/gift.png")
+        self.assertEqual(message["avatar"], "https://yt3.ggpht.com/avatar.png")
+        self.assertEqual((message["currency"], message["value"]), ("Jewels", 1000))
+        self.assertTrue(tts.is_gift(message))
+        self.assertEqual(gifts.amount_totals([message]), {"Jewels": 1000})
+
+    def test_jewel_gift_without_amount_does_not_invent_price(self):
+        message = _parse_action({"addChatItemAction": {"item": {
+            "giftMessageViewModel": {
+                "id": "jewel-unknown",
+                "authorName": {"content": "@XianRen111"},
+                "text": {"content": "Sent Fired up"},
+                "imageA11yLabel": "Gift",
+            },
+        }}})
+
+        self.assertEqual(message["type"], "gift")
+        self.assertEqual(message["text"], "Sent Fired up")
+        self.assertEqual(message["author"], "@XianRen111")
+        self.assertNotIn("value", message)
+        self.assertEqual(message["sticker_url"], "")
+
     def test_custom_emoji_stamps_become_inline_images(self):
         message = _parse_action({"addChatItemAction": {"item": {"liveChatTextMessageRenderer": {
             "id": "e1", "authorName": {"simpleText": "V"},

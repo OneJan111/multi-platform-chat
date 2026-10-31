@@ -722,7 +722,13 @@ class MissEvanListener:
             self.messages.append(gifts.set_value(self._base(
                 f"me_gift_{oid or time.time_ns()}", m.get("user") or {},
                 f"🎁 {g.get('name', '')} ×{num}", "gift", m.get("time"),
-            ), "💎", value) | {"gift_count": num})
+            ), "💎", value) | {
+                "gift_count": num,
+                "sticker_caption": True,
+                "gift_id": str(g.get("gift_id") or g.get("id") or ""),
+                "sticker_url": emotes.safe_chat_image_url(g.get("icon_url")),
+                "gift_animation_url": emotes.safe_chat_image_url(g.get("icon_active_url")),
+            })
         elif kind == "member" and event == "join_queue":
             for u in m.get("queue") or []:
                 if u.get("user_id"):

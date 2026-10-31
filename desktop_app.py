@@ -1055,6 +1055,38 @@ def _set_desktop_widget_text(widget, text: str, language: str, i18n) -> None:
     widget.setProperty("_desktop_source_text_rendered", translated)
 
 
+def _set_monitor_live_indicator(indicator, live: bool | None, language: str, i18n) -> None:
+    color, status = (
+        ("#16803c", "Live") if live is True
+        else ("#b42318", "Offline") if live is False
+        else ("#666666", "Connecting")
+    )
+    indicator.setStyleSheet(
+        f"background-color: {color}; border: 0; border-radius: 5px;"
+    )
+    indicator.setProperty("_desktop_source_tooltip", status)
+    indicator.setToolTip(i18n.translate(status, language))
+    indicator.setAccessibleName(i18n.translate(status, language))
+
+
+def _chat_image_size(data: bytes, maximum: int):
+    buffer = QtCore.QBuffer()
+    buffer.setData(data)
+    buffer.open(QtCore.QIODevice.OpenModeFlag.ReadOnly)
+    size = QtGui.QImageReader(buffer).size()
+    return (
+        size.scaled(maximum, maximum, QtCore.Qt.AspectRatioMode.KeepAspectRatio)
+        if size.isValid() else size
+    )
+
+
+def _chat_image_dimensions(data: bytes, maximum: int) -> str:
+    size = _chat_image_size(data, maximum)
+    if not size.isValid():
+        return f'height="{maximum}"'
+    return f'width="{max(1, size.width())}" height="{max(1, size.height())}"'
+
+
 def _selected_send_destinations(
     platforms: list[str], selected_ids: dict[str, str], monitor_targets: list[dict]
 ) -> list[dict]:
@@ -1870,13 +1902,70 @@ if QtCore is not None:
                 for listener in self._listeners_snapshot().values():
                     listener.stop()
 
+        def _poll_network(self, polls, monitor_id, key, interval, fetch, login_data):
+            from src import user_login
+            from src.background_poll import BackgroundPoll
+
+            poll = polls.setdefault(monitor_id, BackgroundPoll())
+            try:
+                with user_login.using(login_data):
+                    return poll.poll(key, interval, fetch)
+            except Exception as exc:
+                self.failed.emit(
+                    f"{monitor_id} polling error: {type(exc).__name__}: {exc}"
+                )
+                return False, None
+
+        @staticmethod
+        def _fetch_youtube_status(state, status, video_id, channel):
+            from src import youtube, youtube_web
+
+            state = dict(state)
+            status = dict(status)
+            if channel and not video_id:
+                info = youtube_web.find_live_video(channel)
+                channel_mode = True
+            else:
+                info = youtube.get_video_live_status(video_id)
+                fallback = _youtube_channel_for_video(info)
+                if fallback:
+                    state["fallback_channel"] = fallback
+                channel_mode = _youtube_direct_stream_finished(
+                    info, state["fallback_channel"]
+                )
+                if channel_mode:
+                    state.update(
+                        mode="channel", video_id="", chat_id="",
+                        page_token="", backlog_loaded=False,
+                    )
+                    info = youtube_web.find_live_video(state["fallback_channel"])
+            new_video_id = (
+                _youtube_channel_video_id(info) if channel_mode else video_id
+            )
+            status.update(
+                live=bool(info.get("live")) if channel_mode else info.get("broadcast") == "live",
+                room_name=info.get("channel", "") or status.get("room_name", ""),
+                title=info.get("title", ""),
+                viewers=info.get("viewers", ""),
+                thumbnail=info.get("thumbnail", ""),
+                error=info.get("error", ""),
+            )
+            if new_video_id != state["video_id"]:
+                state.update(
+                    video_id=new_video_id, chat_id="", page_token="",
+                    backlog_loaded=False,
+                )
+            status["video_id"] = state["video_id"]
+            return state, status
+
         def _run_monitor(self):
-            from src import bilibili, missevan, user_login, youtube, youtube_web
+            from src import bilibili, missevan, youtube, youtube_web
             from src.config import CHAT_POLL_INTERVAL, ROOM_STATUS_POLL_INTERVAL
 
             statuses = {}
-            status_poll_at = {}
-            chat_poll_at = {}
+            status_polls = {}
+            chat_polls = {}
+            chat_id_polls = {}
             listener_attempt_at = {}
             while self._running:
                 targets = {
@@ -1911,8 +2000,9 @@ if QtCore is not None:
                     for monitor_id in list(statuses):
                         if monitor_id not in targets:
                             statuses.pop(monitor_id, None)
-                            status_poll_at.pop(monitor_id, None)
-                            chat_poll_at.pop(monitor_id, None)
+                            status_polls.pop(monitor_id, None)
+                            chat_polls.pop(monitor_id, None)
+                            chat_id_polls.pop(monitor_id, None)
 
                     new_messages = []
                     for monitor_id, target in targets.items():
@@ -1960,86 +2050,56 @@ if QtCore is not None:
                                 status["connection"] = "Invalid target"
                                 status["error"] = "Enter a YouTube channel, live URL, or 11-character video ID."
                                 continue
-                            if now - status_poll_at.get(monitor_id, 0) >= ROOM_STATUS_POLL_INTERVAL:
-                                status_poll_at[monitor_id] = now
-                                if channel and not video_id:
-                                    info = youtube_web.find_live_video(channel)
-                                    new_video_id = _youtube_channel_video_id(info)
-                                    status.update({
-                                        "live": bool(info.get("live")),
-                                        "room_name": info.get("channel", "") or status.get("room_name", ""),
-                                        "title": info.get("title", ""),
-                                        "viewers": info.get("viewers", ""),
-                                        "thumbnail": info.get("thumbnail", ""),
-                                        "error": info.get("error", ""),
-                                    })
-                                    if new_video_id != state["video_id"]:
-                                        state.update(video_id=new_video_id, chat_id="", page_token="", backlog_loaded=False)
-                                    status["video_id"] = state["video_id"]
+                            ready, result = self._poll_network(
+                                status_polls, monitor_id,
+                                (value, login_fingerprint, state["mode"], channel, video_id),
+                                ROOM_STATUS_POLL_INTERVAL,
+                                lambda state=dict(state), status=dict(status),
+                                video_id=video_id, channel=channel:
+                                self._fetch_youtube_status(state, status, video_id, channel),
+                                login_data,
+                            )
+                            if ready:
+                                updated_state, updated_status = result
+                                # Chat may have advanced while the status request ran.
+                                if updated_state["video_id"] != state["video_id"]:
+                                    state.update(updated_state)
+                                    for polls in (chat_polls, chat_id_polls):
+                                        if monitor_id in polls:
+                                            polls[monitor_id].invalidate()
                                 else:
-                                    with user_login.using(login_data):
-                                        info = youtube.get_video_live_status(video_id)
-                                    fallback_channel = _youtube_channel_for_video(info)
-                                    if fallback_channel:
-                                        state["fallback_channel"] = fallback_channel
-                                    status.update({
-                                        "live": info.get("broadcast") == "live",
-                                        "room_name": info.get("channel", "") or status.get("room_name", ""),
-                                        "title": info.get("title", ""),
-                                        "viewers": info.get("viewers", ""),
-                                        "thumbnail": info.get("thumbnail", ""),
-                                        "error": info.get("error", ""),
-                                    })
-                                    if _youtube_direct_stream_finished(
-                                        info, state["fallback_channel"]
-                                    ):
-                                        state.update(
-                                            mode="channel",
-                                            video_id="",
-                                            chat_id="",
-                                            page_token="",
-                                            backlog_loaded=False,
-                                        )
-                                        channel = state["fallback_channel"]
-                                        info = youtube_web.find_live_video(channel)
-                                        new_video_id = _youtube_channel_video_id(info)
-                                        status.update({
-                                            "live": bool(info.get("live")),
-                                            "room_name": info.get("channel", "") or status.get("room_name", ""),
-                                            "title": info.get("title", ""),
-                                            "viewers": info.get("viewers", ""),
-                                            "thumbnail": info.get("thumbnail", ""),
-                                            "error": info.get("error", ""),
-                                        })
-                                        if new_video_id:
-                                            state.update(
-                                                video_id=new_video_id,
-                                                chat_id="",
-                                                page_token="",
-                                                backlog_loaded=False,
-                                            )
-                                    elif video_id != state["video_id"]:
-                                        state.update(video_id=video_id, chat_id="", page_token="", backlog_loaded=False)
-                                    status["video_id"] = state["video_id"]
-                                if status.get("live") and state["video_id"] and not state["chat_id"]:
-                                    with user_login.using(login_data):
-                                        state["chat_id"], error = youtube.resolve_live_chat_id(state["video_id"])
-                                    status["error"] = error
-                                if not status.get("live"):
-                                    state.update(chat_id="", page_token="", backlog_loaded=False)
-                                status["connection"] = (
-                                    "Connected" if state["chat_id"]
-                                    else status["error"] or ("Waiting for chat" if status["live"] else "Waiting for stream")
+                                    state["mode"] = updated_state["mode"]
+                                    state["fallback_channel"] = updated_state["fallback_channel"]
+                                status.update(updated_status)
+                            if not status.get("live"):
+                                state.update(chat_id="", page_token="", backlog_loaded=False)
+                                for polls in (chat_polls, chat_id_polls):
+                                    if monitor_id in polls:
+                                        polls[monitor_id].invalidate()
+                            elif state["video_id"] and not state["chat_id"]:
+                                ready, result = self._poll_network(
+                                    chat_id_polls, monitor_id,
+                                    (value, login_fingerprint, state["video_id"]),
+                                    CHAT_POLL_INTERVAL,
+                                    lambda video=state["video_id"]: youtube.resolve_live_chat_id(video),
+                                    login_data,
                                 )
-                            if (
-                                state["chat_id"]
-                                and now - chat_poll_at.get(monitor_id, 0) >= CHAT_POLL_INTERVAL
-                            ):
-                                chat_poll_at[monitor_id] = now
-                                with user_login.using(login_data):
-                                    messages, state["page_token"], _ = youtube.get_chat_messages(
-                                        state["chat_id"], state["page_token"]
-                                    )
+                                if ready:
+                                    state["chat_id"], status["error"] = result
+                            status["connection"] = (
+                                "Connected" if state["chat_id"]
+                                else status["error"] or ("Waiting for chat" if status["live"] else "Waiting for stream")
+                            )
+                            ready, result = self._poll_network(
+                                chat_polls, monitor_id,
+                                (value, login_fingerprint, state["chat_id"], state["video_id"]),
+                                CHAT_POLL_INTERVAL,
+                                lambda chat_id=state["chat_id"], token=state["page_token"]:
+                                youtube.get_chat_messages(chat_id, token),
+                                login_data,
+                            ) if state["chat_id"] else (False, None)
+                            if ready:
+                                messages, state["page_token"], _ = result
                                 if not state["backlog_loaded"]:
                                     for message in messages:
                                         message["history"] = True
@@ -2071,14 +2131,14 @@ if QtCore is not None:
                                 listener = self._sync_room_listener(
                                     monitor_id, platform, room_id, module
                                 )
-                            if now - status_poll_at.get(monitor_id, 0) >= ROOM_STATUS_POLL_INTERVAL:
-                                status_poll_at[monitor_id] = now
-                                with user_login.using(login_data):
-                                    info = (
-                                        bilibili.get_room_info(room_id)
-                                        if platform == "bilibili"
-                                        else missevan.get_room_info(room_id)
-                                    )
+                            ready, info = self._poll_network(
+                                status_polls, monitor_id,
+                                (platform, room_id, login_fingerprint),
+                                ROOM_STATUS_POLL_INTERVAL,
+                                lambda module=module, room_id=room_id: module.get_room_info(room_id),
+                                login_data,
+                            )
+                            if ready:
                                 status.update({
                                     "live": info.get("live_status") == 1 if platform == "bilibili" else bool(info.get("live")),
                                     "room_name": info.get("uname", "") or status.get("room_name", ""),
@@ -3205,7 +3265,18 @@ if QtCore is not None:
                 card_layout.addWidget(stream_title)
                 detail = _ElidedLabel()
                 detail.setStyleSheet("border: 0;")
-                card_layout.addWidget(detail)
+                detail_row = QtWidgets.QHBoxLayout()
+                live_indicator = QtWidgets.QLabel()
+                live_indicator.setFixedSize(10, 10)
+                _set_monitor_live_indicator(
+                    live_indicator,
+                    self._live_states.get(entry["id"]),
+                    self._ui_language,
+                    self.i18n,
+                )
+                detail_row.addWidget(live_indicator)
+                detail_row.addWidget(detail, 1)
+                card_layout.addLayout(detail_row)
                 connection = QtWidgets.QLabel()
                 connection_source = "Connecting"
                 _set_desktop_widget_text(
@@ -3271,6 +3342,7 @@ if QtCore is not None:
                     "title": title,
                     "stream_title": stream_title,
                     "detail": detail,
+                    "live_indicator": live_indicator,
                     "connection": connection,
                     "monitor": monitor,
                     "record_toggle": record_toggle,
@@ -3438,6 +3510,22 @@ if QtCore is not None:
             self.translation_toggle = QtWidgets.QCheckBox("Translate chat messages")
             self.translation_toggle.setChecked(self._translate_enabled)
             language_form.addRow("Translation", self.translation_toggle)
+            self.gift_effects = QtWidgets.QCheckBox("Animate gift images")
+            self._persist_widget(self.gift_effects, "gift_effects")
+            self.gift_effects.setToolTip(self.i18n.translate(
+                "Play available GIF/WebP gift animations. Full SVGA effects and "
+                "YouTube animation overlays are not supported.",
+                self._ui_language,
+            ))
+            self.gift_effects.setProperty(
+                "_desktop_source_tooltip",
+                "Play available GIF/WebP gift animations. Full SVGA effects and "
+                "YouTube animation overlays are not supported.",
+            )
+            self.gift_effects.toggled.connect(
+                lambda _: (self._queue_chat_images(self._paid), self._refresh_feeds())
+            )
+            language_form.addRow("Gift effects", self.gift_effects)
             self.translation_target = QtWidgets.QComboBox()
             for code, label in (("en", "English"), ("zh-CN", "简体中文"), ("zh-TW", "繁體中文"), ("ja", "日本語"), ("ko", "한국어")):
                 self.translation_target.addItem(label, code)
@@ -4474,6 +4562,13 @@ if QtCore is not None:
                     card["title"].setFullText(title)
                 viewers = info.get("viewers", "")
                 live = bool(info.get("live"))
+                if card.get("live_indicator") is not None:
+                    _set_monitor_live_indicator(
+                        card["live_indicator"],
+                        live if "live" in info else None,
+                        self._ui_language,
+                        self.i18n,
+                    )
                 try:
                     viewers_by_platform[entry["platform"]] += int(viewers or 0)
                 except (TypeError, ValueError):
@@ -4610,7 +4705,11 @@ if QtCore is not None:
                         info.get("area_name", ""),
                     )
                     if zone:
-                        tooltip_lines.append(f"Zone: {zone}")
+                        tooltip_lines.append(
+                            self.i18n.translate(
+                                "Zone: {zone}", self._ui_language, zone=zone
+                            )
+                        )
                 elif entry["platform"] == "missevan":
                     for key, label in (
                         ("attention_count", "Attention count: {value}"),
@@ -5112,6 +5211,51 @@ if QtCore is not None:
         def _queue_chat_images(self, messages):
             from src import emotes
 
+            if not hasattr(self, "_gift_catalogs"):
+                self._gift_catalogs = {}
+                self._gift_catalog_pending = set()
+                self._gift_catalog_failures = {}
+            for message in messages:
+                platform = str(message.get("platform", "")).lower()
+                if message.get("type") != "gift" or platform not in ("bilibili", "missevan"):
+                    continue
+                if not message.get("gift_id"):
+                    continue
+                room_id = str(message.get("room_id") or "")
+                if not room_id:
+                    continue
+                key = (platform, room_id)
+                catalog = self._gift_catalogs.get(key)
+                if catalog is not None:
+                    for field, url in catalog.get(str(message["gift_id"]), {}).items():
+                        if url and not message.get(field):
+                            message[field] = url
+                elif (
+                    key not in self._gift_catalog_pending
+                    and time.monotonic()
+                    - self._gift_catalog_failures.get(key, float("-inf")) >= 300
+                ):
+                    from src import gift_assets
+
+                    self._gift_catalog_pending.add(key)
+
+                    def catalog_loaded(catalog, key=key):
+                        self._gift_catalog_pending.discard(key)
+                        if len(self._gift_catalogs) >= 32:
+                            self._gift_catalogs.pop(next(iter(self._gift_catalogs)))
+                        self._gift_catalogs[key] = catalog
+                        self._queue_chat_images(self._paid)
+                        self._refresh_feeds()
+
+                    def catalog_finished(key=key):
+                        self._gift_catalog_pending.discard(key)
+                        self._gift_catalog_failures[key] = time.monotonic()
+
+                    self._run_task(
+                        lambda key=key: gift_assets.fetch_catalog(*key),
+                        catalog_loaded,
+                        on_finished=catalog_finished,
+                    )
             urls = set()
             missing_avatars = set()
             for message in messages:
@@ -5124,6 +5268,10 @@ if QtCore is not None:
                 sticker_url = emotes.safe_chat_image_url(message.get("sticker_url", ""))
                 if sticker_url:
                     urls.add(sticker_url)
+                if getattr(self, "gift_effects", None) and self.gift_effects.isChecked():
+                    animation_url = emotes.safe_chat_image_url(message.get("gift_animation_url", ""))
+                    if animation_url:
+                        urls.add(animation_url)
                 avatar_url = _message_avatar_url(
                     message, self._bilibili_avatar_cache
                 )
@@ -5218,6 +5366,7 @@ if QtCore is not None:
             from src import gifts
             from src import emotes
             from src import reading
+            from src.tts import is_gift, is_paid
 
             _count_memory_work(self, "feed_update_calls_total")
             feed = "paid" if view is self.paid_list else "chat"
@@ -5261,6 +5410,7 @@ if QtCore is not None:
                     _message_avatar_url(msg, self._bilibili_avatar_cache),
                     emotes.safe_badge_url(msg.get("membership_icon", "")),
                     emotes.safe_chat_image_url(msg.get("sticker_url", "")),
+                    emotes.safe_chat_image_url(msg.get("gift_animation_url", "")),
                 ]
                 if isinstance(msg.get("emotes"), dict):
                     image_urls.extend(
@@ -5271,6 +5421,7 @@ if QtCore is not None:
                     json.dumps(msg, ensure_ascii=True, default=str),
                     self._ui_language,
                     self.show_reading.isChecked(),
+                    bool(getattr(self, "gift_effects", None) and self.gift_effects.isChecked()),
                     view.font().toString(),
                     msg.get("id") in self._thanked_ids,
                     tuple(
@@ -5337,7 +5488,7 @@ if QtCore is not None:
                         mime, data = membership_badge
                         encoded = base64.b64encode(data).decode("ascii")
                         membership_badge_markup = (
-                            f' <img src="data:{mime};base64,{encoded}" width="20" height="20" '
+                            f' <img src="data:{mime};base64,{encoded}" {_chat_image_dimensions(data, 20)} '
                             f'alt="{html.escape(str(msg.get("membership", "Member")), quote=True)}" '
                             f'title="{html.escape(str(msg.get("membership", "Member")), quote=True)}">'
                         )
@@ -5384,7 +5535,7 @@ if QtCore is not None:
                         mime, data = image
                         encoded = base64.b64encode(data).decode("ascii")
                         rendered_parts.append(
-                            f'<img src="data:{mime};base64,{encoded}" width="26" height="26" '
+                            f'<img src="data:{mime};base64,{encoded}" {_chat_image_dimensions(data, 26)} '
                             f'alt="{html.escape(part, quote=True)}" title="{html.escape(part, quote=True)}">'
                         )
                     else:
@@ -5393,18 +5544,31 @@ if QtCore is not None:
                 text = f"<b>{html.escape(prefix)}{membership_badge_markup}{fan_medal_markup}</b><br>{body}"
                 sticker_url = emotes.safe_chat_image_url(msg.get("sticker_url", ""))
                 sticker = self._chat_image_cache.get(sticker_url)
-                if sticker:
+                animate_gift = (
+                    msg.get("type") == "gift"
+                    and getattr(self, "gift_effects", None)
+                    and self.gift_effects.isChecked()
+                )
+                animation = self._chat_image_cache.get(
+                    emotes.safe_chat_image_url(msg.get("gift_animation_url", ""))
+                ) if animate_gift else None
+                # YouTube may provide an animated gift image in its ordinary image field.
+                movie_image = (animation or sticker) if animate_gift else None
+                if sticker and not movie_image:
                     mime, data = sticker
                     encoded = base64.b64encode(data).decode("ascii")
                     text += (
-                        f'<br><img src="data:{mime};base64,{encoded}" width="96" height="96" '
+                        f'<br><img src="data:{mime};base64,{encoded}" {_chat_image_dimensions(data, 96)} '
                         f'alt="sticker" title="sticker">'
                     )
                 if msg.get("translation"):
                     translated_text = str(msg["translation"])
                     rendered_translation = _plain_chat_html(translated_text)
                     text += f"<br>🌐 {rendered_translation}"
-                price = gifts.gift_price_label(msg) if msg.get("value") else ""
+                price = (
+                    gifts.amount_label(msg)
+                    if is_paid(msg) or is_gift(msg) else ""
+                )
                 if price:
                     text += f"<br>{html.escape(price)}"
                 if item is None:
@@ -5480,6 +5644,33 @@ if QtCore is not None:
                 label.setText(text)
                 label.setToolTip(reading_tooltip)
                 row_layout.addWidget(label, 1)
+                if movie_image:
+                    effect = QtWidgets.QLabel(row)
+                    effect.setFixedSize(96, 96)
+                    effect.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+                    buffer = QtCore.QBuffer(effect)
+                    buffer.setData(movie_image[1])
+                    buffer.open(QtCore.QIODevice.OpenModeFlag.ReadOnly)
+                    movie = QtGui.QMovie(buffer, QtCore.QByteArray(), effect)
+                    movie_size = _chat_image_size(movie_image[1], 96)
+                    if movie_size.isValid():
+                        movie.setScaledSize(movie_size)
+                    if movie.isValid():
+                        effect.setMovie(movie)
+                        movie.start()
+                        # Limit playback and decoded-frame memory per retained gift row.
+                        QtCore.QTimer.singleShot(10_000, effect, movie.stop)
+                    else:
+                        pixmap = QtGui.QPixmap()
+                        if pixmap.loadFromData((sticker or movie_image)[1]):
+                            effect.setPixmap(pixmap.scaled(
+                                96, 96, QtCore.Qt.AspectRatioMode.KeepAspectRatio,
+                                QtCore.Qt.TransformationMode.SmoothTransformation,
+                            ))
+                        else:
+                            self._show_error("The gift image format could not be displayed.")
+                    row_layout.addWidget(effect)
+                    row.watch_hover(effect)
                 row.watch_hover(label)
                 row.watch_hover(avatar)
 

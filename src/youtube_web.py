@@ -252,7 +252,32 @@ def _parse_action(action: dict) -> dict | None:
     kind, r = next(iter(item.items()))
     text = _runs_text(r.get("message", {}))
     extra: dict = {}
-    if kind == "liveChatTextMessageRenderer":
+    if kind == "giftMessageViewModel":
+        msg_type = "gift"
+        text = r.get("text", {}).get("content", "")
+        gift_name = r.get("giftImageA11yLabel") or r.get("imageA11yLabel") or ""
+        extra["gift_name"] = gift_name
+        extra["gift_count"] = 1
+        extra["sticker_caption"] = True
+        jewel_amount = re.search(r"([\d,]+)\s+Jewels?\b", text, re.IGNORECASE)
+        if jewel_amount:
+            gifts.set_value(extra, "Jewels", int(jewel_amount.group(1).replace(",", "")))
+        gift_sources = r.get("giftImage", {}).get("sources", [])
+        extra["sticker_url"] = (
+            emotes.safe_chat_image_url(gift_sources[-1].get("url", ""))
+            if gift_sources else ""
+        )
+        avatar_sources = (
+            r.get("authorAvatar", {}).get("avatarViewModel", {})
+            .get("image", {}).get("sources", [])
+        )
+        r = {
+            **r,
+            "authorName": {"simpleText": r.get("authorName", {}).get("content", "")},
+            "authorPhoto": {"thumbnails": avatar_sources},
+        }
+        text = text or f"Sent {gift_name or 'a gift'}"
+    elif kind == "liveChatTextMessageRenderer":
         msg_type = "textMessageEvent"
     elif kind == "liveChatPaidMessageRenderer":
         msg_type = "superChatEvent"
