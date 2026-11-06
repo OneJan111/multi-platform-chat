@@ -92,6 +92,7 @@ class MissEvanAdminRoleTests(unittest.TestCase):
 
     def test_messages_include_distinct_admin_role_flags(self):
         listener = MissEvanListener.__new__(MissEvanListener)
+        listener.room_id = "123"
         listener._creator_id = 0
         listener._admins = {5}
         listener._super_admins = {6}

@@ -5,6 +5,34 @@ from src.youtube_web import _parse_action
 
 
 class YouTubeWebChatTests(unittest.TestCase):
+    def test_send_uses_selected_channel_for_chat_page_and_message(self):
+        from src import user_login, youtube_web as w
+
+        session = Mock()
+        session.get.return_value.text = (
+            '"LOGGED_IN":true,'
+            '"sendLiveChatMessageEndpoint":{"params":"selected-channel-params"}'
+        )
+        session.post.return_value.status_code = 200
+        session.post.return_value.json.return_value = {}
+        for page_id in ("brand-id", ""):
+            logins = {"youtube": {"SAPISID": "cookie"}, "youtube_page_id": page_id}
+            with self.subTest(page_id=page_id), user_login.using(logins), \
+                 patch.object(w, "_auth_session", return_value=session), \
+                 patch.object(w, "_remember_emojis"), \
+                 patch.object(w, "channel_emojis", return_value=[]):
+                self.assertEqual(w.send_message("abcdefghijk", "hello"), (True, ""))
+
+                page_headers = session.get.call_args.kwargs["headers"]
+                sent = session.post.call_args.kwargs
+                self.assertEqual(page_headers.get("X-Goog-PageId", ""), page_id)
+                self.assertEqual(sent["headers"], page_headers)
+                if page_id:
+                    self.assertEqual(sent["json"]["context"]["user"], {"onBehalfOfUser": page_id})
+                else:
+                    self.assertNotIn("user", sent["json"]["context"])
+                self.assertEqual(sent["json"]["params"], "selected-channel-params")
+
     def test_auth_headers_use_selected_youtube_channel(self):
         from src import user_login, youtube_web as w
 

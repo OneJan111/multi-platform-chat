@@ -1119,9 +1119,23 @@ def _render_room_cover(url: str) -> None:
         )
 
 
+def _gift_artwork_message(msg: dict) -> dict:
+    if msg.get("type") != "gift":
+        return msg
+    from src.gift_assets import GiftArtwork
+
+    artwork = st.session_state.setdefault("_gift_artwork", GiftArtwork())
+    try:
+        return artwork.resolve(msg)
+    except RuntimeError as exc:
+        st.warning(str(exc))
+        return msg
+
+
 def _message_text_html(msg: dict, text: str) -> str:
     if not st.session_state["render_chat_images"]:
         return html_lib.escape(text)
+    msg = _gift_artwork_message(msg)
     emote_map = msg.get("emotes") or {}
     text_html = emotes.text_to_html(
         text, emote_map, msg.get("sticker_url", ""), msg.get("sticker_caption", False)
@@ -4155,6 +4169,8 @@ with page_obs:
                     st.session_state["translate_target"])
 
     def _preview_row(m: dict, style: str) -> str:
+        if st.session_state["render_chat_images"]:
+            m = _gift_artwork_message(m)
         plat_color = {"youtube": "#ff4444", "missevan": "#ff7a45"}.get(m.get("platform", ""), "#23ade5")
         translated = (
             tr.get_translation(m["text"], st.session_state["translate_target"])

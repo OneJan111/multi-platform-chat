@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Streaming Dashboard</title>
+  <link rel="stylesheet" href="/dashboard.css">
+  <script src="/dashboard.js" defer></script>
+</head>
+<body>
+  <header><div><span class="brand">Streaming Dashboard</span><span class="badge">Python · HTML</span></div><div class="header-tools"><select id="ui-language" aria-label="Interface language"><option value="en">English</option></select><button id="theme">Light / dark</button></div></header>
+  <nav aria-label="Dashboard tabs">
+    <button data-tab="chat" class="active">Chat</button>
+    <button data-tab="monitor">Monitoring / Cookies</button>
+    <button data-tab="settings">Settings / TTS</button>
+    <button data-tab="moderation">Moderation</button>
+    <button data-tab="obs">OBS</button>
+    <button data-tab="transcription">Transcription</button>
+    <button data-tab="analytics">Analytics</button>
+    <button data-tab="archive">Saved Chat</button>
+  </nav>
+  <div id="connection" role="status">Connecting to the local Python backend…</div>
+  <div id="alerts" aria-live="polite"></div>
+  <div id="live-notifications" aria-live="polite" aria-label="Live stream notifications"></div>
+  <main>
+    <section id="chat" class="panel">
+      <details id="chat-rooms-panel" open>
+        <summary>Chat rooms</summary>
+        <div id="room-selectors" class="grid three"></div>
+      </details>
+      <div class="toolbar"><button id="clear-chat">Clear chat</button><button id="skip-speech">Skip speech</button><button id="clear-speech">Clear all speech</button><span id="speech-status"></span><button id="enable-audio">Enable browser speech</button><button id="notifications">Enable live notifications</button></div>
+      <div class="grid feeds"><article id="chat-feed-panel"><h2>Chat</h2><div id="chat-feed" class="feed"></div></article><article id="paid-feed-panel"><h2>Gifts / Super Chats</h2><div id="paid-feed" class="feed"></div></article></div>
+      <details id="joins-panel"><summary>Room joins</summary><div id="join-feed" class="feed joins"></div></details>
+      <form id="send-form" class="toolbar"><input id="send-text" placeholder="Message to the checked sites' selected rooms" maxlength="500" required><button>Send</button><button type="button" id="open-emotes">Emotes</button></form>
+    </section>
+    <section id="monitor" class="panel" hidden>
+      <h1>Monitoring</h1>
+      <form id="room-form" class="toolbar"><select id="platform"><option value="youtube">YouTube</option><option value="bilibili">Bilibili</option><option value="missevan">MissEvan</option></select><input id="target" placeholder="Channel / room ID or URL" required><button>Add room</button></form>
+      <div id="monitor-cards" class="grid three"></div>
+      <h2>Cookies</h2><p>One import signs in to every site it finds. Paste a Cookie header, JSON export or cookies.txt, or leave the box empty to read Firefox, Chrome and Edge on the backend computer. Each site is verified before use. Cookies are saved encrypted for this Windows account and restored after restarting. Clear login also deletes the saved cookies. Expired cookies must be imported again. Credentials are never returned to the page.</p>
+      <form id="cookie-form"><label>Cookies (optional)<textarea id="cookie-text" autocomplete="off" placeholder="Cookie header, JSON export or cookies.txt. Leave empty to read installed browsers."></textarea></label><div class="toolbar"><button>Import cookies for all sites</button><label>Clear login for<select id="cookie-site"><option value="all">All sites</option><option value="youtube">YouTube</option><option value="bilibili">Bilibili</option><option value="missevan">MissEvan</option></select></label><button type="button" id="clear-cookies">Clear login</button></div></form><p id="login-status"></p>
+      <div class="toolbar"><label>YouTube account / channel:<select id="youtube-account"><option value="">Default account</option></select></label><button type="button" id="find-accounts">Find accounts</button></div>
+    </section>
+    <section id="settings" class="panel" hidden>
+      <h1>Settings / TTS</h1><p>Settings save automatically when changed. Text fields save when you leave the field.</p><form id="settings-form" class="settings" data-settings data-autosave>
+        <h2>Chat display</h2>
+        <label>Maximum chat messages per room<input name="max_messages" type="number" min="10" max="200"></label>
+        <label class="check"><input name="show_reading" type="checkbox">Show pinyin / furigana above text</label>
+        <label class="check"><input name="notify_live" type="checkbox">Notify me when a monitored stream goes live</label>
+        <label class="check"><input name="translate_enabled" type="checkbox">Translate chat messages</label>
+        <label>Translate to<select name="translate_target"><option value="en">English</option><option value="zh-CN">Simplified Chinese</option><option value="zh-TW">Traditional Chinese</option><option value="ja">Japanese</option><option value="ko">Korean</option></select></label>
+        <label class="check"><input name="gift_effects" type="checkbox">Animate available gift images</label>
+        <p>GIF/WebP gift images are supported. Full SVGA effects and YouTube animation overlays are not supported.</p>
+        <h2>Text-to-speech</h2>
+        <label class="check"><input name="tts_enabled" type="checkbox">Read new messages aloud in this browser</label>
+        <label>Voice language<select name="tts_language"><option value="auto">Auto (Japanese → Chinese → English)</option><option value="ja">Japanese</option><option value="zh">Chinese</option><option value="en">English</option><option value="ko">Korean</option></select></label>
+        <label class="check"><input name="tts_paid" type="checkbox">Read gifts and paid messages</label>
+        <label class="check"><input name="tts_joins" type="checkbox">Read room joins</label>
+        <label class="check"><input name="tts_translate" type="checkbox">Read translated messages when available</label>
+        <label class="check"><input name="tts_skip_name" type="checkbox">Do not announce usernames for chat messages</label>
+        <label class="check"><input name="tts_skip_emoji" type="checkbox">Skip emoji-only messages</label>
+        <label>Speech rate (WPM)<input name="tts_rate" type="number" min="80" max="300"></label>
+        <label>Volume (%)<input name="tts_volume" type="number" min="0" max="100"></label>
+        <h2>Recording</h2>
+        <label>Recording folder on backend computer<input name="record_folder" placeholder="Default: local application data recordings"></label>
+        <label>Bilibili recording quality<select name="record_quality" data-number><option value="10000">Original</option><option value="400">Blu-ray</option><option value="250">Ultra HD</option><option value="150">HD</option><option value="80">Smooth</option></select></label>
+        <label class="check"><input name="record_danmaku" type="checkbox">Save danmaku, Super Chats and gifts to an XML file next to each video</label>
+      </form>
+    </section>
+    <section id="moderation" class="panel" hidden><h1>Moderation</h1><p>Blocked and allowed expressions apply to incoming chat. These filters belong to the HTML dashboard.</p>
+      <form id="filter-form" class="toolbar"><input id="pattern" placeholder="Regular expression" maxlength="300" required><button>Add block pattern</button><button type="button" id="add-allow">Add allow pattern</button></form>
+      <div class="grid two"><article><h2>Block patterns</h2><div id="filter-list"></div></article><article><h2>Allow patterns</h2><div id="allow-list"></div></article></div>
+      <article><h2>Blocked users</h2><div id="blocked-list"></div></article>
+    </section>
+    <section id="obs" class="panel" hidden>
+      <h1>OBS</h1><p>Uses the existing Python OBS connection configuration. Enable OBS WebSocket on the backend computer.</p>
+      <form id="obs-settings" class="toolbar" data-settings data-autosave><label class="check"><input name="obs_enabled" type="checkbox">Connect to OBS</label><button type="button" data-obs="status">Connect / refresh</button></form>
+      <p id="obs-status">Not connected</p><p id="obs-hint" class="muted"></p>
+      <div id="obs-controls" hidden>
+        <div id="obs-metrics" class="grid four"></div>
+        <div class="toolbar"><span id="obs-stream-state"></span><button type="button" id="obs-stream"></button><span id="obs-record-state"></span><button type="button" id="obs-record"></button></div>
+        <h2>🎭 Scenes &amp; Sources</h2>
+        <form id="obs-scene" class="toolbar"><label>Active scene<select id="scene"></select></label><button>Switch scene</button></form>
+        <p>Sources in selected scene:</p><div id="obs-sources" class="checklist"></div>
+        <h2>📝 OBS Text source</h2>
+        <form id="obs-chat" class="settings" data-settings data-autosave>
+          <label class="check"><input name="obs_chat_enabled" type="checkbox">Send chat to OBS Text source</label>
+          <label class="check"><input name="obs_chat_names" type="checkbox">Show usernames</label>
+          <label>OBS Text source<select name="obs_chat_source" id="obs-chat-source"></select></label>
+        </form>
+        <p id="obs-text-warning" class="warning"></p>
+        <form id="obs-text"><label>Text source<select id="source"></select></label><label>Text<textarea id="source-text"></textarea></label><button>Update text</button></form>
+      </div>
+      <h2>🖥️ Chat Overlay</h2><p>Start the local overlay server for an OBS Browser Source.</p>
+      <form id="overlay-form" class="settings" data-settings data-autosave>
+        <div id="overlay-rooms" class="grid three"></div>
+        <label>Chat messages<input name="overlay_count" type="number" min="1" max="50"></label>
+        <label>Paid messages<input name="overlay_paid_count" type="number" min="0" max="50"></label>
+        <label class="check"><input name="overlay_show_names" type="checkbox">Show usernames</label>
+        <label class="check"><input name="overlay_translate" type="checkbox">Add translations to overlay</label>
+        <label>Custom message<input name="overlay_custom_text" maxlength="300" placeholder="Optional custom overlay message"></label>
+        <button>Start server and copy Browser Source URL</button>
+        <input id="overlay-url" readonly aria-label="Browser Source URL">
+      </form>
+    </section>
+    <section id="transcription" class="panel" hidden>
+      <h1>Transcription</h1><p>Speech recognition runs locally. Translation settings below are shared by transcription, chats, gifts, translated speech and dashboard overlays. Saving applies the API settings immediately; speech recognition settings apply on the next start.</p>
+      <details><summary>Speech recognition and shared translation settings</summary>
+      <p>Settings save automatically when changed. Text fields save when you leave the field.</p>
+      <form id="transcription-settings-form" class="settings" data-settings>
+        <h2>Speech recognition</h2>
+        <label>Model<select id="model" name="transcribe_model"><option value="reazon">ReazonSpeech (Japanese / English)</option><option>tiny</option><option>base</option><option>small</option></select></label>
+        <label>Source language<select name="transcribe_source_language"><option value="">Auto detect</option><option value="ja">Japanese</option><option value="en">English</option><option value="zh">Chinese</option><option value="ko">Korean</option></select></label>
+        <p>Chinese and Korean speech require a Whisper model. Auto detect is limited to the selected model's supported languages.</p>
+        <label>Speech models folder (optional)<input name="transcribe_models_path" placeholder="E:\Workspaces\streaming-transcribe-translate\models"></label>
+        <p>Leave blank to find models in this project or the sibling streaming-transcribe-translate project.</p>
+        <h2>Shared translation API</h2>
+        <p>All translation uses this provider, base URL, model and API key. Chat and transcription keep their own translation switches and target languages. Previous-sentence context is used only for transcription.</p>
+        <label class="check"><input id="transcribe-translate" name="transcribe_translate" type="checkbox">Translate</label>
+        <label>Translate to<select id="transcribe-language" name="transcribe_target_language"><option value="en">English</option><option value="zh-CN">Simplified Chinese</option><option value="zh-TW">Traditional Chinese</option><option value="ja">Japanese</option><option value="ko">Korean</option></select></label>
+        <label>Translation provider<select id="transcribe-provider" name="transcribe_provider"><option value="dashboard">Environment provider (shared)</option><option value="openai_compatible">OpenAI-compatible API</option></select></label>
+        <fieldset id="transcribe-api-options">
+          <legend>OpenAI-compatible API</legend>
+          <label>API base URL<input name="transcribe_api_base" type="url" required placeholder="https://api.openai.com/v1"></label>
+          <label>AI model ID<input name="transcribe_api_model" list="transcribe-models" required autocomplete="off"></label>
+          <datalist id="transcribe-models"></datalist>
+          <label>API key<input id="transcribe-api-key" type="password" autocomplete="new-password" spellcheck="false"></label>
+          <p id="transcribe-key-status"></p>
+          <label class="check"><input id="transcribe-clear-key" type="checkbox">Remove saved API key</label>
+          <p>Leave the key blank to keep the saved key. Keys are encrypted for this Windows account and are never returned to the browser. Keyless local services are supported.</p>
+          <label>Translation background<textarea name="transcribe_background"></textarea></label>
+          <label>Glossary<textarea name="transcribe_glossary" placeholder="Original term: preferred translation"></textarea></label>
+          <label>Previous sentences for context<input name="transcribe_context_sentences" type="number" min="0" max="8"></label>
+          <div class="toolbar"><button type="button" id="transcribe-detect-models">Detect models</button><button type="button" id="transcribe-test-api">Test translation</button></div>
+          <p id="transcribe-api-result" role="status"></p>
+        </fieldset>
+      </form>
+      </details>
+      <form id="transcribe-form" class="toolbar"><label>Room<select id="transcribe-room" required></select></label><button>Start</button><button type="button" id="stop-transcribe">Stop</button><button type="button" id="clear-transcript">Clear all transcripts</button><button type="button" id="download-transcript">Download TXT</button></form>
+      <p id="transcribe-status">Idle</p><div id="transcript" class="transcript"></div>
+    </section>
+    <section id="analytics" class="panel" hidden><h1>Analytics</h1>
+      <p>All received room events are saved locally until manually deleted, before display filters. Analysis and exports apply only to the selected room.</p>
+      <p>Viewer changes are recorded when reported by the platform. Hotspots use the latest monitoring session; other totals include all recorded history.</p>
+      <div class="toolbar"><label>Analysis room<select id="analytics-room"><option value="">Select a room for analysis.</option></select></label><button id="event-rooms-reload">Reload rooms</button></div>
+      <p id="event-recording-status"></p>
+      <form id="analytics-form" class="toolbar" data-settings data-autosave><label>Hotspot window (seconds)<input name="hotspot_window" type="number" min="10" max="300"></label><button>Refresh analytics</button><button type="button" id="export-csv">Export hotspots CSV</button><button type="button" id="export-edl">Export DaVinci EDL</button></form>
+      <p id="analytics-summary">Select a room for analysis.</p>
+      <div class="table-scroll"><table><thead><tr><th>Metric</th><th>Platform</th><th>Value</th><th>Details</th></tr></thead><tbody id="analytics-rows"></tbody></table></div>
+      <h2>Recorded room events</h2>
+      <div class="toolbar"><button id="events-refresh">Latest events</button><button id="events-older">Older events</button><button id="events-export">Download room events JSONL</button><button id="events-delete" class="danger">Delete this room's events</button></div>
+      <div class="table-scroll"><table><thead><tr><th>Time</th><th>Event type</th><th>Details</th></tr></thead><tbody id="event-rows"></tbody></table></div>
+    </section>
+    <section id="archive" class="panel" hidden>
+      <h1>Saved Chat</h1><div class="toolbar"><select id="archive-session"></select><button id="archive-reload">Reload</button><button id="archive-copy">Copy table</button><button id="archive-export">Download TSV</button><button id="archive-delete" class="danger">Delete</button></div>
+      <p>Latest 500 messages per channel, newest first. Uses the same saved-room files as the desktop app.</p>
+      <div class="table-scroll"><table><thead><tr><th>Time</th><th>Platform</th><th>Author</th><th>Message</th></tr></thead><tbody id="archive-rows"></tbody></table></div>
+    </section>
+  </main>
+  <dialog id="confirm"><form method="dialog"><h2>Confirm</h2><p id="confirm-text"></p><div class="toolbar"><button value="cancel">Cancel</button><button value="ok" class="danger">Continue</button></div></form></dialog>
+  <dialog id="emotes"><form method="dialog"><h2>Emotes</h2><div class="toolbar"><select id="emote-site" aria-label="Emote source"><option value="youtube">YouTube channel stamps</option><option value="bilibili">Bilibili</option><option value="missevan">MissEvan</option><option value="kaomoji">MissEvan kaomoji</option></select><button type="button" id="emote-load">Reload</button><button value="close">Close</button></div><p id="emote-status"></p><div id="emote-list"></div></form></dialog>
+  <footer>Local-only service · Recording and OBS operate on the backend computer</footer>
+</body>
+</html>

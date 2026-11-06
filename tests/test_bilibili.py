@@ -252,6 +252,37 @@ class BilibiliSendTests(unittest.TestCase):
         self.assertEqual(avatar, "https://i0.hdslb.com/bfs/face/avatar.png")
         self.assertEqual(get.call_args.kwargs["params"], {"mid": 42})
 
+    def test_get_user_avatar_risk_control_pauses_all_lookups_without_traceback(self):
+        risk = RuntimeError("risk control")
+        risk.code = -352
+        with patch.object(bili, "_avatar_risk_until", 0.0), \
+                patch.object(bili, "BILIBILI_LIB_OK", True), \
+                patch.object(bili, "user", SimpleNamespace(User=Mock()), create=True) as api_module, \
+                patch.object(bili, "_credential", return_value="credential"), \
+                patch.object(bili, "_run", side_effect=risk), \
+                patch("src.bilibili.requests.get") as get, \
+                patch.object(bili.log, "warning") as warning:
+            self.assertEqual(bili.get_user_avatar("42"), "")
+            self.assertEqual(bili.get_user_avatar("43"), "")
+
+        api_module.User.assert_called_once()
+        get.assert_not_called()
+        warning.assert_called_once()
+        self.assertNotIn("exc_info", warning.call_args.kwargs)
+
+    def test_get_user_avatar_profile_api_risk_code_pauses_lookups(self):
+        response = Mock(status_code=200)
+        response.json.return_value = {"code": -352, "data": {"v_voucher": "voucher"}}
+        with patch.object(bili, "_avatar_risk_until", 0.0), \
+                patch.object(bili, "BILIBILI_LIB_OK", False), \
+                patch("src.bilibili.requests.get", return_value=response) as get, \
+                patch.object(bili.log, "warning") as warning:
+            self.assertEqual(bili.get_user_avatar("42"), "")
+            self.assertEqual(bili.get_user_avatar("43"), "")
+
+        get.assert_called_once()
+        warning.assert_called_once()
+
     def test_get_user_avatar_reports_missing_api_library(self):
         response = Mock()
         response.json.return_value = {"data": {}}

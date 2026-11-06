@@ -659,6 +659,7 @@ class MissEvanListener:
         return {
             "id": mid,
             "platform": "missevan",
+            "room_id": str(self.room_id),
             "author": user.get("username") or "?",
             "author_id": str(uid),
             "is_owner": bool(uid) and uid == self._creator_id,

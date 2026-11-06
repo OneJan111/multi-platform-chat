@@ -37,6 +37,17 @@ SITE_ALIASES = {
 # server; keep the singleton on `sys`, which survives reloads.
 _STATE = sys.__dict__.setdefault("_multi_platform_chat_overlay", {"lock": threading.Lock(), "server": None})
 _STATE.setdefault("history_sources", {})
+_STATE.setdefault("translation_sources", {})
+
+
+def register_translation_source(name: str, provider) -> None:
+    with _STATE["lock"]:
+        _STATE["translation_sources"][name] = provider
+
+
+def unregister_translation_source(name: str) -> None:
+    with _STATE["lock"]:
+        _STATE["translation_sources"].pop(name, None)
 
 
 def register_history_source(
@@ -112,7 +123,7 @@ def snapshot(messages: list[dict], translate_enabled: bool, target: str,
              get_translation: Callable[[str, str], str | None],
              custom_text: str = "", show_username: bool = True, count: int = 5,
              paid_count: int = 3, paid_messages: list[dict] | None = None,
-             reading_mode: str = "off") -> dict:
+             reading_mode: str = "off", translate_gifts: bool = False) -> dict:
     """Only publish displayable fields, never raw platform events or credentials.
 
     `paid_messages` (gifts, Super Chats, memberships) is a separate list the dashboard never
@@ -137,7 +148,8 @@ def snapshot(messages: list[dict], translate_enabled: bool, target: str,
     def item_for(msg: dict) -> dict:
         text = msg["text"]
         # Gift names are product names; translating them gives nonsense.
-        translated = get_translation(text, target) if translate_enabled and msg.get("type") != "gift" else ""
+        translated = get_translation(text, target) if translate_enabled and (
+            translate_gifts or msg.get("type") != "gift") else ""
         item = {
             "text": text,
             "translation": translated or "",
@@ -271,10 +283,17 @@ def feed_snapshot(key: "overlay_feeds.FeedKey", query: dict) -> dict:
     if not _LANG_RE.match(target):
         target = ""
     get_translation = lambda *_: ""
+    shared = (query.get("translation_source") or [""])[0]
+    with _STATE["lock"]:
+        provider = _STATE["translation_sources"].get(shared)
+    if shared and provider is None:
+        return dict(_EMPTY, custom_text="Translation settings unavailable. Open the dashboard and regenerate this overlay URL.")
     if target:
         from src import translate
+        if provider is not None:
+            translate = provider()
         translate.prefetch([m["text"] for m in chat[-MAX_MESSAGES:] + paid[-MAX_MESSAGES:]
-                            if m.get("type") != "gift"], target)
+                            if shared or m.get("type") != "gift"], target)
         get_translation = translate.get_translation
     return snapshot(
         chat, bool(target), target, get_translation,
@@ -284,6 +303,7 @@ def feed_snapshot(key: "overlay_feeds.FeedKey", query: dict) -> dict:
         paid_count=_int_param(query, "sc", 3),
         paid_messages=paid,
         reading_mode=parse_reading((query.get("ruby") or [""])[0]),
+        translate_gifts=bool(shared),
     )
 
 
@@ -537,7 +557,8 @@ def overlay_data(query: dict, server: "OverlayServer | None" = None) -> dict:
     sites = parse_sites(query.get("site", []))
     key = overlay_feeds.parse_key(query)
     if key:
-        data = _history_snapshot(key)
+        # A dashboard-specific provider must not reuse another app's translated mirror.
+        data = None if query.get("translation_source") else _history_snapshot(key)
         from_history = data is not None
         if data is not None:
             requested_sites = {site for site, value in key._asdict().items() if value}
@@ -548,7 +569,7 @@ def overlay_data(query: dict, server: "OverlayServer | None" = None) -> dict:
                 "paid": [m for m in data.get("paid", []) if m.get("platform") in requested_sites],
             }
         else:
-            data = server.mirror(key) if server is not None else None
+            data = server.mirror(key) if server is not None and not query.get("translation_source") else None
         if data is None:
             data = feed_snapshot(key, query)
         elif not from_history:

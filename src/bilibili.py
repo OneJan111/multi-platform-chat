@@ -877,6 +877,8 @@ class DanmakuListener:
         """Return and clear the accumulated messages."""
         msgs = list(self.messages)
         self.messages.clear()
+        for message in msgs:
+            message.setdefault("room_id", str(self.room_id))
         return msgs
 
 
@@ -1247,20 +1249,57 @@ def get_user_stats(uid: int) -> dict:
         return {}
 
 
+_AVATAR_RISK_CODES = {-352, -412}
+_AVATAR_RISK_BACKOFF_SECONDS = 600
+_avatar_risk_lock = threading.Lock()
+_avatar_risk_until = 0.0
+
+
+def _avatar_risk_active() -> bool:
+    with _avatar_risk_lock:
+        return time.monotonic() < _avatar_risk_until
+
+
+def _avatar_risk_code(value) -> int | None:
+    code = getattr(value, "code", None) if not isinstance(value, dict) else value.get("code")
+    try:
+        code = int(code)
+    except (TypeError, ValueError):
+        return None
+    return code if code in _AVATAR_RISK_CODES else None
+
+
+def _pause_avatar_lookups(code: int) -> None:
+    """Bilibili risk control applies to every lookup, so pause them all quietly."""
+    global _avatar_risk_until
+    with _avatar_risk_lock:
+        first = time.monotonic() >= _avatar_risk_until
+        _avatar_risk_until = time.monotonic() + _AVATAR_RISK_BACKOFF_SECONDS
+    if first:
+        log.warning(
+            "Bilibili avatar lookups paused for %d minutes after risk-control response %s",
+            _AVATAR_RISK_BACKOFF_SECONDS // 60, code,
+        )
+
+
 def get_user_avatar(uid) -> str:
     """Return a user's trusted Bilibili avatar URL."""
     try:
         uid = int(uid)
     except (TypeError, ValueError):
         return ""
-    if uid <= 0:
+    if uid <= 0 or _avatar_risk_active():
         return ""
     if BILIBILI_LIB_OK:
         try:
             profile = _run(
                 user.User(uid=uid, credential=_credential()).get_user_info()
             )
-        except Exception:
+        except Exception as exc:
+            code = _avatar_risk_code(exc)
+            if code is not None:
+                _pause_avatar_lookups(code)
+                return ""
             log.warning("Could not fetch Bilibili avatar via bilibili-api for uid %s", uid, exc_info=True)
         else:
             face = profile.get("face", "") if isinstance(profile, dict) else ""
@@ -1275,9 +1314,17 @@ def get_user_avatar(uid) -> str:
             timeout=5,
             headers={"User-Agent": _BROWSER_UA},
         )
+        if response.status_code == 412:
+            _pause_avatar_lookups(-412)
+            return ""
         response.raise_for_status()
-        data = response.json().get("data") or {}
-    except (requests.RequestException, ValueError, AttributeError, TypeError):
-        log.warning("Could not fetch Bilibili avatar via profile API for uid %s", uid, exc_info=True)
+        payload = response.json()
+        code = _avatar_risk_code(payload)
+        if code is not None:
+            _pause_avatar_lookups(code)
+            return ""
+        data = payload.get("data") or {}
+    except (requests.RequestException, ValueError, AttributeError, TypeError) as exc:
+        log.warning("Could not fetch Bilibili avatar via profile API for uid %s: %s", uid, exc)
         return ""
     return emotes.safe_image_url(data.get("face", ""))

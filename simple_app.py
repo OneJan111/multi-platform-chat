@@ -797,6 +797,14 @@ def _site_icon_uris() -> dict[str, str]:
 
 def _feed_message_text_html(msg: dict, text: str) -> str:
     render_images = app_config.RENDER_CHAT_IMAGES
+    if render_images and msg.get("type") == "gift":
+        from src.gift_assets import GiftArtwork
+
+        artwork = st.session_state.setdefault("_gift_artwork", GiftArtwork())
+        try:
+            msg = artwork.resolve(msg)
+        except RuntimeError as exc:
+            st.warning(str(exc))
     emote_map = msg.get("emotes") or {}
     text_html = (
         emotes.text_to_html(

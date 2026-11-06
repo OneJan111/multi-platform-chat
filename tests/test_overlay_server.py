@@ -4,12 +4,39 @@ import time
 import unittest
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from src import overlay_server
 
 
 class OverlayTests(unittest.TestCase):
+    def test_dashboard_overlay_uses_shared_provider_for_chat_and_gifts(self):
+        client = Mock()
+        client.get_translation.side_effect = lambda text, target: f"{target}: {text}"
+        feed = Mock()
+        feed.messages.return_value = (
+            [{"type": "danmaku", "text": "hello", "platform": "bilibili"}],
+            [{"type": "gift", "text": "gift", "platform": "bilibili"}],
+        )
+        key = overlay_server.overlay_feeds.FeedKey("", "123", "")
+        overlay_server.register_translation_source("fixture", lambda: client)
+        try:
+            with patch.object(overlay_server.overlay_feeds, "get", return_value=feed), \
+                 patch.object(overlay_server, "_history_snapshot") as history, \
+                 patch("src.translate.prefetch") as environment:
+                result = overlay_server.overlay_data(
+                    {"bili": ["123"], "tr": ["ja"], "translation_source": ["fixture"]}, Mock())
+            environment.assert_not_called()
+            history.assert_not_called()
+            client.prefetch.assert_called_once_with(["hello", "gift"], "ja")
+            self.assertEqual({row["text"]: row["translation"] for row in result["messages"]},
+                             {"hello": "ja: hello", "gift": "ja: gift"})
+        finally:
+            overlay_server.unregister_translation_source("fixture")
+        with patch.object(overlay_server.overlay_feeds, "get", return_value=feed):
+            result = overlay_server.feed_snapshot(key, {"tr": ["ja"], "translation_source": ["fixture"]})
+        self.assertIn("settings unavailable", result["custom_text"])
+
     def test_snapshot_excludes_non_chat_and_private_fields(self):
         messages = [
             {"type": "danmaku", "author": "viewer", "text": f"message {i}",

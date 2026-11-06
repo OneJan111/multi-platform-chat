@@ -2,9 +2,12 @@
 from __future__ import annotations
 
 import html
+import logging
 import re
 from functools import lru_cache
 from typing import Callable
+
+log = logging.getLogger(__name__)
 
 try:
     from pypinyin import Style, pinyin
@@ -57,9 +60,17 @@ def _pinyin_segments(text: str) -> list[tuple[str, str]]:
 
 
 def _hiragana_segments(text: str) -> list[tuple[str, str]]:
-    out = []
+    out, position = [], 0
     for seg in _kakasi.convert(text):
         orig, hira = seg["orig"], seg["hira"]
+        start = text.find(orig, position)
+        if start < 0:
+            # Some converter versions normalize or omit unknown characters.
+            log.warning("Furigana conversion could not be aligned; preserving original text without readings.")
+            return [(text, "")]
+        if start > position:
+            out.append((text[position:start], ""))
+        position = start + len(orig)
         if not _HAN_RE.search(orig) or not hira or orig == hira:
             out.append((orig, ""))
             continue
@@ -73,6 +84,7 @@ def _hiragana_segments(text: str) -> list[tuple[str, str]]:
             tail += 1
         out += [(orig[:head], ""), (orig[head:len(orig) - tail], hira[head:len(hira) - tail]),
                 (orig[len(orig) - tail:], "")]
+    out.append((text[position:], ""))
     return [s for s in out if s[0]]
 
 

@@ -246,3 +246,89 @@ def get_translation(text: str, target: str) -> str | None:
     if fetch:
         prefetch([text], target)
     return result
+
+
+class TranslationClient:
+    """Dashboard-local provider and cache, shared by feeds, speech and transcription."""
+
+    def __init__(self, options, on_error):
+        self.options = options
+        self.on_error = on_error
+        self._cache = {}
+        self._pending = {}
+        self._failed = {}
+        self._lock = threading.Lock()
+
+    def translate(self, text: str, target: str, *, context: tuple[str, ...] = ()) -> tuple[str, str]:
+        if self.options.provider == "dashboard":
+            return translate(text, target)
+        try:
+            protected, replacements = slang.protect(text, target)
+            translated, source = openai_compatible_translate.translate_batch(
+                [protected], target, api_base=self.options.api_base, api_key=self.options.api_key,
+                model=self.options.api_model, background=self.options.background,
+                glossary=self.options.glossary, context=context,
+            )[0]
+            if not translated.strip():
+                raise ValueError("Empty translation.")
+            return slang.restore(translated, replacements), source
+        except Exception as exc:
+            log.error("Shared translation API failed (%s).", type(exc).__name__)
+            raise ValueError("Translation API request failed. Check the URL, model ID and API key.") from None
+
+    def _worker(self, key):
+        try:
+            result = self.translate(*key)
+            with self._lock:
+                if len(self._cache) >= _MAX_CACHE:
+                    self._cache.clear()
+                self._cache[key] = result
+                self._failed.pop(key, None)
+        except ValueError as exc:
+            with self._lock:
+                self._failed[key] = time.monotonic()
+            self.on_error(str(exc))
+        finally:
+            with self._lock:
+                self._pending.pop(key, None)
+
+    def prefetch(self, texts: list[str], target: str, wait: float = 0.0) -> None:
+        if self.options.provider == "dashboard":
+            if wait:
+                return prefetch(texts, target, wait=wait)
+            return prefetch(texts, target)
+        futures = []
+        with self._lock:
+            for text in dict.fromkeys((text or "").strip() for text in texts):
+                if not text:
+                    continue
+                key = (text, target)
+                if key not in self._cache and time.monotonic() - self._failed.get(key, -_RETRY_AFTER) >= _RETRY_AFTER:
+                    if key not in self._pending:
+                        self._pending[key] = _pool.submit(self._worker, key)
+                    futures.append(self._pending[key])
+        deadline = time.monotonic() + wait
+        for future in futures:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            from concurrent.futures import TimeoutError
+            try:
+                future.result(timeout=remaining)
+            except TimeoutError:
+                break
+
+    def get_translation(self, text: str, target: str) -> str | None:
+        if self.options.provider == "dashboard":
+            return get_translation(text, target)
+        text = (text or "").strip()
+        if not text or not target:
+            return ""
+        self.prefetch([text], target)
+        with self._lock:
+            result = self._cache.get((text, target))
+            failed = (text, target) in self._failed
+        if result is None:
+            return "" if failed else None
+        translated, source = result
+        return "" if _same_language(source, target) or translated.strip().lower() == text.lower() else translated

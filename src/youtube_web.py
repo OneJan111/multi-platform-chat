@@ -735,7 +735,11 @@ def send_message(video_id: str, message: str) -> tuple[bool, str]:
         return False, "Not logged in to YouTube — import cookies in the 🍪 Cookies tab."
     try:
         s = _auth_session(cookies)
-        page = s.get(YOUTUBE_CHAT_PAGE_URL, params={"is_popout": 1, "v": video_id}, timeout=_TIMEOUT).text
+        headers = _auth_headers(cookies)
+        page = s.get(
+            YOUTUBE_CHAT_PAGE_URL, params={"is_popout": 1, "v": video_id},
+            headers=headers, timeout=_TIMEOUT,
+        ).text
         if '"LOGGED_IN":true' not in page:
             return False, "YouTube says these cookies are signed out — re-import them in the 🍪 Cookies tab."
         _remember_emojis(video_id, _initial_data(page, "ytInitialData"))
@@ -755,7 +759,9 @@ def send_message(video_id: str, message: str) -> tuple[bool, str]:
             "params": params.group(1),
             "richMessage": {"textSegments": message_segments(message, channel_emojis(video_id))},
         }
-        resp = s.post(YOUTUBE_SEND_CHAT_URL, params={"prettyPrint": "false"}, json=body, headers=_auth_headers(cookies), timeout=_TIMEOUT)
+        if page_id := headers.get("X-Goog-PageId"):
+            body["context"]["user"] = {"onBehalfOfUser": page_id}
+        resp = s.post(YOUTUBE_SEND_CHAT_URL, params={"prettyPrint": "false"}, json=body, headers=headers, timeout=_TIMEOUT)
         data = resp.json()
         if resp.status_code == 200 and "error" not in data:
             # Blocked sends (slow mode, too long, ...) come back as a system message instead of the chat item.
