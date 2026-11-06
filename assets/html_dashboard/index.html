@@ -13,6 +13,7 @@
     <button data-tab="chat" class="active">Chat</button>
     <button data-tab="monitor">Monitoring / Cookies</button>
     <button data-tab="settings">Settings / TTS</button>
+    <button data-tab="translation">Translation</button>
     <button data-tab="moderation">Moderation</button>
     <button data-tab="obs">OBS</button>
     <button data-tab="transcription">Transcription</button>
@@ -47,8 +48,6 @@
         <label>Maximum chat messages per room<input name="max_messages" type="number" min="10" max="200"></label>
         <label class="check"><input name="show_reading" type="checkbox">Show pinyin / furigana above text</label>
         <label class="check"><input name="notify_live" type="checkbox">Notify me when a monitored stream goes live</label>
-        <label class="check"><input name="translate_enabled" type="checkbox">Translate chat messages</label>
-        <label>Translate to<select name="translate_target"><option value="en">English</option><option value="zh-CN">Simplified Chinese</option><option value="zh-TW">Traditional Chinese</option><option value="ja">Japanese</option><option value="ko">Korean</option></select></label>
         <label class="check"><input name="gift_effects" type="checkbox">Animate available gift images</label>
         <p>GIF/WebP gift images are supported. Full SVGA effects and YouTube animation overlays are not supported.</p>
         <h2>Text-to-speech</h2>
@@ -56,7 +55,6 @@
         <label>Voice language<select name="tts_language"><option value="auto">Auto (Japanese → Chinese → English)</option><option value="ja">Japanese</option><option value="zh">Chinese</option><option value="en">English</option><option value="ko">Korean</option></select></label>
         <label class="check"><input name="tts_paid" type="checkbox">Read gifts and paid messages</label>
         <label class="check"><input name="tts_joins" type="checkbox">Read room joins</label>
-        <label class="check"><input name="tts_translate" type="checkbox">Read translated messages when available</label>
         <label class="check"><input name="tts_skip_name" type="checkbox">Do not announce usernames for chat messages</label>
         <label class="check"><input name="tts_skip_emoji" type="checkbox">Skip emoji-only messages</label>
         <label>Speech rate (WPM)<input name="tts_rate" type="number" min="80" max="300"></label>
@@ -97,27 +95,29 @@
         <label>Chat messages<input name="overlay_count" type="number" min="1" max="50"></label>
         <label>Paid messages<input name="overlay_paid_count" type="number" min="0" max="50"></label>
         <label class="check"><input name="overlay_show_names" type="checkbox">Show usernames</label>
-        <label class="check"><input name="overlay_translate" type="checkbox">Add translations to overlay</label>
         <label>Custom message<input name="overlay_custom_text" maxlength="300" placeholder="Optional custom overlay message"></label>
         <button>Start server and copy Browser Source URL</button>
         <input id="overlay-url" readonly aria-label="Browser Source URL">
       </form>
     </section>
-    <section id="transcription" class="panel" hidden>
-      <h1>Transcription</h1><p>Speech recognition runs locally. Translation settings below are shared by transcription, chats, gifts, translated speech and dashboard overlays. Saving applies the API settings immediately; speech recognition settings apply on the next start.</p>
-      <details><summary>Speech recognition and shared translation settings</summary>
+    <section id="translation" class="panel" hidden>
+      <h1>Translation</h1>
       <p>Settings save automatically when changed. Text fields save when you leave the field.</p>
-      <form id="transcription-settings-form" class="settings" data-settings>
-        <h2>Speech recognition</h2>
-        <label>Model<select id="model" name="transcribe_model"><option value="reazon">ReazonSpeech (Japanese / English)</option><option>tiny</option><option>base</option><option>small</option></select></label>
-        <label>Source language<select name="transcribe_source_language"><option value="">Auto detect</option><option value="ja">Japanese</option><option value="en">English</option><option value="zh">Chinese</option><option value="ko">Korean</option></select></label>
-        <p>Chinese and Korean speech require a Whisper model. Auto detect is limited to the selected model's supported languages.</p>
-        <label>Speech models folder (optional)<input name="transcribe_models_path" placeholder="E:\Workspaces\streaming-transcribe-translate\models"></label>
-        <p>Leave blank to find models in this project or the sibling streaming-transcribe-translate project.</p>
-        <h2>Shared translation API</h2>
-        <p>All translation uses this provider, base URL, model and API key. Chat and transcription keep their own translation switches and target languages. Previous-sentence context is used only for transcription.</p>
+      <form id="translation-preferences-form" class="settings" data-settings data-autosave>
+        <h2>Chat and gift translation</h2>
+        <label class="check"><input name="translate_enabled" type="checkbox">Translate chat messages</label>
+        <label>Translate to<select name="translate_target"><option value="en">English</option><option value="zh-CN">Simplified Chinese</option><option value="zh-TW">Traditional Chinese</option><option value="ja">Japanese</option><option value="ko">Korean</option></select></label>
+        <h2>Text-to-speech</h2>
+        <label class="check"><input name="tts_translate" type="checkbox">Read translated messages when available</label>
+        <h2>🖥️ Chat Overlay</h2>
+        <label class="check"><input name="overlay_translate" type="checkbox">Add translations to overlay</label>
+      </form>
+      <form id="translation-settings-form" class="settings" data-settings>
+        <h2>Transcription translation</h2>
         <label class="check"><input id="transcribe-translate" name="transcribe_translate" type="checkbox">Translate</label>
         <label>Translate to<select id="transcribe-language" name="transcribe_target_language"><option value="en">English</option><option value="zh-CN">Simplified Chinese</option><option value="zh-TW">Traditional Chinese</option><option value="ja">Japanese</option><option value="ko">Korean</option></select></label>
+        <h2>Shared translation API</h2>
+        <p>All translation uses this provider, base URL, model and API key. Chat and transcription keep their own translation switches and target languages. Previous-sentence context is used only for transcription.</p>
         <label>Translation provider<select id="transcribe-provider" name="transcribe_provider"><option value="dashboard">Environment provider (shared)</option><option value="openai_compatible">OpenAI-compatible API</option></select></label>
         <fieldset id="transcribe-api-options">
           <legend>OpenAI-compatible API</legend>
@@ -134,6 +134,18 @@
           <div class="toolbar"><button type="button" id="transcribe-detect-models">Detect models</button><button type="button" id="transcribe-test-api">Test translation</button></div>
           <p id="transcribe-api-result" role="status"></p>
         </fieldset>
+      </form>
+    </section>
+    <section id="transcription" class="panel" hidden>
+      <h1>Transcription</h1><p>Speech recognition runs locally. Configure translation in the Translation tab. Speech recognition settings apply on the next start.</p>
+      <details><summary>Speech recognition</summary>
+      <p>Settings save automatically when changed. Text fields save when you leave the field.</p>
+      <form id="recognition-settings-form" class="settings" data-settings data-autosave>
+        <label>Model<select id="model" name="transcribe_model"><option value="reazon">ReazonSpeech (Japanese / English)</option><option>tiny</option><option>base</option><option>small</option></select></label>
+        <label>Source language<select name="transcribe_source_language"><option value="">Auto detect</option><option value="ja">Japanese</option><option value="en">English</option><option value="zh">Chinese</option><option value="ko">Korean</option></select></label>
+        <p>Chinese and Korean speech require a Whisper model. Auto detect is limited to the selected model's supported languages.</p>
+        <label>Speech models folder (optional)<input name="transcribe_models_path" placeholder="E:\Workspaces\streaming-transcribe-translate\models"></label>
+        <p>Leave blank to find models in this project or the sibling streaming-transcribe-translate project.</p>
       </form>
       </details>
       <form id="transcribe-form" class="toolbar"><label>Room<select id="transcribe-room" required></select></label><button>Start</button><button type="button" id="stop-transcribe">Stop</button><button type="button" id="clear-transcript">Clear all transcripts</button><button type="button" id="download-transcript">Download TXT</button></form>

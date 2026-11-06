@@ -32,6 +32,7 @@ MODES: dict[str, str] = {
 
 _HAN_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]+")
 _KANA_RE = re.compile(r"[\u3040-\u30ff]")
+_JAPANESE_RUN_RE = re.compile(r"[\u3005-\u3007\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]+")
 _UNBREAKABLE_RE = re.compile(r"[0-9A-Za-z\u00c0-\u024f'\u2019]+|.", re.S)
 
 
@@ -60,6 +61,19 @@ def _pinyin_segments(text: str) -> list[tuple[str, str]]:
 
 
 def _hiragana_segments(text: str) -> list[tuple[str, str]]:
+    out, position = [], 0
+    # Unsupported symbols can make pykakasi repeat its previous buffer.
+    for match in _JAPANESE_RUN_RE.finditer(text):
+        if match.start() > position:
+            out.append((text[position:match.start()], ""))
+        out.extend(_hiragana_run_segments(match.group()))
+        position = match.end()
+    if position < len(text):
+        out.append((text[position:], ""))
+    return out
+
+
+def _hiragana_run_segments(text: str) -> list[tuple[str, str]]:
     out, position = [], 0
     for seg in _kakasi.convert(text):
         orig, hira = seg["orig"], seg["hira"]

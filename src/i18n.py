@@ -1627,6 +1627,12 @@ OBS に何も表示されない場合は、ダッシュボードのプログラ�
         "設定は変更時に自動保存します。文字入力は入力欄から移動すると保存します。",
     ),
     "Shared translation API": ("共享翻译 API", "共通翻訳 API"),
+    "Chat and gift translation": ("聊天和礼物翻译", "チャットとギフトの翻訳"),
+    "Transcription translation": ("转录翻译", "文字起こしの翻訳"),
+    "Speech recognition runs locally. Configure translation in the Translation tab. Speech recognition settings apply on the next start.": (
+        "语音识别在本机运行。翻译请在“翻译”页面设置。语音识别设置从下次启动时生效。",
+        "音声認識はローカルで動作します。翻訳は「翻訳」タブで設定してください。音声認識の設定は次回開始時に反映されます。",
+    ),
     "Environment provider (shared)": ("环境配置的翻译服务（共享）", "環境設定の翻訳サービス（共通）"),
     "Save recognition and translation settings": ("保存识别与翻译设置", "認識・翻訳設定を保存"),
     "Speech recognition runs locally. Translation settings below are shared by transcription, chats, gifts, translated speech and dashboard overlays. Saving applies the API settings immediately; speech recognition settings apply on the next start.": (

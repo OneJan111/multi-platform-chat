@@ -6,6 +6,28 @@ from src import reading
 
 
 class RubyHtmlTests(unittest.TestCase):
+    @unittest.skipUnless(reading.KAKASI_OK, "pykakasi is required")
+    def test_furigana_preserves_symbols_and_readings_without_alignment_warnings(self):
+        for separator in ("\U0001f60a", "\u00a0", "\ufe0f", "\r\n",
+                          "\u2460\u337f", " hello ", "\u200d"):
+            text = "今日は" + separator + "楽しいです"
+            with self.subTest(separator=repr(separator)), self.assertNoLogs(reading.log, level="WARNING"):
+                segments = reading._hiragana_segments(text)
+            self.assertEqual("".join(base for base, _ in segments), text)
+            self.assertIn(("楽", "たの"), segments)
+            self.assertTrue(any(value for _, value in segments))
+
+    def test_unaligned_furigana_run_does_not_remove_other_runs_readings(self):
+        with patch.object(reading, "_kakasi", create=True) as converter:
+            converter.convert.side_effect = [
+                [{"orig": "unexpected", "hira": "よみ"}],
+                [{"orig": "楽しい", "hira": "たのしい"}],
+            ]
+            with self.assertLogs(reading.log, level="WARNING"):
+                segments = reading._hiragana_segments("今日は 😊 楽しい")
+        self.assertEqual("".join(base for base, _ in segments), "今日は 😊 楽しい")
+        self.assertIn(("楽", "たの"), segments)
+
     def test_desktop_chat_text_is_plain_until_reading_tooltip_is_requested(self):
         self.assertEqual(
             desktop_app._plain_chat_html("<你好>\nhello"),

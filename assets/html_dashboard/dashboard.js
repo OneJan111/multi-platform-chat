@@ -758,7 +758,8 @@ function queueSettingsSave(callback) {
   settingsSaveQueue = result.catch(() => {});
   return result;
 }
-$("settings-form").addEventListener("submit", event => event.preventDefault());
+for (const id of ["settings-form", "recognition-settings-form", "translation-preferences-form"])
+  $(id).addEventListener("submit", event => event.preventDefault());
 for (const form of document.querySelectorAll("[data-autosave]"))
   form.addEventListener("change", event => {
     const input = event.target, name = input.name;
@@ -868,7 +869,7 @@ bindClick("events-delete", async () => {
   }
 });
 function transcriptionConfiguration() {
-  return {values:formValues($("transcription-settings-form")), api_key:$("transcribe-api-key").value,
+  return {values:formValues($("translation-settings-form")), api_key:$("transcribe-api-key").value,
     clear_api_key:$("transcribe-clear-key").checked};
 }
 async function saveTranscriptionSettings(data = transcriptionConfiguration()) {
@@ -882,8 +883,8 @@ async function saveTranscriptionSettings(data = transcriptionConfiguration()) {
   lastChat = "";
   renderTranscript();
 }
-$("transcription-settings-form").addEventListener("submit", event => event.preventDefault());
-$("transcription-settings-form").addEventListener("change", event => {
+$("translation-settings-form").addEventListener("submit", event => event.preventDefault());
+$("translation-settings-form").addEventListener("change", event => {
   if (!event.target.reportValidity()) return;
   const data = transcriptionConfiguration();
   queueSettingsSave(() => saveTranscriptionSettings(data)).catch(report);
@@ -894,7 +895,7 @@ bindClick("transcribe-detect-models", async () => {
   try {
     await job({action:"transcription_models", ...data}, result => {
       $("transcribe-models").replaceChildren(...result.models.map(model => new Option(model, model)));
-      const input = $("transcription-settings-form").elements.transcribe_api_model;
+      const input = $("translation-settings-form").elements.transcribe_api_model;
       if (input.value === data.values.transcribe_api_model && !result.models.includes(input.value))
         { input.value = result.models[0]; input.dispatchEvent(new Event("change", {bubbles:true})); }
       setTranscriptApiResult("Models found: {count}", {count:result.models.length});
