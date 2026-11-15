@@ -1,4 +1,5 @@
 from copy import deepcopy
+import asyncio
 import json
 from pathlib import Path
 import tempfile
@@ -16,6 +17,39 @@ from html_app import Dashboard, make_server
 
 
 class HtmlDashboardTests(unittest.TestCase):
+    def test_ctrl_c_requests_graceful_stop_then_allows_explicit_force_exit(self):
+        app = Mock()
+        handler = html_app.shutdown_handler(app)
+        with patch("html_app.os._exit") as force_exit, patch("builtins.print") as output:
+            handler()
+            app.quit.assert_called_once_with()
+            force_exit.assert_not_called()
+            self.assertIn("may lose pending data", output.call_args.args[0])
+            handler()
+            force_exit.assert_called_once_with(130)
+
+    def test_shutdown_cancels_queued_network_jobs_but_flushes_event_writes(self):
+        started, release = threading.Event(), threading.Event()
+        def running():
+            started.set()
+            release.wait(5)
+        self.dashboard.pools["network"].submit(running)
+        self.assertTrue(started.wait(2))
+        queued = self.dashboard.pools["network"].submit(lambda: None)
+        saved = self.dashboard.pools["events"].submit(lambda: "saved")
+        closer = threading.Thread(target=self.dashboard.close)
+        closer.start()
+        try:
+            deadline = time.monotonic() + 2
+            while not queued.cancelled() and time.monotonic() < deadline:
+                time.sleep(0.01)
+            self.assertTrue(queued.cancelled())
+        finally:
+            release.set()
+            closer.join(5)
+        self.assertFalse(closer.is_alive())
+        self.assertEqual(saved.result(), "saved")
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.path = Path(self.temp.name) / "settings.json"
@@ -56,6 +90,118 @@ class HtmlDashboardTests(unittest.TestCase):
             self.assertEqual(other.logins, {})
         finally:
             other.close()
+
+    def test_author_history_action_includes_pending_writes_and_room_scope(self):
+        room = self.add_room()
+        self.dashboard.receive_messages([{
+            "_monitor_id": room, "platform": "bilibili", "type": "danmaku",
+            "author_id": "42", "author": "Viewer", "text": "hello",
+        }])
+        result = self.dashboard.action({"action": "author_history", "room": room,
+                                        "author_id": "42", "author": "Viewer"})
+        self.assertEqual([event["payload"]["text"] for event in result["events"]], ["hello"])
+        other = self.dashboard.action({"action": "author_history", "room": "bilibili:other",
+                                       "author_id": "42", "author": "Viewer"})
+        self.assertEqual(other["events"], [])
+
+    def test_bilibili_reply_target_survives_listener_feed_and_history(self):
+        from src import bilibili
+
+        handlers = {}
+        client = Mock()
+        client.on.side_effect = lambda name: lambda callback: handlers.setdefault(name, callback)
+        with patch.object(bilibili, "_cookie_values", return_value=("", "", "", "")):
+            listener = bilibili.DanmakuListener("123")
+        with patch.object(bilibili, "_credential"), patch.object(
+            bilibili.live, "LiveDanmaku", return_value=client
+        ):
+            asyncio.run(listener._listen())
+        meta = [0] * 15 + [{"extra": json.dumps({"reply_mid": 42, "reply_uname": "Viewer"})}]
+        asyncio.run(handlers["DANMU_MSG"]({
+            "data": {"info": [meta, "hello [smile]", [7, "Sender", 0], []]}
+        }))
+        self.assertEqual(listener.error, "")
+        room = self.add_room()
+        messages = listener.pop_messages()
+        messages[0]["_monitor_id"] = room
+        self.dashboard.receive_messages(messages)
+        self.assertEqual(self.dashboard.snapshot()["messages"][0]["_text"], "@Viewer hello [smile]")
+        history = self.dashboard.action({
+            "action": "author_history", "room": room, "author_id": "7", "author": "Sender",
+        })
+        self.assertEqual(history["events"][0]["payload"]["text"], "@Viewer hello [smile]")
+
+    def test_tab_views_isolate_feeds_and_speech_without_changing_shared_settings(self):
+        first = self.add_room("bilibili", "1")
+        second = self.add_room("bilibili", "2")
+        self.dashboard.settings["tts_enabled"] = True
+        self.dashboard.receive_messages([
+            {"_monitor_id": room, "platform": "bilibili", "author": "Viewer",
+             "text": text, "type": "danmaku", "avatar": "https://i0.hdslb.com/a.png"}
+            for room, text in ((first, "first"), (second, "second"))
+        ])
+        self.dashboard.pools["speech"].submit(lambda: None).result(3)
+        shared = deepcopy(self.dashboard.settings)
+        for room, text in ((first, "first"), (second, "second")):
+            view = {"selected_rooms": {"bilibili": room},
+                    "visible_sites": ["bilibili"], "send_sites": ["bilibili"]}
+            snapshot = self.dashboard.snapshot(view)
+            self.assertEqual([m["text"] for m in snapshot["messages"]], [text])
+            self.assertEqual({m["room"] for m in snapshot["speech"]}, {room})
+            self.assertEqual(snapshot["rooms"]["bilibili"], room)
+        self.assertEqual(self.dashboard.settings, shared)
+        self.assertEqual(self.dashboard.snapshot({"visible_sites": []})["messages"], [])
+        for view in ([], {"other": 1}, {"selected_rooms": []},
+                     {"selected_rooms": {"youtube": second}},
+                     {"send_sites": ["invalid"]}):
+            with self.subTest(view=view), self.assertRaises((ValueError, TypeError)):
+                self.dashboard.snapshot(view)
+
+    def test_tab_view_controls_send_and_emote_destination(self):
+        first = self.add_room("bilibili", "1")
+        second = self.add_room("bilibili", "2")
+        view = {"selected_rooms": {"bilibili": second}, "send_sites": ["bilibili"]}
+        with patch("src.bilibili.send_danmaku", return_value=(True, "")) as send:
+            result = self.wait_job(self.dashboard.action({
+                "action": "send", "sites": ["bilibili"], "text": "hello", "view": view}))
+        self.assertEqual(result["status"], "done")
+        send.assert_called_once_with("2", "hello")
+        with patch("src.bilibili.send_emoticon", return_value=(True, "")) as send_emote:
+            self.dashboard.use_emote({"site": "bilibili", "unique": "fixture", "view": view})
+        send_emote.assert_called_once_with("2", "fixture")
+        self.assertEqual(self.dashboard.emote_room("bilibili", view)[0]["id"], second)
+        self.assertEqual(self.dashboard.effective_rooms()["bilibili"], first)
+
+    def test_room_order_persists_and_updates_monitor_worker(self):
+        first = self.add_room("bilibili", "1")
+        second = self.add_room("youtube", "abcdefghijk")
+        third = self.add_room("missevan", "3")
+        worker = Mock()
+        self.dashboard.worker = worker
+
+        self.assertEqual(self.dashboard.action({
+            "action": "reorder_rooms", "rooms": [third, first, second],
+        }), {"ok": True})
+        self.assertEqual([room["id"] for room in self.dashboard.targets],
+                         [third, first, second])
+        worker.update_targets.assert_called_once_with(self.dashboard.targets)
+        saved = json.loads(self.path.read_text(encoding="utf-8"))
+        self.assertEqual([room["id"] for room in saved["targets"]], [third, first, second])
+
+        self.dashboard.worker = None
+        self.dashboard.close()
+        self.dashboard = Dashboard(self.path, start=False)
+        self.assertEqual([room["id"] for room in self.dashboard.targets],
+                         [third, first, second])
+
+    def test_invalid_room_order_is_rejected_without_changing_monitors(self):
+        first = self.add_room("bilibili", "1")
+        second = self.add_room("youtube", "abcdefghijk")
+        original = deepcopy(self.dashboard.targets)
+        for rooms in ([first], [first, first], [first, second, "unknown"], "not a list"):
+            with self.subTest(rooms=rooms), self.assertRaises(ValueError):
+                self.dashboard.action({"action": "reorder_rooms", "rooms": rooms})
+            self.assertEqual(self.dashboard.targets, original)
 
     @unittest.skipUnless(sys.platform == "win32", "Windows DPAPI")
     def test_site_cookies_restore_encrypted_and_clear_individually(self):
@@ -243,6 +389,50 @@ class HtmlDashboardTests(unittest.TestCase):
         self.assertEqual(state["paid"][0]["avatar"], "")
         self.assertEqual(state["paid"][0]["sticker_url"], "https://yt3.ggpht.com/gift.png")
 
+    def test_bilibili_discounted_gifts_keep_paid_and_list_prices(self):
+        from src.bilibili import DanmakuListener
+
+        room = self.add_room()
+        for combo in (False, True):
+            with self.subTest(combo=combo):
+                message = DanmakuListener._gift_message({
+                    "uname": "viewer", "giftName": "Flower", "num": 2,
+                    "combo_num": 2, "coin_type": "gold", "total_coin": 1600,
+                    "combo_total_coin": 1600, "discount_price": 800, "price": 1000,
+                }, combo=combo)
+                message["_monitor_id"] = room
+                self.dashboard.receive_messages([message])
+                for language, label in (("en", "list"), ("zh", "原价"), ("ja", "定価")):
+                    self.dashboard.settings["ui_language"] = language
+                    rendered = self.dashboard.snapshot()["paid"][-1]
+                    self.assertIn("¥1.6", rendered["_text"])
+                    self.assertIn(f"{label} ¥2", rendered["_text"])
+                    self.assertEqual(rendered["value"], 1.6)
+
+    def test_bilibili_membership_discount_arriving_after_delivery_updates_feed(self):
+        from src.bilibili import DanmakuListener
+
+        room = self.add_room()
+        listener = DanmakuListener.__new__(DanmakuListener)
+        listener.messages, listener.room_id = [], "123"
+        listener._record_guard({
+            "uid": 7, "username": "fan", "guard_level": 3, "num": 1,
+            "price": 198000, "gift_name": "舰长",
+        }, paid=False)
+        messages = listener.pop_messages()
+        messages[0]["_monitor_id"] = room
+        self.dashboard.receive_messages(messages)
+        self.assertIn("¥198", self.dashboard.snapshot()["paid"][0]["_text"])
+        listener._record_guard({
+            "uid": 7, "username": "fan", "guard_level": 3, "num": 1,
+            "price": 138000, "role_name": "舰长", "unit": "月",
+        }, paid=True)
+        state = self.dashboard.snapshot()
+        self.assertEqual(len(state["paid"]), 1)
+        self.assertIn("¥138, list ¥198", state["paid"][0]["_text"])
+        self.assertEqual(state["paid"][0]["value"], 138)
+        self.assertEqual(state["bilibili_gift_revenue"][room], "¥138")
+
     def test_monitor_state_tracks_bilibili_gift_revenue_for_tooltips(self):
         room = self.add_room("bilibili", "123")
         self.dashboard.receive_messages([
@@ -255,6 +445,15 @@ class HtmlDashboardTests(unittest.TestCase):
         ])
 
         self.assertEqual(self.dashboard.snapshot()["bilibili_gift_revenue"][room], "¥17.5")
+
+    def test_polling_does_not_count_gifts_without_ids_again(self):
+        room = self.add_room()
+        self.dashboard.receive_messages([{
+            "_monitor_id": room, "platform": "bilibili", "type": "gift",
+            "text": "gift", "currency": "¥", "value": 2,
+        }])
+        for _ in range(3):
+            self.assertEqual(self.dashboard.snapshot()["bilibili_gift_revenue"][room], "¥2")
 
     def test_tts_uses_selected_language_and_skips_backlog_and_other_rooms(self):
         room = self.add_room("youtube", "abcdefghijk")
@@ -576,6 +775,7 @@ class HtmlDashboardTests(unittest.TestCase):
         self.dashboard.save()
         saved = json.loads(self.path.read_text(encoding="utf-8"))
         saved["transcription_api_key_dpapi"] = "not valid encrypted data"
+        saved["settings"]["transcribe_provider"] = "openai_compatible"
         self.path.write_text(json.dumps(saved), encoding="utf-8")
         other = Dashboard(self.path, start=False)
         try:
@@ -588,7 +788,8 @@ class HtmlDashboardTests(unittest.TestCase):
             other.close()
 
     def test_model_discovery_and_translation_test_use_unsaved_form_without_mutating_settings(self):
-        data = {"values": {"transcribe_api_base": "http://localhost:1234/v1",
+        data = {"values": {"transcribe_provider": "openai_compatible",
+                           "transcribe_api_base": "http://localhost:1234/v1",
                            "transcribe_api_model": "fixture-model"}, "api_key": "fixture-key"}
         with patch("src.openai_compatible_translate.list_models", return_value=["fixture-model"]) as models:
             job = self.wait_job(self.dashboard.action({"action": "transcription_models", **data}))
@@ -653,6 +854,56 @@ class HtmlDashboardTests(unittest.TestCase):
         fallback.assert_not_called()
         self.assertIn("Translation API request failed", self.dashboard.errors[-1]["message"])
         self.assertNotIn("private-key", str(self.dashboard.errors))
+
+    def test_translation_format_errors_reach_chat_and_api_test(self):
+        from src.caption_engine import caption_options
+        from src.openai_compatible_translate import TranslationResponseError
+        message = "The translation model did not return a valid JSON array. Use a model that supports JSON-array output."
+        self.dashboard.settings["transcribe_provider"] = "openai_compatible"
+        with patch("src.openai_compatible_translate.translate_batch",
+                   side_effect=TranslationResponseError(message)):
+            self.dashboard.translations().prefetch(["hello"], "ja", wait=2)
+            self.assertEqual(self.dashboard.errors[-1]["message"], message)
+            with self.assertRaisesRegex(TranslationResponseError, "valid JSON array"):
+                self.dashboard.test_transcription_api(
+                    self.dashboard.settings, caption_options(self.dashboard.settings))
+
+    def test_reasoning_option_is_shared_by_chat_and_api_test_and_resets_cache(self):
+        from src.caption_engine import caption_options
+        self.dashboard.settings["transcribe_provider"] = "openai_compatible"
+        previous = self.dashboard.translations()
+        self.dashboard.action({"action": "transcription_settings",
+                               "values": {"transcribe_reasoning_effort": "none"}})
+        current = self.dashboard.translations()
+        self.assertIsNot(current, previous)
+        with patch("src.openai_compatible_translate.translate_batch",
+                   return_value=[("translated", "")]) as api:
+            current.translate("hello", "ja")
+            self.dashboard.test_transcription_api(
+                self.dashboard.settings, caption_options(self.dashboard.settings))
+        self.assertEqual(api.call_count, 2)
+        self.assertTrue(all(call.kwargs["reasoning_effort"] == "none" for call in api.call_args_list))
+
+    def test_switch_from_ai_to_google_routes_chat_and_test_directly(self):
+        from src.caption_engine import caption_options
+        self.dashboard.settings["transcribe_provider"] = "openai_compatible"
+        previous = self.dashboard.translations()
+        self.dashboard.action({"action": "transcription_settings",
+                               "values": {"transcribe_provider": "google"}})
+        current = self.dashboard.translations()
+        self.assertIsNot(current, previous)
+        with patch("src.translate._fallback_translate_batch", return_value=[("Google result", "en")]) as google, \
+                patch("src.openai_compatible_translate.translate_batch") as ai, \
+                patch("src.translate.translate") as environment:
+            self.assertEqual(self.dashboard.translate_text("hello", "ja")[0], "Google result")
+            result = self.dashboard.test_transcription_api(
+                self.dashboard.settings, caption_options(self.dashboard.settings))
+        self.assertEqual(result["text"], "Google result")
+        self.assertEqual(google.call_count, 2)
+        ai.assert_not_called()
+        environment.assert_not_called()
+        previous.on_error("obsolete AI failure")
+        self.assertFalse(any(item["message"] == "obsolete AI failure" for item in self.dashboard.errors))
 
     def test_background_failure_is_visible_and_jobs_do_not_block_status(self):
         room = self.add_room()
@@ -754,8 +1005,8 @@ class HtmlDashboardTests(unittest.TestCase):
             missing = keys - untranslatable - set(html_app.catalog(lang))
             self.assertEqual(missing, set(), lang)
 
-    def test_local_http_api_authentication_assets_and_actions(self):
-        server, token = make_server(self.dashboard, 0)
+    def test_local_http_api_without_authentication_rejects_foreign_requests(self):
+        server = make_server(self.dashboard, 0)
         thread = threading.Thread(target=server.serve_forever)
         thread.start()
         url = f"http://127.0.0.1:{server.server_port}"
@@ -763,11 +1014,11 @@ class HtmlDashboardTests(unittest.TestCase):
             with urlopen(url) as response:
                 self.assertIn(b"Monitoring / Cookies", response.read())
                 self.assertIn("frame-ancestors 'none'", response.headers["Content-Security-Policy"])
-            with self.assertRaises(HTTPError) as error:
-                urlopen(url + "/api/state")
-            self.assertEqual(error.exception.code, 403)
-            error.exception.close()
-            headers = {"X-Dashboard-Token": token, "Content-Type": "application/json"}
+            with urlopen(url + "/api/state") as response:
+                self.assertIn("targets", json.load(response))
+            with urlopen(f"http://localhost:{server.server_port}/api/state") as response:
+                self.assertIn("targets", json.load(response))
+            headers = {"Content-Type": "application/json"}
             request = Request(url + "/api/action", data=json.dumps({
                 "action": "add_room", "platform": "bilibili", "target": "123",
             }).encode(), headers=headers)
@@ -781,18 +1032,38 @@ class HtmlDashboardTests(unittest.TestCase):
             self.dashboard.receive_messages([{
                 "_monitor_id": room, "platform": "bilibili", "text": "export me",
             }])
+            from urllib.parse import quote
+            second = self.add_room("bilibili", "456")
+            self.dashboard.receive_messages([{
+                "_monitor_id": second, "platform": "bilibili", "text": "second tab",
+            }])
+            for selected, text in ((room, "export me"), (second, "second tab")):
+                view = quote(json.dumps({"selected_rooms": {"bilibili": selected}}))
+                with urlopen(Request(url + "/api/state", headers={
+                    **headers, "X-Dashboard-View": view,
+                })) as response:
+                    state = json.load(response)
+                self.assertEqual([m["text"] for m in state["messages"]], [text])
             with self.assertRaises(HTTPError) as error:
-                urlopen(url + "/api/room-events?room=" + room)
-            self.assertEqual(error.exception.code, 403)
+                urlopen(Request(url + "/api/state", headers={
+                    **headers, "X-Dashboard-View": "not-json",
+                }))
+            self.assertEqual(error.exception.code, 400)
             error.exception.close()
             with urlopen(Request(url + "/api/room-events?room=" + room, headers=headers)) as response:
                 events = [json.loads(line) for line in response.read().decode().splitlines()]
                 self.assertEqual(len(events), 1)
                 self.assertEqual(events[0]["payload"]["text"], "export me")
                 self.assertEqual(events[0]["room"], room)
-            for changed in ({"Origin": "https://evil.test"}, {"Host": "evil.test"}):
+            for changed in ({"Origin": "https://evil.test"}, {"Host": "evil.test"},
+                            {"Origin": "null"}, {"Sec-Fetch-Site": "cross-site"}):
                 with self.assertRaises(HTTPError) as error:
                     urlopen(Request(url + "/api/state", headers={**headers, **changed}))
+                self.assertEqual(error.exception.code, 403)
+                error.exception.close()
+                with self.assertRaises(HTTPError) as error:
+                    urlopen(Request(url + "/api/action", data=b'{"action":"unknown"}',
+                                    headers={**headers, **changed}))
                 self.assertEqual(error.exception.code, 403)
                 error.exception.close()
             with self.assertRaises(HTTPError) as error:

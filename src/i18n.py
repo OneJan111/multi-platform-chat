@@ -671,6 +671,7 @@ OBS に何も表示されない場合は、ダッシュボードのプログラ�
         "各リストの ▲ ▼ で位置を変更し、◀ ▶ でもう一方の列へ移動します。"),
     "Move up": ("上移", "上へ移動"),
     "Move down": ("下移", "下へ移動"),
+    "Drag to reorder": ("拖动以重新排序", "ドラッグして並べ替え"),
     "Move to the left column": ("移到左栏", "左の列へ移動"),
     "Move to the right column": ("移到右栏", "右の列へ移動"),
     "Thanked": ("已感谢", "お礼済み"),
@@ -1536,6 +1537,7 @@ OBS に何も表示されない場合は、ダッシュボードのプログラ�
         "プラットフォームが報告した視聴者数の変化を記録します。ホットスポットは最新の監視セッション、その他の集計は全記録が対象です。",
     ),
     "Analysis room": ("分析房间", "分析対象のルーム"),
+    "Author history": ("发言者历史", "投稿者の履歴"),
     "Select a room for analysis.": ("请选择要分析的房间。", "分析するルームを選択してください。"),
     "Reload rooms": ("重新加载房间", "ルームを再読み込み"),
     "Recorded room events": ("已记录的房间事件", "記録済みルームイベント"),
@@ -1617,6 +1619,22 @@ OBS に何も表示されない場合は、ダッシュボードのプログラ�
         "翻译 API 请求失败，请检查服务地址、模型 ID 和 API 密钥。",
         "翻訳 API リクエストに失敗しました。URL、モデル ID、API キーを確認してください。",
     ),
+    "The translation endpoint returned non-JSON data. Check the API base URL; use the API endpoint, not the web page.": (
+        "翻译接口返回的不是 JSON 数据。请检查 API 服务地址，填写 API 接口而不是网页地址。",
+        "翻訳 API が JSON 以外のデータを返しました。Web ページではなく API の URL を指定してください。",
+    ),
+    "The translation response is not in OpenAI chat completions format. Check the endpoint and model.": (
+        "翻译响应不符合 OpenAI chat completions 格式，请检查接口地址和模型。",
+        "翻訳レスポンスが OpenAI chat completions 形式ではありません。URL とモデルを確認してください。",
+    ),
+    "The translation model output reached the token limit. Use a model with shorter output or disable reasoning.": (
+        "翻译模型输出达到 token 上限。请使用输出较简洁的模型或关闭推理模式。",
+        "翻訳モデルの出力がトークン上限に達しました。出力の短いモデルを使用するか、推論モードを無効にしてください。",
+    ),
+    "The translation model did not return a valid JSON array. Use a model that supports JSON-array output.": (
+        "翻译模型未返回有效的 JSON 数组。请使用支持 JSON 数组输出的模型。",
+        "翻訳モデルが有効な JSON 配列を返しませんでした。JSON 配列出力に対応したモデルを使用してください。",
+    ),
     "Saved API key cannot be read. Re-enter it on this Windows account.": (
         "无法读取已保存的 API 密钥。请在当前 Windows 账户重新输入。",
         "保存済み API キーを読み取れません。この Windows アカウントで再入力してください。",
@@ -1627,6 +1645,31 @@ OBS に何も表示されない場合は、ダッシュボードのプログラ�
         "設定は変更時に自動保存します。文字入力は入力欄から移動すると保存します。",
     ),
     "Shared translation API": ("共享翻译 API", "共通翻訳 API"),
+    "Google Translate": ("Google 翻译", "Google 翻訳"),
+    "Could not restore this tab's room selection.": (
+        "无法恢复此标签页的房间选择。", "このタブのルーム選択を復元できませんでした。",
+    ),
+    "Apply service switch": ("应用服务切换", "サービス切替を適用"),
+    "Active service: {service}. Switch not applied.": (
+        "当前服务：{service}。尚未应用切换。", "現在のサービス: {service}。切替は未適用です。",
+    ),
+    "Active service: {service}.": ("当前服务：{service}。", "現在のサービス: {service}。"),
+    "Choose a service, then apply the switch. Other settings save automatically. Test translation uses the selected service without switching live translation.": (
+        "选择服务后点击“应用服务切换”才生效。其他设置自动保存。“测试翻译”使用所选服务，不切换实际翻译服务。",
+        "サービスを選び、切替を適用してください。他の設定は自動保存されます。翻訳テストは選択中のサービスを使い、実際の翻訳サービスは変更しません。",
+    ),
+    "Model reasoning": ("模型推理", "モデルの推論"),
+    "Service default": ("服务默认", "サービスの既定値"),
+    "Disabled (supported models only)": ("关闭（仅限支持的模型）", "無効（対応モデルのみ）"),
+    "For Ollama models with thinking enabled, disable reasoning to reserve output for translation. Other services must support reasoning_effort=none.": (
+        "Ollama 模型默认开启思考时，可关闭推理，将输出用于翻译。其他服务需支持 reasoning_effort=none。",
+        "Ollama モデルの思考が有効な場合、推論を無効にして翻訳に出力を使えます。他のサービスは reasoning_effort=none への対応が必要です。",
+    ),
+    "Viewer message history": ("观众历史弹幕", "視聴者のメッセージ履歴"),
+    "Saved messages from this viewer in this room, newest first.": (
+        "该观众在当前房间已保存的历史消息，最新消息在前。",
+        "このルームに保存された視聴者のメッセージを新しい順に表示します。",
+    ),
     "Chat and gift translation": ("聊天和礼物翻译", "チャットとギフトの翻訳"),
     "Transcription translation": ("转录翻译", "文字起こしの翻訳"),
     "Speech recognition runs locally. Configure translation in the Translation tab. Speech recognition settings apply on the next start.": (

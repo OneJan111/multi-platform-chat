@@ -83,3 +83,22 @@ test("MissEvan kaomoji replaces the selection, closes and focuses the draft with
   assert.equal(f.dialog.open, false);
   assert.equal(f.requests.length, 0);
 });
+
+test("emote picker previews the hovered or focused emote larger without sending", () => {
+  const preview = source.slice(source.indexOf("function previewEmote("), source.indexOf("async function loadEmotes("));
+  const children = [];
+  const box = {replaceChildren(...items) { children.splice(0, children.length, ...items); }};
+  const context = vm.createContext({
+    $:() => box,
+    image:(src, cls, alt) => ({src, cls, alt}),
+    node:(tag, text) => ({tag, text}),
+  });
+  vm.runInContext(preview.slice(0, preview.indexOf("function showEmotes(")), context);
+  context.previewEmote({image:"https://i0.hdslb.com/a.png", label:"Wave"});
+  assert.equal(children[0].cls, "emote-large");
+  assert.equal(children[1].text, "Wave");
+  context.clearEmotePreview();
+  assert.equal(children.length, 0);
+  assert.match(preview, /"mouseenter", "focus"/);
+  assert.match(preview, /"mouseleave", "blur"/);
+});

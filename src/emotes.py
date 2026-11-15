@@ -59,6 +59,11 @@ def _as_dict(value) -> dict:
     return {}
 
 
+def parse_danmu_extra(meta: list) -> dict:
+    """Return the optional DANMU_MSG metadata, accepting JSON and dictionary payloads."""
+    return _as_dict(_as_dict(meta[15]).get("extra")) if len(meta) > 15 else {}
+
+
 def parse_danmu_emotes(meta: list) -> tuple[dict[str, str], str]:
     """Return ({"[code]": url}, sticker_url) from DANMU_MSG info[0]."""
     sticker = ""
@@ -66,7 +71,7 @@ def parse_danmu_emotes(meta: list) -> tuple[dict[str, str], str]:
         sticker = safe_image_url(_as_dict(meta[13]).get("url"))
     emotes: dict[str, str] = {}
     if len(meta) > 15:
-        extra = _as_dict(_as_dict(meta[15]).get("extra"))
+        extra = parse_danmu_extra(meta)
         for code, info in (extra.get("emots") or {}).items():
             url = safe_image_url(_as_dict(info).get("url"))
             if isinstance(code, str) and code and url:

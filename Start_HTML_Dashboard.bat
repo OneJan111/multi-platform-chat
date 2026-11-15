@@ -5,4 +5,4 @@ if exist ".venv\Scripts\python.exe" (
 ) else (
   python html_app.py
 )
-pause
+if errorlevel 1 pause

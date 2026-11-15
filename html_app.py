@@ -7,7 +7,6 @@ from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from functools import lru_cache
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-import hmac
 import json
 import logging
 import os
@@ -16,7 +15,7 @@ import re
 import secrets
 import threading
 import time
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, unquote, urlsplit
 import webbrowser
 
 import desktop_app
@@ -363,6 +362,8 @@ class Dashboard:
 
     def receive_statuses(self, statuses):
         with self.lock:
+            if self.closed:
+                return
             previous = self.statuses
             monitored = {target["id"] for target in self.targets}
             self.record_events(RoomEvents.statuses(
@@ -409,8 +410,25 @@ class Dashboard:
             rooms[site] = saved if saved in ids or saved == "" else (ids[0] if ids else "")
         return rooms
 
+    def view_settings(self, view=None):
+        settings = deepcopy(self.settings)
+        if view is not None:
+            if not isinstance(view, dict) or set(view) - {"selected_rooms", "visible_sites", "send_sites"}:
+                raise ValueError("Invalid tab room selection.")
+            if any(type(value) is not type(DEFAULTS[key]) for key, value in view.items()):
+                raise ValueError("Invalid tab room selection.")
+            settings.update(deepcopy(view))
+            self.validate_settings(settings)
+            if any(room and not room.startswith(site + ":")
+                   for site, room in settings["selected_rooms"].items()):
+                raise ValueError("Invalid tab room selection.")
+        settings["selected_rooms"] = self.effective_rooms(settings)
+        return settings
+
     def receive_messages(self, messages):
         with self.lock:
+            if self.closed:
+                return
             desktop_app._accumulate_bilibili_gift_revenue(self, messages)
             monitored = {target["id"] for target in self.targets}
             received_at = time.time()
@@ -430,7 +448,11 @@ class Dashboard:
                     recorder.add_danmaku(message)
             archive_batches = {}
             for source in allowed:
-                message = dict(source)
+                # Bilibili corrects membership prices and red-pocket details in place.
+                message = (
+                    source if source.get("platform") == "bilibili" and source.get("type") == "gift"
+                    else dict(source)
+                )
                 self.sequence += 1
                 message["_html_id"] = self.sequence
                 paid = tts.is_paid(message) or tts.is_gift(message)
@@ -444,7 +466,6 @@ class Dashboard:
                     )}
                     archive_batches.setdefault(target["id"], []).append(record)
                 if (settings["tts_enabled"] and not message.get("history")
-                        and self.selected_room(message, settings)
                         and (settings["tts_joins"] if joined else settings["tts_paid"] or not paid)):
                     self.queue_speech(message, settings, paid, joined)
             for room_id, batch in archive_batches.items():
@@ -715,10 +736,13 @@ class Dashboard:
         return {"label": label, "detail": str(state.get("error") or state.get("file") or ""),
                 "running": bool(state.get("running"))}
 
-    def snapshot(self):
+    def snapshot(self, view=None):
         with self.lock:
-            settings = deepcopy(self.settings)
-            settings["selected_rooms"] = rooms = self.effective_rooms(settings)
+            desktop_app._accumulate_bilibili_gift_revenue(
+                self, [message for message in self.messages if message.get("id")]
+            )
+            settings = self.view_settings(view)
+            rooms = settings["selected_rooms"]
             limit = settings["max_messages"]
             selected = [m for m in self.messages if self.selected_room(m, settings)]
             feeds = {
@@ -741,7 +765,10 @@ class Dashboard:
                     room: gifts.format_amount("¥", amount)
                     for room, amount in self._bilibili_gift_revenue.items()
                 },
-                "speech": list(self.speech),
+                "speech": [entry for entry in self.speech
+                           if rooms.get(entry["platform"]) == entry["room"]
+                           and entry["platform"] in settings["visible_sites"]],
+                "speech_cursor": max((entry["id"] for entry in self.speech), default=0),
                 "errors": list(self.errors), "notifications": list(self.notifications),
                 "jobs": deepcopy(self.jobs), "filters": deepcopy(self.filters.to_dict()),
                 "recording": {key: self.recording_status(recorder, settings["ui_language"])
@@ -771,7 +798,10 @@ class Dashboard:
             with self.lock:
                 settings, key = self.transcription_configuration(data)
                 from src.api_secrets import protect
-                encrypted = protect(key) if key else ""
+                keep_unreadable_key = (self.transcription_key_error
+                                       and not data.get("clear_api_key") and not data.get("api_key"))
+                encrypted = (self.transcription_api_key_dpapi if keep_unreadable_key
+                             else protect(key) if key else "")
                 previous = (self.settings, self.transcription_api_key_dpapi)
                 self.settings, self.transcription_api_key_dpapi = settings, encrypted
                 try:
@@ -779,7 +809,9 @@ class Dashboard:
                 except OSError:
                     self.settings, self.transcription_api_key_dpapi = previous
                     raise
-                self.transcription_api_key, self.transcription_key_error = key, ""
+                self.transcription_api_key = key
+                if not keep_unreadable_key:
+                    self.transcription_key_error = ""
             return {"ok": True}
         if action in ("transcription_models", "transcription_test"):
             with self.lock:
@@ -830,6 +862,20 @@ class Dashboard:
                 self.targets.append({
                     "id": room_id, "platform": platform, "target": value, "enabled": True,
                 })
+                self.save()
+                if self.worker:
+                    self.worker.update_targets(self.targets)
+            return {"ok": True}
+        if action == "reorder_rooms":
+            room_ids = data.get("rooms")
+            if not isinstance(room_ids, list) or any(not isinstance(room, str) for room in room_ids):
+                raise ValueError("Room order must be a list of room IDs.")
+            with self.lock:
+                current_ids = [target["id"] for target in self.targets]
+                if len(room_ids) != len(current_ids) or set(room_ids) != set(current_ids):
+                    raise ValueError("Room order must contain every monitored room exactly once.")
+                targets = {target["id"]: target for target in self.targets}
+                self.targets = [targets[room_id] for room_id in room_ids]
                 self.save()
                 if self.worker:
                     self.worker.update_targets(self.targets)
@@ -928,7 +974,7 @@ class Dashboard:
             if not isinstance(sites, list) or not sites or any(site not in SITES for site in sites):
                 raise ValueError("Choose at least one site to send to.")
             with self.lock:
-                rooms = self.effective_rooms()
+                rooms = self.view_settings(data.get("view"))["selected_rooms"]
                 # Desktop rule: each checked site sends to its selected chat room, if that room is enabled.
                 destinations = {
                     site: next((dict(t) for t in self.targets
@@ -996,7 +1042,8 @@ class Dashboard:
                     self.worker.update_logins(deepcopy(self.logins))
                 return {"ok": True, "page_id": str(self.logins.get("youtube_page_id") or "")}
         if action == "emotes":
-            return self.submit("emotes", "emotes", lambda: self.load_emotes(str(data.get("site", ""))))
+            return self.submit("emotes", "emotes", lambda: self.load_emotes(
+                str(data.get("site", "")), data.get("view")))
         if action == "use_emote":
             return self.submit("network", "use_emote", lambda: self.use_emote(data))
         if action == "overlay":
@@ -1010,6 +1057,11 @@ class Dashboard:
         if action == "room_events":
             return self.event_query(self.event_store.page, self.event_room(data),
                                     data.get("before", 0), data.get("limit", 100))
+        if action == "author_history":
+            return self.event_query(
+                self.event_store.author_history, self.event_room(data),
+                data.get("author_id", ""), data.get("author", ""),
+                data.get("before", 0), data.get("limit", 100))
         if action == "delete_room_events":
             return self.event_query(self.event_store.delete, self.event_room(data))
         raise ValueError("Unknown action.")
@@ -1076,15 +1128,15 @@ class Dashboard:
             return {"muted": message.get("author", "")}
         return self.submit("network", "mute", mute)
 
-    def emote_room(self, site):
+    def emote_room(self, site, view=None):
         with self.lock:
-            room = self.effective_rooms()[site]
+            room = self.view_settings(view)["selected_rooms"][site]
             target = next((dict(t) for t in self.targets if t["id"] == room), None)
             status = dict(self.statuses.get(room, {}))
             logins = deepcopy(self.logins)
         return target, status, logins
 
-    def load_emotes(self, site):
+    def load_emotes(self, site, view=None):
         """Desktop emote picker data: YouTube channel stamps, Bilibili emotes, MissEvan stickers / kaomoji."""
         import hashlib
         from concurrent.futures import ThreadPoolExecutor as Pool
@@ -1095,7 +1147,7 @@ class Dashboard:
                 {"name": face, "value": face} for face in missevan.preset_kaomoji()]}], "error": ""}
         if site not in SITES:
             raise ValueError("Invalid emote site.")
-        target, status, logins = self.emote_room(site)
+        target, status, logins = self.emote_room(site, view)
         if target is None:
             raise ValueError("Select a monitored room for this site in Chat rooms first.")
         fingerprint = hashlib.sha256(json.dumps(logins, sort_keys=True).encode()).hexdigest()
@@ -1166,7 +1218,7 @@ class Dashboard:
         site = data.get("site")
         if site not in ("bilibili", "missevan"):
             raise ValueError("Invalid emote site.")
-        target, _, logins = self.emote_room(site)
+        target, _, logins = self.emote_room(site, data.get("view"))
         if target is None:
             raise ValueError("Select a monitored room for this site in Chat rooms first.")
         with user_login.using(logins):
@@ -1374,8 +1426,12 @@ class Dashboard:
             client = self.translation_client
             if client is None or any(getattr(client.options, key) != getattr(options, key)
                                      for key in ("provider", "api_base", "api_model", "api_key",
-                                                 "background", "glossary")):
-                self.translation_client = client = TranslationClient(options, self.error)
+                                                 "background", "glossary", "reasoning_effort")):
+                def report_current_error(message):
+                    with self.lock:
+                        if self.translation_client is client:
+                            self.error(message)
+                self.translation_client = client = TranslationClient(options, report_current_error)
             return client
 
     def translate_text(self, text, target, *, context=()):
@@ -1395,7 +1451,8 @@ class Dashboard:
         if not isinstance(key, str) or type(clear) is not bool:
             raise ValueError("Invalid API key option.")
         key = "" if clear else key.strip() or self.transcription_api_key
-        if self.transcription_key_error and not clear and not data.get("api_key"):
+        if (settings["transcribe_provider"] == "openai_compatible"
+                and self.transcription_key_error and not clear and not data.get("api_key")):
             raise ValueError(self.transcription_key_error)
         self.validate_settings(settings)
         caption_options(settings, key)
@@ -1403,13 +1460,22 @@ class Dashboard:
 
     @staticmethod
     def test_transcription_api(settings, options):
-        from src.openai_compatible_translate import translate_batch
+        if options.provider != "openai_compatible":
+            from src.translate import TranslationClient
+            text, _ = TranslationClient(options, lambda message: None).translate(
+                "Hello", settings["transcribe_target_language"])
+            return {"text": text}
+        from src.openai_compatible_translate import TranslationResponseError, translate_batch
         try:
             result = translate_batch(
                 ["Hello"], settings["transcribe_target_language"],
                 api_base=options.api_base, api_key=options.api_key, model=options.api_model,
                 background=options.background, glossary=options.glossary,
+                reasoning_effort=options.reasoning_effort,
             )[0][0]
+        except TranslationResponseError as exc:
+            log.error("Transcription API test failed: %s", exc)
+            raise
         except Exception as exc:
             log.error("Transcription API test failed (%s).", type(exc).__name__)
             raise ValueError("Translation API request failed. Check the URL, model ID and API key.") from None
@@ -1462,6 +1528,9 @@ class Dashboard:
         with self.lock:
             self.closed = True
             self.record_armed.clear()
+        for name, pool in self.pools.items():
+            if name not in ("archive", "events"):
+                pool.shutdown(wait=False, cancel_futures=True)
         if getattr(self, "obs_thread", None):
             self.obs_thread.join(timeout=5)
         if self.worker:
@@ -1474,8 +1543,23 @@ class Dashboard:
             pool.shutdown(wait=True, cancel_futures=False)
 
 
+def shutdown_handler(app):
+    stopping = False
+
+    def handle_interrupt(*_):
+        nonlocal stopping
+        if stopping:
+            print("Forcing exit. Pending writes and recordings may be incomplete.", flush=True)
+            os._exit(130)
+        stopping = True
+        print("Stopping dashboard and saving received events. "
+              "Press Ctrl+C again to force exit (may lose pending data).", flush=True)
+        app.quit()
+
+    return handle_interrupt
+
+
 def make_server(dashboard: Dashboard, port: int = 8765):
-    token = secrets.token_urlsafe(32)
     # Interface strings are public; they come from the shared desktop/browser translation table.
     translations = json.dumps({
         "languages": i18n.UI_LANGUAGES,
@@ -1507,23 +1591,27 @@ def make_server(dashboard: Dashboard, port: int = 8765):
             self.end_headers()
             self.wfile.write(body)
 
-        def authorized(self):
-            host = f"127.0.0.1:{self.server.server_port}"
+        def local_request(self):
+            host = self.headers.get("Host", "")
+            hosts = {f"{name}:{self.server.server_port}" for name in ("127.0.0.1", "localhost")}
             origin = self.headers.get("Origin")
             return (
-                self.headers.get("Host") == host
+                host in hosts
                 and (origin is None or origin == f"http://{host}")
-                and hmac.compare_digest(self.headers.get("X-Dashboard-Token", ""), token)
+                and self.headers.get("Sec-Fetch-Site") != "cross-site"
             )
 
         def do_GET(self):
+            if not self.local_request():
+                return self.reply(403, {"error": "Only local same-origin requests are allowed."})
             path = urlsplit(self.path).path
             if path.startswith("/api/"):
-                if not self.authorized():
-                    return self.reply(403, {"error": "Not authorized. Open the launch URL."})
                 if path == "/api/state":
                     try:
-                        return self.reply(200, dashboard.snapshot())
+                        view = self.headers.get("X-Dashboard-View")
+                        return self.reply(200, dashboard.snapshot(json.loads(unquote(view)) if view else None))
+                    except (ValueError, TypeError):
+                        return self.reply(400, {"error": "Invalid tab room selection."})
                     except Exception:
                         log.exception("Dashboard snapshot failed")
                         return self.reply(500, {"error": "Unable to retrieve dashboard state."})
@@ -1564,8 +1652,8 @@ def make_server(dashboard: Dashboard, port: int = 8765):
             self.reply(200, (ASSETS / name).read_bytes(), mime)
 
         def do_POST(self):
-            if not self.authorized():
-                return self.reply(403, {"error": "Not authorized."})
+            if not self.local_request():
+                return self.reply(403, {"error": "Only local same-origin requests are allowed."})
             if self.path != "/api/action":
                 return self.reply(404, {"error": "Unknown endpoint."})
             try:
@@ -1577,6 +1665,9 @@ def make_server(dashboard: Dashboard, port: int = 8765):
                 data = json.loads(self.rfile.read(length))
                 if not isinstance(data, dict):
                     raise ValueError("JSON object required.")
+                view = self.headers.get("X-Dashboard-View")
+                if view and data.get("action") in ("send", "emotes", "use_emote"):
+                    data["view"] = json.loads(unquote(view))
                 result = dashboard.action(data)
             except (ValueError, TypeError, KeyError, re.error) as exc:
                 return self.reply(400, {"error": str(exc)})
@@ -1587,7 +1678,7 @@ def make_server(dashboard: Dashboard, port: int = 8765):
 
     server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
     server.daemon_threads = True
-    return server, token
+    return server
 
 
 def main():
@@ -1602,7 +1693,7 @@ def main():
     base = Path(os.getenv("LOCALAPPDATA") or Path.home()) / "StreamingDashboard"
     dashboard = Dashboard(base / "html_dashboard.json")
     try:
-        server, token = make_server(dashboard, args.port)
+        server = make_server(dashboard, args.port)
     except OSError as exc:
         dashboard.close()
         parser.exit(1, f"Cannot listen on 127.0.0.1:{args.port} ({exc}). "
@@ -1612,8 +1703,8 @@ def main():
         raise
     thread = threading.Thread(target=server.serve_forever, name="html-http")
     thread.start()
-    url = f"http://127.0.0.1:{server.server_port}/#token={token}"
-    print(f"Open this local URL (keep it private): {url}", flush=True)
+    url = f"http://127.0.0.1:{server.server_port}/"
+    print(f"Open this local URL: {url}", flush=True)
     if not args.no_browser:
         webbrowser.open(url)
     # Let Python handle Ctrl+C while the Qt worker's event loop remains active.
@@ -1621,7 +1712,7 @@ def main():
     timer.timeout.connect(lambda: None)
     timer.start(250)
     import signal
-    signal.signal(signal.SIGINT, lambda *_: app.quit())
+    signal.signal(signal.SIGINT, shutdown_handler(app))
     try:
         return app.exec()
     finally:

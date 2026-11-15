@@ -291,7 +291,8 @@ def _parse_action(action: dict) -> dict | None:
         gifts.set_value(extra, *gifts.parse_amount(amount))
     elif kind == "liveChatMembershipItemRenderer":
         msg_type = "newSponsorEvent"
-        header = _runs_text(r.get("headerSubtext", {})) or _runs_text(r.get("headerPrimaryText", {}))
+        headers = [_runs_text(r.get(key, {})) for key in ("headerPrimaryText", "headerSubtext")]
+        header = " · ".join(dict.fromkeys(value for value in headers if value))
         text = f"[Member] {header} {text}".strip()
     elif kind == "liveChatSponsorshipsGiftPurchaseAnnouncementRenderer":
         # "Gifted 5 memberships": the author details live in the header renderer.

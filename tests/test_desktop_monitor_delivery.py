@@ -87,6 +87,39 @@ class DesktopMonitorDeliveryTests(unittest.TestCase):
         find.assert_called_once()
         resolve.assert_not_called()
 
+    def test_channel_monitor_switches_scheduled_video_to_another_active_stream(self):
+        state = {
+            "target": "https://www.youtube.com/@channel",
+            "mode": "channel", "fallback_channel": "",
+            "video_id": "", "chat_id": "", "page_token": "",
+            "backlog_loaded": False,
+        }
+        with patch("src.youtube_web.find_live_video", side_effect=[
+            {"live": False, "upcoming": True, "video_id": "scheduled01",
+             "title": "Scheduled stream"},
+            {"live": True, "upcoming": False, "video_id": "active00001",
+             "title": "Other active stream"},
+        ]) as find:
+            scheduled_state, scheduled_status = desktop_app._MonitorWorker._fetch_youtube_status(
+                state, {}, "", "https://www.youtube.com/@channel"
+            )
+            active_state, active_status = desktop_app._MonitorWorker._fetch_youtube_status(
+                scheduled_state, scheduled_status, "", "https://www.youtube.com/@channel"
+            )
+
+        self.assertEqual(scheduled_state["video_id"], "scheduled01")
+        self.assertFalse(scheduled_status["live"])
+        self.assertEqual(active_state["video_id"], "active00001")
+        self.assertTrue(active_status["live"])
+        self.assertEqual(active_status["title"], "Other active stream")
+        self.assertEqual(active_state["chat_id"], "")
+        self.assertEqual(active_state["page_token"], "")
+        self.assertFalse(active_state["backlog_loaded"])
+        find.assert_has_calls([
+            unittest.mock.call("https://www.youtube.com/@channel"),
+            unittest.mock.call("https://www.youtube.com/@channel"),
+        ])
+
     def test_room_status_and_live_detection_do_not_wait_for_other_rooms(self):
         from src import config
 

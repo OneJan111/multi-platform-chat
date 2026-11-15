@@ -30,6 +30,7 @@ class CaptionOptions:
     provider: str = "dashboard"
     api_base: str = "https://api.openai.com/v1"
     api_model: str = "gpt-4o-mini"
+    reasoning_effort: str = ""
     api_key: str = field(default="", repr=False)
     background: str = ""
     glossary: str = ""
@@ -45,8 +46,10 @@ class CaptionOptions:
                 raise ValueError(f"Invalid transcription option: {field.name}")
         if self.source_language not in ("", "ja", "en", "zh", "ko"):
             raise ValueError("Invalid source language.")
-        if self.provider not in ("dashboard", "openai_compatible"):
+        if self.provider not in ("dashboard", "google", "openai_compatible"):
             raise ValueError("Invalid transcription translation provider.")
+        if self.reasoning_effort not in ("", "none"):
+            raise ValueError("Invalid translation reasoning option.")
         if self.models_path and not Path(self.models_path).is_absolute():
             raise ValueError("Speech models folder must be an absolute path.")
         from src.openai_compatible_translate import validate_api_base
@@ -215,6 +218,9 @@ class StreamingTranscriber(transcription.LiveTranscriber):
                 if self._translation_function is not None:
                     translated, _ = self._translation_function(
                         recognized.text, target, context=tuple(self._translation_context))
+                elif self.options.provider == "google":
+                    translated, _ = translate.TranslationClient(
+                        self.options, log.error).translate(recognized.text, target)
                 elif self.options.provider == "openai_compatible":
                     from src import openai_compatible_translate
                     translated, _ = openai_compatible_translate.translate_batch(
@@ -222,6 +228,7 @@ class StreamingTranscriber(transcription.LiveTranscriber):
                         api_key=self.options.api_key, model=self.options.api_model,
                         background=self.options.background, glossary=self.options.glossary,
                         context=tuple(self._translation_context),
+                        reasoning_effort=self.options.reasoning_effort,
                     )[0]
                 else:
                     translated, _ = translate.translate(recognized.text, target)

@@ -3,9 +3,14 @@ const $ = id => document.getElementById(id);
 const sites = ["youtube", "bilibili", "missevan"];
 const labels = {youtube:"YouTube", bilibili:"Bilibili", missevan:"MissEvan"};
 const voices = {ja:"ja-JP", zh:"zh-CN", en:"en-US", ko:"ko-KR"};
-let token = new URLSearchParams(location.hash.slice(1)).get("token");
-if (token) { sessionStorage.setItem("dashboard-token", token); history.replaceState(null, "", "/"); }
-token = token || sessionStorage.getItem("dashboard-token");
+let tabView = null;
+try {
+  const saved = sessionStorage.getItem("dashboard-view");
+  if (saved) tabView = JSON.parse(saved);
+} catch (error) {
+  sessionStorage.removeItem("dashboard-view");
+  setTimeout(() => alertMessage(t("Could not restore this tab's room selection."), true), 0);
+}
 let state, initialized = false, lastSpeech = 0, lastNotice = 0, audioEnabled = false;
 let archives = [], lastChat = "", lastMonitor = "", lastRooms = "", lastObs = "", lastModeration = "";
 const observedJobs = new Set(), jobHandlers = new Map();
@@ -65,7 +70,8 @@ function alertMessage(text, error = false) {
 async function api(path, body) {
   const response = await fetch(path, {
     method:body ? "POST" : "GET",
-    headers:{"X-Dashboard-Token":token || "", ...(body ? {"Content-Type":"application/json"} : {})},
+    headers:{...(tabView ? {"X-Dashboard-View":encodeURIComponent(JSON.stringify(tabView))} : {}),
+      ...(body ? {"Content-Type":"application/json"} : {})},
     ...(body ? {body:JSON.stringify(body)} : {}),
   });
   const result = await response.json();
@@ -150,7 +156,25 @@ function fillForm(form) {
   }
 }
 async function saveSettings(values) {
-  await action({action:"settings", values});
+  const local = {}, shared = {};
+  for (const [key, value] of Object.entries(values))
+    (["selected_rooms", "visible_sites", "send_sites"].includes(key) ? local : shared)[key] = value;
+  if (Object.keys(shared).length) await action({action:"settings", values:shared});
+  if (Object.keys(local).length) {
+    const next = {...tabView, ...local};
+    sessionStorage.setItem("dashboard-view", JSON.stringify(next));
+    tabView = next;
+    clearSpeech();
+    const view = JSON.stringify(tabView);
+    const result = await api("/api/state");
+    if (JSON.stringify(tabView) === view) {
+      state = result;
+      lastSpeech = Math.max(lastSpeech, state.speech_cursor || 0);
+      lastChat = lastRooms = "";
+      renderState();
+    }
+    return;
+  }
   Object.assign(state.settings, values);
 }
 // ── Chat rooms (desktop: one selected room per site, plus show / send checkboxes) ─────────────
@@ -248,7 +272,7 @@ function flags(message) {
   else if (message.platform === "missevan" && message.is_moderator) result.push(t("Room admin"));
   else if (message.is_moderator) result.push("MOD");
   if (message.is_verified) result.push("VERIFIED");
-  if (message.membership && !message.membership_icon) result.push(String(message.membership));
+  if (message.membership) result.push(String(message.membership));
   if (message._thanked) result.push("THANKED");
   return result;
 }
@@ -280,12 +304,18 @@ function messageRow(message, paid) {
   else row.append(node("span", (message.author || "?").slice(0, 1).toUpperCase(), "avatar placeholder"));
   const content = node("div", undefined, "content");
   const meta = node("div", undefined, "meta");
-  const author = node("strong");
+  const author = button("", () => showAuthorHistory(message));
+  author.className = "author-history-button";
+  author.title = t("Viewer message history");
   appendReadings(author, message.author || "?", message._author_readings);
   meta.append(document.createTextNode(`${message._time}  [${String(message.platform || "").toUpperCase()}]  `), author);
   const flagList = flags(message);
   if (flagList.length) meta.append(document.createTextNode(`  (${flagList.join(" · ")})`));
-  if (message.membership_icon) meta.append(image(message.membership_icon, "badge-icon", message.membership || ""));
+  if (message.membership_icon) {
+    const badge = image(message.membership_icon, "badge-icon", message.membership || "");
+    badge.title = message.membership || "";
+    meta.append(badge);
+  }
   const medal = message.platform === "bilibili" && message.fan_medal && typeof message.fan_medal === "object" ? message.fan_medal : null;
   if (medal && Number(medal.level) > 0) {
     const text = `${medal.name || "粉丝牌"} Lv.${Number(medal.level)}`, color = Number(medal.color) || 0;
@@ -308,6 +338,39 @@ function fillFeed(feed, rows) {
   feed.replaceChildren(...rows);
   if (!feed.children.length) feed.append(node("p", t("Waiting for messages…")));
   if (nearBottom) feed.scrollTop = feed.scrollHeight;
+}
+let authorHistory = null;
+async function showAuthorHistory(message) {
+  authorHistory = {room:message._monitor_id, author_id:String(message.author_id || ""),
+    author:message.author || "", next:0};
+  $("author-history-name").textContent = `${authorHistory.author} · ${authorHistory.room}`;
+  $("author-history-rows").replaceChildren();
+  if (!$("author-history").open) $("author-history").showModal();
+  await loadAuthorHistory();
+}
+async function loadAuthorHistory() {
+  const request = authorHistory;
+  if (!request || request.next === null) return;
+  $("author-history-older").disabled = true;
+  $("author-history-status").textContent = t("Loading…");
+  try {
+    const result = await action({action:"author_history", room:request.room,
+      author_id:request.author_id, author:request.author, before:request.next});
+    if (authorHistory !== request) return;
+    for (const event of result.events) {
+      const row = node("div", undefined, "message");
+      row.append(node("span", new Date(event.received_at * 1000).toLocaleString(), "muted"),
+        node("span", `${event.payload.author || ""}: ${event.payload.text || ""}`));
+      $("author-history-rows").append(row);
+    }
+    request.next = result.next;
+    $("author-history-status").textContent = $("author-history-rows").children.length ? "" : t("No messages yet.");
+  } catch (error) {
+    if (authorHistory === request) $("author-history-status").textContent = t(error.message);
+    throw error;
+  } finally {
+    if (authorHistory === request) $("author-history-older").disabled = request.next === null;
+  }
 }
 function renderChat() {
   const signature = JSON.stringify([state.messages, state.paid, state.joins, state.settings.gift_effects]);
@@ -357,9 +420,25 @@ function queueSpeech() {
       if (speechQueue.length > 50) speechQueue.shift();
     }
   }
+  lastSpeech = Math.max(lastSpeech, state.speech_cursor || 0);
   pumpSpeech();
 }
 // ── Monitoring / accounts ─────────────────────────────────────────────────────────────────────
+function reorderMonitorRoom(sourceId, targetId, after = false) {
+  const rooms = state.targets.map(room => room.id);
+  const sourceIndex = rooms.indexOf(sourceId);
+  const targetIndex = rooms.indexOf(targetId);
+  if (sourceIndex < 0 || targetIndex < 0 || sourceId === targetId) return;
+  rooms.splice(sourceIndex, 1);
+  const destination = rooms.indexOf(targetId) + Number(after);
+  rooms.splice(destination, 0, sourceId);
+  return action({action:"reorder_rooms", rooms}).then(() => {
+    const targets = new Map(state.targets.map(room => [room.id, room]));
+    state.targets = rooms.map(room => targets.get(room));
+    lastMonitor = "";
+    renderMonitor();
+  });
+}
 function renderMonitor() {
   const signature = JSON.stringify([state.targets, state.statuses, state.recording,
     state.record_armed, state.bilibili_gift_revenue]);
@@ -368,8 +447,37 @@ function renderMonitor() {
   for (const room of state.targets) {
     const info = state.statuses[room.id] || {};
     const card = node("article");
+    card.className = "monitor-card";
     card.title = monitorTooltip(room, info, state.bilibili_gift_revenue?.[room.id]);
-    card.append(node("h2", `${labels[room.platform]} · ${info.room_name || room.target}`));
+    const heading = node("div", undefined, "monitor-heading");
+    const dragHandle = node("span", "⋮⋮", "monitor-drag-handle");
+    dragHandle.draggable = true;
+    dragHandle.setAttribute("role", "button");
+    dragHandle.setAttribute("aria-label", t("Drag to reorder"));
+    dragHandle.title = t("Drag to reorder");
+    dragHandle.addEventListener("dragstart", event => {
+      event.dataTransfer.effectAllowed = "move";
+      event.dataTransfer.setData("text/plain", room.id);
+      card.classList.add("dragging");
+    });
+    dragHandle.addEventListener("dragend", () => card.classList.remove("dragging"));
+    card.addEventListener("dragover", event => {
+      event.preventDefault();
+      event.dataTransfer.dropEffect = "move";
+      card.classList.add("drop-target");
+    });
+    card.addEventListener("dragleave", event => {
+      if (!card.contains(event.relatedTarget)) card.classList.remove("drop-target");
+    });
+    card.addEventListener("drop", event => {
+      event.preventDefault();
+      card.classList.remove("drop-target");
+      const sourceId = event.dataTransfer.getData("text/plain");
+      const after = event.clientY > card.getBoundingClientRect().top + card.offsetHeight / 2;
+      reorderMonitorRoom(sourceId, room.id, after).catch(report);
+    });
+    heading.append(dragHandle, node("h2", `${labels[room.platform]} · ${info.room_name || room.target}`));
+    card.append(heading);
     card.append(node("p", info.title || t("Waiting for room status")));
     const detail = node("div");
     const dot = node("span", undefined, `dot ${info.live === true ? "live" : info.live === false ? "offline" : ""}`);
@@ -594,7 +702,13 @@ async function useEmote(site, entry) {
       alertMessage(t("Sent {name}", {name:entry.label}));
     });
 }
+function previewEmote(entry) {
+  const box = $("emote-preview");
+  box.replaceChildren(...(entry.image ? [image(entry.image, "emote-large", entry.label)] : []), node("span", entry.label));
+}
+function clearEmotePreview() { const box = $("emote-preview"); box.replaceChildren(); }
 function showEmotes(result) {
+  clearEmotePreview();
   if (result.site !== $("emote-site").value) return;
   $("emote-status").textContent = result.error ? t(result.error) : result.groups.length ? "" : t("No emotes are available for this room.");
   $("emote-list").replaceChildren(...result.groups.map(group => {
@@ -604,6 +718,8 @@ function showEmotes(result) {
       const item = button(entry.image ? "" : entry.label, () => useEmote(result.site, entry));
       if (entry.image) item.append(image(entry.image, "emote", entry.label));
       item.title = entry.locked && entry.hint ? `${entry.label}\n${entry.hint}` : entry.label;
+      for (const name of ["mouseenter", "focus"]) item.addEventListener(name, () => previewEmote(entry));
+      for (const name of ["mouseleave", "blur"]) item.addEventListener(name, clearEmotePreview);
       if (entry.locked) { item.disabled = true; item.classList.add("locked"); }
       grid.append(item);
     }
@@ -687,7 +803,7 @@ function renderTranscript() {
 function renderState() {
   if (!initialized) {
     for (const form of document.querySelectorAll("[data-settings]")) fillForm(form);
-    lastSpeech = Math.max(0, ...state.speech.map(entry => entry.id));
+    lastSpeech = Math.max(state.speech_cursor || 0, ...state.speech.map(entry => entry.id));
     lastNotice = Math.max(0, ...state.notifications.map(notice => notice.id));
     for (const id of Object.keys(state.jobs)) observedJobs.add(id);
     initialized = true;
@@ -695,6 +811,7 @@ function renderState() {
   // Another browser tab may have switched the interface language.
   if (!pendingLanguage && state.settings.ui_language !== language) applyLanguage(state.settings.ui_language);
   refreshRooms(); renderChat(); renderMonitor(); renderLogins(); renderModeration(); renderObs(); renderTranscript(); processJobs();
+  renderTranslationProvider();
   $("event-recording-status").textContent = state.event_recording.error
     ? t("Room event recording failed: {error}", {error:state.event_recording.error})
     : t("Recording events for all monitored rooms.");
@@ -750,6 +867,7 @@ document.querySelectorAll("[data-tab]").forEach(tab => tab.addEventListener("cli
   }).catch(report);
 }));
 bindClick("theme", () => { document.body.classList.toggle("light"); localStorage.setItem("html-theme",document.body.classList.contains("light") ? "light" : "dark"); });
+bindClick("author-history-older", loadAuthorHistory);
 if (localStorage.getItem("html-theme") === "light") document.body.classList.add("light");
 bindForm("room-form", async () => { await action({action:"add_room",platform:$("platform").value,target:$("target").value}); $("target").value = ""; });
 let settingsSaveQueue = Promise.resolve();
@@ -853,8 +971,7 @@ bindClick("events-refresh", () => loadRoomEvents());
 bindClick("events-older", () => eventCursor === null ? undefined : loadRoomEvents(true));
 bindClick("events-export", async () => {
   const room = analysisRoom();
-  const response = await fetch(`/api/room-events?room=${encodeURIComponent(room)}`,
-    {headers:{"X-Dashboard-Token":token || ""}});
+  const response = await fetch(`/api/room-events?room=${encodeURIComponent(room)}`);
   if (!response.ok) throw new Error(t((await response.json()).error));
   const url = URL.createObjectURL(await response.blob()), link = node("a");
   link.href = url; link.download = "room-events.jsonl"; link.click();
@@ -868,8 +985,18 @@ bindClick("events-delete", async () => {
     await Promise.all([refreshAnalytics(), loadRoomEvents()]);
   }
 });
-function transcriptionConfiguration() {
-  return {values:formValues($("translation-settings-form")), api_key:$("transcribe-api-key").value,
+function renderTranslationProvider() {
+  const provider = state.settings.transcribe_provider;
+  const label = [...$("transcribe-provider").options].find(option => option.value === provider)?.textContent || provider;
+  const pending = $("transcribe-provider").value !== provider;
+  $("translation-provider-status").textContent = t(
+    pending ? "Active service: {service}. Switch not applied." : "Active service: {service}.", {service:label});
+  $("apply-translation-provider").disabled = !pending;
+}
+function transcriptionConfiguration(includeProvider = false) {
+  const values = {...formValues($("translation-settings-form"))};
+  if (!includeProvider) delete values.transcribe_provider;
+  return {values, api_key:$("transcribe-api-key").value,
     clear_api_key:$("transcribe-clear-key").checked};
 }
 async function saveTranscriptionSettings(data = transcriptionConfiguration()) {
@@ -882,15 +1009,24 @@ async function saveTranscriptionSettings(data = transcriptionConfiguration()) {
   for (const message of [...state.messages, ...state.paid]) delete message.translation;
   lastChat = "";
   renderTranscript();
+  renderTranslationProvider();
 }
 $("translation-settings-form").addEventListener("submit", event => event.preventDefault());
 $("translation-settings-form").addEventListener("change", event => {
+  if (event.target.id === "transcribe-provider") {
+    renderTranslationProvider();
+    return;
+  }
   if (!event.target.reportValidity()) return;
   const data = transcriptionConfiguration();
   queueSettingsSave(() => saveTranscriptionSettings(data)).catch(report);
 });
+bindClick("apply-translation-provider", async () => {
+  const data = transcriptionConfiguration(true);
+  await queueSettingsSave(() => saveTranscriptionSettings(data));
+});
 bindClick("transcribe-detect-models", async () => {
-  const data = transcriptionConfiguration();
+  const data = transcriptionConfiguration(true);
   setTranscriptApiResult("Detecting models...");
   try {
     await job({action:"transcription_models", ...data}, result => {
@@ -905,7 +1041,7 @@ bindClick("transcribe-detect-models", async () => {
 bindClick("transcribe-test-api", async () => {
   setTranscriptApiResult("Testing translation...");
   try {
-    await job({action:"transcription_test", ...transcriptionConfiguration()}, result => {
+    await job({action:"transcription_test", ...transcriptionConfiguration(true)}, result => {
       setTranscriptApiResult("Translation successful: {text}", {text:result.text});
     });
   } catch (error) { setTranscriptApiResult(error.message); throw error; }
@@ -920,7 +1056,20 @@ bindClick("stop-transcribe", () => action({action:"transcription",command:"stop"
 bindClick("clear-transcript", () => { transcriptCleared = state.transcription?.segments?.length || 0; renderTranscript(); });
 bindClick("download-transcript", () => download($("transcript").textContent,"transcript.txt","text/plain;charset=utf-8"));
 async function poll() {
-  try { state = await api("/api/state"); connectionText = "Connected · independent room polling"; $("connection").textContent = t(connectionText); renderState(); }
+  try {
+    const view = JSON.stringify(tabView);
+    const result = await api("/api/state");
+    if (view === JSON.stringify(tabView)) {
+      state = result;
+      if (!tabView) {
+        tabView = {selected_rooms:{...state.rooms}, visible_sites:[...state.settings.visible_sites],
+          send_sites:[...state.settings.send_sites]};
+        sessionStorage.setItem("dashboard-view", JSON.stringify(tabView));
+      }
+      connectionText = "Connected · independent room polling";
+      $("connection").textContent = t(connectionText); renderState();
+    }
+  }
   catch (error) { connectionText = ""; $("connection").textContent = error.message; }
   setTimeout(poll,1000);
 }

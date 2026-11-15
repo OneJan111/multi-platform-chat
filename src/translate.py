@@ -264,14 +264,21 @@ class TranslationClient:
             return translate(text, target)
         try:
             protected, replacements = slang.protect(text, target)
-            translated, source = openai_compatible_translate.translate_batch(
-                [protected], target, api_base=self.options.api_base, api_key=self.options.api_key,
-                model=self.options.api_model, background=self.options.background,
-                glossary=self.options.glossary, context=context,
-            )[0]
+            if self.options.provider == "google":
+                translated, source = _fallback_translate_batch([protected], target, 10.0)[0]
+            else:
+                translated, source = openai_compatible_translate.translate_batch(
+                    [protected], target, api_base=self.options.api_base, api_key=self.options.api_key,
+                    model=self.options.api_model, background=self.options.background,
+                    glossary=self.options.glossary, context=context,
+                    reasoning_effort=self.options.reasoning_effort,
+                )[0]
             if not translated.strip():
                 raise ValueError("Empty translation.")
             return slang.restore(translated, replacements), source
+        except openai_compatible_translate.TranslationResponseError as exc:
+            log.error("Shared translation API failed: %s", exc)
+            raise
         except Exception as exc:
             log.error("Shared translation API failed (%s).", type(exc).__name__)
             raise ValueError("Translation API request failed. Check the URL, model ID and API key.") from None

@@ -114,6 +114,28 @@ class RoomEvents:
         return {key: row[key] for key in ("id", "session", "received_at", "room", "platform", "kind")} | {
             "payload": json.loads(row["payload"])}
 
+    def author_history(self, room, author_id, author, before=0, limit=100):
+        if not isinstance(author_id, str) or not isinstance(author, str):
+            raise ValueError("Invalid author.")
+        if not author_id or author_id == "0":
+            if not author:
+                raise ValueError("Invalid author.")
+            identity, value = "author=?", author
+        else:
+            identity, value = "CAST(json_extract(payload, '$.author_id') AS TEXT)=?", author_id
+        if type(before) is not int or before < 0:
+            raise ValueError("Invalid event cursor.")
+        if type(limit) is not int or not 1 <= limit <= 200:
+            raise ValueError("Event limit must be 1–200.")
+        with closing(self.connect()) as db:
+            records = db.execute(
+                "SELECT * FROM events WHERE room=? AND "
+                "kind NOT IN ('room_status','live_status','viewer_count','join') AND "
+                f"{identity} AND (?=0 OR id<?) ORDER BY id DESC LIMIT ?",
+                (room, value, before, before, limit + 1)).fetchall()
+        return {"events": [self.decode(row) for row in records[:limit]],
+                "next": records[limit - 1]["id"] if len(records) > limit else None}
+
     def export(self, room):
         # A read transaction gives a consistent export while new events keep arriving in WAL mode.
         with closing(self.connect()) as db, db:

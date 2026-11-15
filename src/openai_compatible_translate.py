@@ -23,6 +23,10 @@ _TARGET_NAMES = {
 }
 
 
+class TranslationResponseError(ValueError):
+    """A safe response-format error without provider content or credentials."""
+
+
 def validate_api_base(base: str) -> str:
     base = base.strip().rstrip("/")
     try:
@@ -72,6 +76,7 @@ def translate_batch(
     texts: list[str], target: str, timeout: float = 60.0, *,
     api_base: str | None = None, api_key: str | None = None, model: str | None = None,
     background: str = "", glossary: str = "", context: tuple[str, ...] = (),
+    reasoning_effort: str = "",
 ) -> list[tuple[str, str]]:
     """Translate a batch; return [(translation, unknown source), ...]."""
     try:
@@ -95,15 +100,19 @@ def translate_batch(
     key = OPENAI_COMPATIBLE_TRANSLATE_API_KEY if api_key is None else api_key
     if key:
         headers["Authorization"] = f"Bearer {key}"
-    response = _session.post(
-        f"{validate_api_base(api_base) if api_base is not None else OPENAI_COMPATIBLE_TRANSLATE_API_BASE}/chat/completions",
-        json={
+    if reasoning_effort not in ("", "none"):
+        raise ValueError("Invalid translation reasoning option.")
+    body = {
             "model": OPENAI_COMPATIBLE_TRANSLATE_MODEL if model is None else model,
             "messages": messages,
             "temperature": 0,
-            "max_tokens": 2048,
             "stream": False,
-        },
+        }
+    if reasoning_effort:
+        body["reasoning_effort"] = reasoning_effort
+    response = _session.post(
+        f"{validate_api_base(api_base) if api_base is not None else OPENAI_COMPATIBLE_TRANSLATE_API_BASE}/chat/completions",
+        json=body,
         headers=headers,
         timeout=timeout,
         allow_redirects=api_base is None,
@@ -127,20 +136,41 @@ def translate_batch(
                 response=response,
             ) from exc
         raise
-    content = response.json()["choices"][0]["message"]["content"]
+    try:
+        payload = response.json()
+    except ValueError:
+        raise TranslationResponseError(
+            "The translation endpoint returned non-JSON data. Check the API base URL; use the API endpoint, not the web page."
+        ) from None
+    try:
+        choice = payload["choices"][0]
+        content = choice["message"]["content"]
+    except (KeyError, IndexError, TypeError):
+        raise TranslationResponseError(
+            "The translation response is not in OpenAI chat completions format. Check the endpoint and model."
+        ) from None
+    length_error = (
+        "The translation model output reached the token limit. Use a model with shorter output or disable reasoning."
+        if choice.get("finish_reason") == "length" else ""
+    )
     if not isinstance(content, str):
-        raise ValueError("OpenAI-compatible provider returned a non-text translation response.")
+        raise TranslationResponseError(length_error or "OpenAI-compatible provider returned a non-text translation response.")
     content = content.strip()
     if "</think>" in content:
         content = content.rsplit("</think>", 1)[-1].strip()
     content = re.sub(r"^```(?:json)?\s*|\s*```$", "", content, flags=re.IGNORECASE)
-    translations = json.loads(content)
+    try:
+        translations = json.loads(content)
+    except ValueError:
+        raise TranslationResponseError(
+            length_error or "The translation model did not return a valid JSON array. Use a model that supports JSON-array output."
+        ) from None
     if (
         not isinstance(translations, list)
         or len(translations) != len(texts)
         or any(not isinstance(item, str) for item in translations)
     ):
-        raise ValueError(
-            f"OpenAI-compatible provider returned an invalid result list for {len(texts)} inputs."
+        raise TranslationResponseError(
+            length_error or f"OpenAI-compatible provider returned an invalid result list for {len(texts)} inputs."
         )
     return [(translation, "") for translation in translations]

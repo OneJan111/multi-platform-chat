@@ -383,6 +383,19 @@ class YouTubeWebChatTests(unittest.TestCase):
 
         self.assertEqual(message["membership"], "")
 
+    def test_membership_milestone_keeps_duration_and_tier_headers(self):
+        message = _parse_action({"addChatItemAction": {"item": {
+            "liveChatMembershipItemRenderer": {
+                "id": "milestone", "authorName": {"simpleText": "Viewer"},
+                "headerPrimaryText": {"runs": [{"text": "Member for 12 months"}]},
+                "headerSubtext": {"runs": [{"text": "Gold tier"}]},
+                "message": {"runs": [{"text": "Great stream!"}]},
+            },
+        }}})
+        self.assertIn("Member for 12 months", message["text"])
+        self.assertIn("Gold tier", message["text"])
+        self.assertIn("Great stream!", message["text"])
+
     def test_membership_gift_purchase_and_redemption(self):
         bought = _parse_action({"addChatItemAction": {"item": {
             "liveChatSponsorshipsGiftPurchaseAnnouncementRenderer": {

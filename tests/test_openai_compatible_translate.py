@@ -26,8 +26,27 @@ class OpenAICompatibleTranslationTests(unittest.TestCase):
         post.assert_called_once()
         self.assertEqual(post.call_args.args[0], "http://localhost:1234/v1/chat/completions")
         self.assertEqual(post.call_args.kwargs["json"]["model"], "loaded-model")
+        self.assertNotIn("max_tokens", post.call_args.kwargs["json"])
+        self.assertNotIn("max_completion_tokens", post.call_args.kwargs["json"])
+        self.assertNotIn("reasoning_effort", post.call_args.kwargs["json"])
         self.assertEqual(post.call_args.kwargs["timeout"], 60.0)
         response.raise_for_status.assert_called_once_with()
+
+    def test_disables_reasoning_without_adding_output_token_caps(self):
+        response = Mock()
+        response.json.return_value = {
+            "choices": [{"message": {"content": '["translated"]'}, "finish_reason": "stop"}],
+        }
+        with patch.object(openai_compatible_translate._session, "post", return_value=response) as post:
+            result = openai_compatible_translate.translate_batch(
+                ["hello"], "ja", api_base="http://127.0.0.1:11434/v1",
+                api_key="", model="gemma4:12b", reasoning_effort="none")
+        self.assertEqual(result, [("translated", "")])
+        body = post.call_args.kwargs["json"]
+        self.assertEqual(body["reasoning_effort"], "none")
+        self.assertNotIn("max_tokens", body)
+        self.assertNotIn("max_completion_tokens", body)
+        self.assertNotIn("Authorization", post.call_args.kwargs["headers"])
 
     def test_includes_optional_bearer_token(self):
         response = Mock()
@@ -80,6 +99,52 @@ class OpenAICompatibleTranslationTests(unittest.TestCase):
                 [("翻訳", "")],
             )
 
+    def test_complete_result_is_accepted_despite_length_finish_reason(self):
+        response = Mock()
+        response.json.return_value = {"choices": [{
+            "message": {"content": '```json\n["translated"]\n```'},
+            "finish_reason": "length",
+        }]}
+        with patch.object(openai_compatible_translate._session, "post", return_value=response):
+            self.assertEqual(openai_compatible_translate.translate_batch(["hello"], "ja"),
+                             [("translated", "")])
+
+    def test_length_finish_reason_rejects_incomplete_or_wrong_shaped_results(self):
+        for content in ('["unfinished', '[]', '["one", "two"]', '[null]', '""'):
+            response = Mock()
+            response.json.return_value = {"choices": [{
+                "message": {"content": content}, "finish_reason": "length",
+            }]}
+            with self.subTest(content=content), \
+                    patch.object(openai_compatible_translate._session, "post", return_value=response), \
+                    self.assertRaisesRegex(openai_compatible_translate.TranslationResponseError,
+                                           "reached the token limit"):
+                openai_compatible_translate.translate_batch(["hello"], "ja")
+
+    def test_response_format_failures_have_safe_specific_messages(self):
+        cases = [
+            (None, "non-JSON data"),
+            ({"data": "private-response"}, "not in OpenAI chat completions format"),
+            ({"choices": []}, "not in OpenAI chat completions format"),
+            ({"choices": [{"message": {"content": "private-response"}}]},
+             "did not return a valid JSON array"),
+            ({"choices": [{"message": {"content": ""}, "finish_reason": "length"}]},
+             "reached the token limit"),
+        ]
+        for payload, expected in cases:
+            response = Mock()
+            if payload is None:
+                response.json.side_effect = ValueError("private-response")
+            else:
+                response.json.return_value = payload
+            with self.subTest(expected=expected), \
+                    patch.object(openai_compatible_translate._session, "post", return_value=response):
+                with self.assertRaisesRegex(
+                    openai_compatible_translate.TranslationResponseError, expected
+                ) as caught:
+                    openai_compatible_translate.translate_batch(["private-input"], "ja")
+                self.assertNotIn("private-", str(caught.exception))
+
     def test_explicit_session_configuration_does_not_change_dashboard_provider(self):
         response = Mock()
         response.json.return_value = {"choices": [{"message": {"content": '["translated"]'}}]}
@@ -93,6 +158,7 @@ class OpenAICompatibleTranslationTests(unittest.TestCase):
         self.assertEqual(result, [("translated", "")])
         self.assertEqual(post.call_args.args[0], "http://localhost:1234/v1/chat/completions")
         self.assertEqual(post.call_args.kwargs["json"]["model"], "session-model")
+        self.assertNotIn("max_tokens", post.call_args.kwargs["json"])
         self.assertNotIn("Authorization", post.call_args.kwargs["headers"])
         system = post.call_args.kwargs["json"]["messages"][0]["content"]
         self.assertIn("Game stream", system)

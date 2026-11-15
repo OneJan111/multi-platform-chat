@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import json
 import sys
 import unittest
 from types import SimpleNamespace
@@ -15,6 +16,23 @@ from src.bilibili import (
 
 
 class BilibiliSendTests(unittest.TestCase):
+    def test_reply_target_is_included_in_danmaku_text(self):
+        for extra in ({"reply_mid": 42, "reply_uname": "观众"},
+                      json.dumps({"reply_mid": 42, "reply_uname": "观众"})):
+            meta = [0] * 15 + [{"extra": extra}]
+            with self.subTest(extra=extra):
+                self.assertEqual(bili._danmaku_text("你好", meta), "@观众 你好")
+                for text in ("@观众 你好", "@观众：你好", "@观众"):
+                    self.assertEqual(bili._danmaku_text(text, meta), text)
+                self.assertEqual(bili._danmaku_text("@观众2 你好", meta), "@观众 @观众2 你好")
+
+    def test_plain_danmaku_and_missing_reply_metadata_are_preserved(self):
+        for meta in ([], [0] * 16, [0] * 15 + [{"extra": "{}"}],
+                     [0] * 15 + [{"extra": {"reply_uname": ""}}],
+                     [0] * 15 + [{"extra": {"reply_uname": None}}]):
+            with self.subTest(meta=meta):
+                self.assertEqual(bili._danmaku_text("hello @someone", meta), "hello @someone")
+
     @unittest.skipUnless(
         sys.platform == "win32" and sys.version_info >= (3, 12),
         "Windows loop_factory support requires Python 3.12+",
@@ -270,6 +288,38 @@ class BilibiliSendTests(unittest.TestCase):
         warning.assert_called_once()
         self.assertNotIn("exc_info", warning.call_args.kwargs)
 
+    def test_missing_avatar_profile_does_not_retry_or_pause_other_users(self):
+        missing = RuntimeError("user not found")
+        missing.code = -404
+        with patch.object(bili, "_avatar_risk_until", 0.0), \
+                patch.object(bili, "BILIBILI_LIB_OK", True), \
+                patch.object(bili, "user", SimpleNamespace(User=Mock()), create=True), \
+                patch.object(bili, "_credential", return_value="credential"), \
+                patch.object(bili, "_run", side_effect=[
+                    missing, {"face": "https://i0.hdslb.com/bfs/face/avatar.png"},
+                ]), patch("src.bilibili.requests.get") as get, \
+                patch.object(bili.log, "warning") as warning:
+            self.assertEqual(bili.get_user_avatar("42"), "")
+            self.assertEqual(bili.get_user_avatar("43"),
+                             "https://i0.hdslb.com/bfs/face/avatar.png")
+        get.assert_not_called()
+        warning.assert_called_once()
+        self.assertIn("-404", warning.call_args.args[0])
+        self.assertNotIn("exc_info", warning.call_args.kwargs)
+
+    def test_public_avatar_profile_not_found_is_reported_without_traceback(self):
+        response = Mock(status_code=200)
+        response.json.return_value = {"code": -404, "message": "not found"}
+        with patch.object(bili, "_avatar_risk_until", 0.0), \
+                patch.object(bili, "BILIBILI_LIB_OK", False), \
+                patch("src.bilibili.requests.get", return_value=response), \
+                patch.object(bili.log, "warning") as warning:
+            self.assertEqual(bili.get_user_avatar("42"), "")
+            self.assertFalse(bili._avatar_risk_active())
+        warning.assert_called_once()
+        self.assertIn("-404", warning.call_args.args[0])
+        self.assertNotIn("exc_info", warning.call_args.kwargs)
+
     def test_get_user_avatar_profile_api_risk_code_pauses_lookups(self):
         response = Mock(status_code=200)
         response.json.return_value = {"code": -352, "data": {"v_voucher": "voucher"}}
@@ -455,6 +505,32 @@ class BilibiliGiftTests(unittest.TestCase):
 
         self.assertEqual(message["text"], "🎁 牛哇牛哇 ×2 (¥0.2)")
         self.assertFalse(message["free"])
+
+    def test_discounted_combo_uses_total_combo_quantity_for_list_price(self):
+        message = DanmakuListener._gift_message({
+            "uname": "viewer", "gift_name": "Flower", "num": 1, "combo_num": 5,
+            "coin_type": "gold", "combo_total_coin": 4000, "price": 1000,
+            "discount_price": 800,
+        }, combo=True)
+        self.assertEqual(message["text"], "🎁 Flower ×5 (¥4, list ¥5)")
+        self.assertEqual(message["value"], 4)
+        fallback = DanmakuListener._gift_message({
+            "gift_name": "Flower", "combo_num": 5, "coin_type": "gold",
+            "price": 1000, "discount_price": 800,
+        }, combo=True)
+        self.assertEqual(fallback["text"], "🎁 Flower ×5 (¥4, list ¥5)")
+
+    def test_discounted_v2_gift_keeps_paid_and_list_prices(self):
+        item = b"".join([
+            _field(1, 123), _field(2, "Flower"), _field(3, 2),
+            _field(5, 1000), _field(7, 1600), _field(8, "gold"),
+        ])
+        pb = b"".join([_field(1, 42), _field(2, "viewer"), _field(10, item)])
+        message = DanmakuListener._gift_message(
+            _decode_send_gift_v2(base64.b64encode(pb).decode())[0]
+        )
+        self.assertEqual(message["text"], "🎁 Flower ×2 (¥1.6, list ¥2)")
+        self.assertEqual(message["value"], 1.6)
 
     def test_silver_coin_gift_is_not_marked_paid(self):
         message = DanmakuListener._gift_message({

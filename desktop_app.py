@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 import base64
 import concurrent.futures
+import copy
 import hashlib
 import html
 import json
@@ -452,6 +453,13 @@ def _emote_cache_path() -> Path:
         base = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local")
         return base / "StreamingDashboard" / "emote_cache.json"
     return Path.home() / ".streaming-dashboard" / "emote_cache.json"
+
+
+def _room_events_path() -> Path:
+    if sys.platform == "win32":
+        base = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local")
+        return base / "StreamingDashboard" / "desktop_room_events.sqlite3"
+    return Path.home() / ".streaming-dashboard" / "desktop_room_events.sqlite3"
 
 
 def _utc_now() -> str:
@@ -1735,6 +1743,65 @@ if QtCore is not None:
                 return True
             return super().eventFilter(watched, event)
 
+    class _MonitorDragHandle(QtWidgets.QLabel):
+        def __init__(self, monitor_id: str, parent=None):
+            super().__init__("⠿", parent)
+            self.monitor_id = monitor_id
+            self._drag_start = None
+            self.setCursor(QtCore.Qt.CursorShape.OpenHandCursor)
+            self.setToolTip("Drag to reorder")
+            self.setAccessibleName("Drag to reorder")
+
+        def mousePressEvent(self, event):
+            if event.button() == QtCore.Qt.MouseButton.LeftButton:
+                self._drag_start = event.position().toPoint()
+            super().mousePressEvent(event)
+
+        def mouseMoveEvent(self, event):
+            if (
+                self._drag_start is not None
+                and event.buttons() & QtCore.Qt.MouseButton.LeftButton
+                and (event.position().toPoint() - self._drag_start).manhattanLength()
+                >= QtWidgets.QApplication.startDragDistance()
+            ):
+                drag = QtGui.QDrag(self)
+                mime = QtCore.QMimeData()
+                mime.setText(self.monitor_id)
+                drag.setMimeData(mime)
+                drag.exec(QtCore.Qt.DropAction.MoveAction)
+                self._drag_start = None
+                return
+            super().mouseMoveEvent(event)
+
+    class _MonitorCard(QtWidgets.QFrame):
+        def __init__(self, monitor_id: str, reorder, parent=None):
+            super().__init__(parent)
+            self.monitor_id = monitor_id
+            self.reorder = reorder
+            self.setAcceptDrops(True)
+
+        def dragEnterEvent(self, event):
+            if event.mimeData().hasText() and event.mimeData().text() != self.monitor_id:
+                event.setDropAction(QtCore.Qt.DropAction.MoveAction)
+                event.accept()
+            else:
+                event.ignore()
+
+        def dragMoveEvent(self, event):
+            self.dragEnterEvent(event)
+
+        def dropEvent(self, event):
+            source_id = event.mimeData().text()
+            if source_id and source_id != self.monitor_id:
+                self.reorder(
+                    source_id, self.monitor_id,
+                    event.position().toPoint().y() >= self.height() / 2,
+                )
+                event.setDropAction(QtCore.Qt.DropAction.MoveAction)
+                event.accept()
+            else:
+                event.ignore()
+
 
     class _ElidedLabel(QtWidgets.QLabel):
         def __init__(self, text="", parent=None):
@@ -2299,6 +2366,20 @@ if QtCore is not None:
             self._activity = []
             self._hotspot_events = []
             self._hotspots = []
+            self._hotspot_origin = None
+            self._event_store = None
+            self._event_statuses = {}
+            self._event_cursor = None
+            self._event_executor = concurrent.futures.ThreadPoolExecutor(
+                max_workers=1, thread_name_prefix="desktop-room-events"
+            )
+            if self.config.ANALYTICS_ENABLED:
+                from src.room_events import RoomEvents
+
+                try:
+                    self._event_store = RoomEvents(_room_events_path())
+                except Exception:
+                    logging.getLogger(__name__).exception("Room event history is unavailable.")
             self._thanked_ids = set(self._settings.value("thanked_ids", [], type=list))
             self._active_feed = "chat"
             self._feed_scroll_paused = {"chat": False, "paid": False}
@@ -3215,6 +3296,33 @@ if QtCore is not None:
                 self._worker.update_targets(self._monitor_targets)
             self._refresh_feeds()
 
+        def _move_monitor_target(self, monitor_id: str, target_id: str, after=False):
+            if monitor_id == target_id:
+                return
+            source_index = next(
+                (index for index, entry in enumerate(self._monitor_targets)
+                 if entry["id"] == monitor_id), None
+            )
+            target_index = next(
+                (index for index, entry in enumerate(self._monitor_targets)
+                 if entry["id"] == target_id), None
+            )
+            if source_index is None or target_index is None:
+                return
+            moving = self._monitor_targets.pop(source_index)
+            target_index = next(
+                index for index, entry in enumerate(self._monitor_targets)
+                if entry["id"] == target_id
+            )
+            self._monitor_targets.insert(target_index + int(after), moving)
+            self._save_monitor_targets()
+            self._refresh_monitor_cards()
+            self._refresh_chat_room_selectors()
+            self._refresh_transcription_rooms()
+            self._refresh_overlay_room_selectors()
+            if self._worker:
+                self._worker.update_targets(self._monitor_targets)
+
         def _unload_youtube_stream(self, channel_monitor_id):
             stream_monitor_id = _youtube_channel_stream_map(
                 getattr(self, "_combined_monitor_ids", {})
@@ -3244,8 +3352,10 @@ if QtCore is not None:
                 if item.widget():
                     item.widget().deleteLater()
             self._monitor_cards = {}
-            for index, entry in enumerate(self._monitor_targets):
-                card = QtWidgets.QFrame()
+            for entry in self._monitor_targets:
+                card = _MonitorCard(
+                    entry["id"], self._move_monitor_target
+                )
                 card.setObjectName("monitorChannelCard")
                 card.setMinimumWidth(0)
                 card.setMinimumHeight(120)
@@ -3259,7 +3369,11 @@ if QtCore is not None:
                     f"{entry['platform'].title()} · {entry['target']}"
                 )
                 title.setStyleSheet("font-size: 13pt; font-weight: 600; border: 0;")
-                card_layout.addWidget(title)
+                title_row = QtWidgets.QHBoxLayout()
+                drag_handle = _MonitorDragHandle(entry["id"])
+                title_row.addWidget(drag_handle)
+                title_row.addWidget(title, 1)
+                card_layout.addLayout(title_row)
                 stream_title = _ElidedLabel()
                 stream_title.setStyleSheet("border: 0;")
                 card_layout.addWidget(stream_title)
@@ -3301,7 +3415,9 @@ if QtCore is not None:
                     lambda enabled, monitor_id=entry["id"]:
                     self._monitor_target_changed(monitor_id, enabled)
                 )
-                controls.addWidget(monitor)
+                controls.addWidget(
+                    monitor, alignment=QtCore.Qt.AlignmentFlag.AlignVCenter
+                )
                 record_toggle = None
                 recording = None
                 if entry["platform"] in ("youtube", "bilibili", "missevan"):
@@ -3314,7 +3430,9 @@ if QtCore is not None:
                         lambda enabled, monitor_id=entry["id"]:
                         self._set_recording(monitor_id, enabled)
                     )
-                    controls.addWidget(record_toggle)
+                    controls.addWidget(
+                        record_toggle, alignment=QtCore.Qt.AlignmentFlag.AlignVCenter
+                    )
                     recording = QtWidgets.QLabel("")
                     recording.setStyleSheet("color: #b42318; border: 0;")
                     recording.setVisible(False)
@@ -3326,7 +3444,9 @@ if QtCore is not None:
                     lambda _, channel_id=entry["id"]:
                     self._unload_youtube_stream(channel_id)
                 )
-                controls.addWidget(unload_stream)
+                controls.addWidget(
+                    unload_stream, alignment=QtCore.Qt.AlignmentFlag.AlignVCenter
+                )
                 remove = QtWidgets.QPushButton()
                 _set_desktop_widget_text(
                     remove, "Remove", self._ui_language, self.i18n
@@ -3335,11 +3455,14 @@ if QtCore is not None:
                     lambda _, monitor_id=entry["id"]:
                     self._remove_monitor_target(monitor_id)
                 )
-                controls.addWidget(remove)
+                controls.addWidget(
+                    remove, alignment=QtCore.Qt.AlignmentFlag.AlignVCenter
+                )
                 card_layout.addLayout(controls)
                 self._monitor_cards[entry["id"]] = {
                     "widget": card,
                     "title": title,
+                    "drag_handle": drag_handle,
                     "stream_title": stream_title,
                     "detail": detail,
                     "live_indicator": live_indicator,
@@ -4374,13 +4497,34 @@ if QtCore is not None:
         def _make_analytics_tab(self):
             widget = QtWidgets.QWidget()
             layout = QtWidgets.QVBoxLayout(widget)
-            self.analytics_summary = QtWidgets.QLabel("Session totals")
+            room_row = QtWidgets.QHBoxLayout()
+            self.analytics_room = QtWidgets.QComboBox()
+            self.analytics_room.currentIndexChanged.connect(self._analytics_room_changed)
+            room_row.addWidget(self.analytics_room, 1)
+            self.delete_room_events_button = QtWidgets.QPushButton("Delete this room's events")
+            self.delete_room_events_button.clicked.connect(self._delete_room_events)
+            room_row.addWidget(self.delete_room_events_button)
+            export_events = QtWidgets.QPushButton("Download room events JSONL")
+            export_events.clicked.connect(self._export_room_events)
+            room_row.addWidget(export_events)
+            layout.addLayout(room_row)
+            self.analytics_summary = QtWidgets.QLabel("Select a room for analysis.")
             layout.addWidget(self.analytics_summary)
             self.analytics_table = QtWidgets.QTableWidget(0, 4)
             self.analytics_table.setHorizontalHeaderLabels(["Metric", "Platform", "Value", "Details"])
             self.analytics_table.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.ResizeMode.Stretch)
             self.analytics_table.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
             layout.addWidget(self.analytics_table, 1)
+            self.events_table = QtWidgets.QTableWidget(0, 3)
+            self.events_table.setHorizontalHeaderLabels(["Time", "Kind", "Event"])
+            self.events_table.horizontalHeader().setSectionResizeMode(
+                2, QtWidgets.QHeaderView.ResizeMode.Stretch
+            )
+            self.events_table.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
+            layout.addWidget(self.events_table, 1)
+            self.events_older = QtWidgets.QPushButton("Older events")
+            self.events_older.clicked.connect(lambda: self._load_room_events(older=True))
+            layout.addWidget(self.events_older)
             refresh = QtWidgets.QPushButton("Refresh analytics")
             refresh.clicked.connect(self._refresh_analytics)
             self.hotspot_window = QtWidgets.QSpinBox()
@@ -4398,6 +4542,7 @@ if QtCore is not None:
             export_edl.clicked.connect(self._export_hotspots_edl)
             refresh_row.addWidget(export_edl)
             layout.addLayout(refresh_row)
+            self._reload_analytics_rooms()
             return widget
 
         def _make_overlay_tab(self):
@@ -4521,9 +4666,21 @@ if QtCore is not None:
             if self._worker:
                 self._worker.update_targets(self._monitor_targets)
             self.statusBar().showMessage("Monitor targets updated.", 5000)
+            if hasattr(self, "analytics_room"):
+                self._reload_analytics_rooms()
 
         def _update_statuses(self, statuses):
             from src import gifts
+
+            if self._event_store is not None:
+                from src.room_events import RoomEvents
+
+                monitored = {entry["id"] for entry in self._monitor_targets}
+                self._record_room_events(RoomEvents.statuses(
+                    {room: info for room, info in statuses.items() if room in monitored},
+                    self._event_statuses, time.time(),
+                ))
+                self._event_statuses = copy.deepcopy(statuses)
 
             self._combined_monitor_ids = _youtube_monitor_groups(
                 self._monitor_targets, statuses
@@ -4840,6 +4997,15 @@ if QtCore is not None:
             if not messages:
                 return
             _accumulate_bilibili_gift_revenue(self, messages)
+            if self._event_store is not None:
+                from src.room_events import RoomEvents
+
+                monitored = {entry["id"] for entry in self._monitor_targets}
+                received_at = time.time()
+                self._record_room_events([
+                    RoomEvents.message(message, received_at) for message in messages
+                    if message.get("_monitor_id") in monitored
+                ])
             if self.config.ANALYTICS_ENABLED:
                 from src import highlights
 
@@ -4903,11 +5069,6 @@ if QtCore is not None:
                             else None,
                         )
                     continue
-                if self.config.ANALYTICS_ENABLED:
-                    self._activity.append((time.time(), msg))
-                    self._hotspot_events.append(
-                        highlights.log_entry(msg, is_paid(msg) or is_gift(msg), time.time())
-                    )
                 if selected_room and self._translate_enabled and msg.get("text"):
                     target, text = self._translate_target, msg["text"]
                     translate.prefetch([text], target)
@@ -5748,6 +5909,15 @@ if QtCore is not None:
                         lambda _checked=False, handler=callback, selected=message:
                         handler(message=selected)
                     )
+            if self._event_store is not None and message.get("_monitor_id") and (
+                message.get("author_id") not in (None, "", "0") or message.get("author")
+            ):
+                history = menu.addAction(
+                    self.i18n.translate("Author history", self._ui_language)
+                )
+                history.triggered.connect(
+                    lambda _checked=False, selected=message: self._show_author_history(selected)
+                )
             menu.exec(position)
 
         def _resize_feed_items(self, view):
@@ -5956,6 +6126,26 @@ if QtCore is not None:
             sections_layout.addStretch(1)
             scroll.setWidget(sections_widget)
             layout.addWidget(scroll, 1)
+            preview = QtWidgets.QLabel()
+            preview.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+            preview.setWordWrap(True)
+            preview.setFixedHeight(190)
+            layout.addWidget(preview)
+
+            def clear_preview(*_):
+                preview.clear()
+
+            def show_preview(item):
+                pixmap = item.data(QtCore.Qt.ItemDataRole.UserRole + 1)
+                if pixmap is not None and not pixmap.isNull():
+                    preview.setPixmap(pixmap.scaled(
+                        170, 170,
+                        QtCore.Qt.AspectRatioMode.KeepAspectRatio,
+                        QtCore.Qt.TransformationMode.SmoothTransformation,
+                    ))
+                else:
+                    preview.setText(item.text())
+
             close_button = QtWidgets.QPushButton(translate("Close"))
             close_button.clicked.connect(sites.reject)
             layout.addWidget(close_button)
@@ -6096,6 +6286,9 @@ if QtCore is not None:
 
                 header.toggled.connect(set_expanded)
                 body.setVisible(expanded)
+                grid.setMouseTracking(True)
+                grid.itemEntered.connect(show_preview)
+                grid.viewportEntered.connect(clear_preview)
                 grid.itemClicked.connect(
                     lambda item: use_item(item.data(QtCore.Qt.ItemDataRole.UserRole))
                 )
@@ -6139,6 +6332,9 @@ if QtCore is not None:
                         return
                     pixmap = QtGui.QPixmap()
                     if pixmap.loadFromData(data):
+                        group["grid"].item(index).setData(
+                            QtCore.Qt.ItemDataRole.UserRole + 1, pixmap
+                        )
                         group["grid"].item(index).setIcon(QtGui.QIcon(pixmap.scaled(
                             64, 64,
                             QtCore.Qt.AspectRatioMode.KeepAspectRatio,
@@ -7633,59 +7829,207 @@ if QtCore is not None:
                     self.transcription_output.verticalScrollBar().maximum()
                 )
 
+        def _event_query(self, function, *args):
+            # One writer thread: a query sees every event accepted before it.
+            return self._event_executor.submit(function, *args).result()
+
+        def _record_room_events(self, events):
+            if not events or self._event_store is None:
+                return
+            batch = copy.deepcopy(events)
+            store = self._event_store
+
+            def write():
+                try:
+                    store.append(batch)
+                except Exception:
+                    logging.getLogger(__name__).exception("Room event recording failed.")
+
+            self._event_executor.submit(write)
+
+        def _reload_analytics_rooms(self):
+            previous = self.analytics_room.currentData()
+            choices = {}
+            if self._event_store is not None:
+                try:
+                    choices = {item["room"]: item["room"] for item in self._event_query(self._event_store.rooms)}
+                except Exception as exc:
+                    self._show_error(f"Room history failed: {exc}")
+            for entry in self._monitor_targets:
+                name = self._room_names.get(entry["id"]) if hasattr(self, "_room_names") else ""
+                choices[entry["id"]] = f"{entry['platform'].title()} · {name or entry['target']}"
+            self.analytics_room.blockSignals(True)
+            self.analytics_room.clear()
+            self.analytics_room.addItem("Select a room for analysis.", "")
+            for room, label in choices.items():
+                self.analytics_room.addItem(label, room)
+            index = self.analytics_room.findData(previous)
+            self.analytics_room.setCurrentIndex(max(0, index))
+            self.analytics_room.blockSignals(False)
+
+        def _analysis_room(self):
+            room = self.analytics_room.currentData()
+            if not room:
+                self._show_error("Select a room for analysis.")
+                return ""
+            if self._event_store is None:
+                self._show_error("Room history is unavailable. Set ANALYTICS_ENABLED=true and restart.")
+                return ""
+            return room
+
+        def _analytics_room_changed(self, _index=None):
+            self.analytics_table.setRowCount(0)
+            self.events_table.setRowCount(0)
+            self._event_cursor = None
+            self.events_older.setEnabled(False)
+            self._hotspots = []
+            self.analytics_summary.setText("Select a room for analysis.")
+            if self.analytics_room.currentData() and self._event_store is not None:
+                self._refresh_analytics()
+
         def _refresh_analytics(self):
             from src import highlights
-            from src.tts import is_paid
-            totals = defaultdict(float)
-            sites = Counter()
-            chatters = Counter()
-            per_minute = Counter()
-            for timestamp, msg in self._activity:
-                sites[msg.get("platform", "")] += 1
-                chatters[(msg.get("platform", ""), msg.get("author", ""))] += 1
-                if is_paid(msg) and msg.get("currency") and msg.get("value"):
-                    try:
-                        totals[(msg["platform"], msg["currency"])] += float(msg["value"])
-                    except (ValueError, TypeError):
-                        pass
-                per_minute[datetime.fromtimestamp(timestamp).strftime("%H:%M")] += 1
-            current_viewers = self._viewer_samples[-1][1] if self._viewer_samples else {}
-            peak_viewers = {
-                site: max((sample.get(site, 0) for _, sample in self._viewer_samples), default=0)
-                for site in ("youtube", "bilibili", "missevan")
-            }
-            viewer_summary = " · ".join(
-                f"{site.title()}: {current_viewers.get(site, 0):,} now / {peak_viewers[site]:,} peak"
-                for site in ("youtube", "bilibili", "missevan")
-                if site in current_viewers
-            )
-            self.analytics_summary.setText(
-                f"Session messages: {len(self._activity)}"
-                + (f" · {viewer_summary}" if viewer_summary else "")
-            )
-            rows = []
-            for site, count in sites.most_common():
-                rows.append(("Messages", site, count, "All observed messages"))
-            for (site, currency), value in totals.items():
-                rows.append(("Paid value", site, f"{value:g} {currency}", "Original platform currency"))
-            for (site, author), count in chatters.most_common(20):
-                rows.append(("Top chatter", site, count, author))
-            for minute, count in per_minute.most_common(20):
-                rows.append(("Messages/minute", "", count, minute))
-            self._hotspots = highlights.find_highlights(
-                self._hotspot_events, window=self.hotspot_window.value()
-            )
-            for index, clip in enumerate(self._hotspots, 1):
-                rows.append(("Hotspot", ", ".join(clip["platforms"]), clip["score"], highlights.summary(clip)))
+
+            self._reload_analytics_rooms()
+            room = self._analysis_room()
+            if not room:
+                return
+            try:
+                result = self._event_query(self._event_store.analytics, room)
+                self._hotspots, self._hotspot_origin = self._event_query(
+                    self._event_store.hotspots, room, self.hotspot_window.value()
+                )
+            except Exception as exc:
+                self._show_error(f"Room history failed: {exc}")
+                return
+            platform = room.partition(":")[0]
+            rows = [(label, platform, value, details) for label, _platform, value, details in result["rows"]]
+            rows += [
+                ("Hotspot", "", clip["score"], highlights.summary(clip)) for clip in self._hotspots
+            ]
+            viewers = [
+                f"Last recorded viewers: {item['now']:,.0f} / peak: {item['peak']:,.0f}"
+                for item in result["viewers"]
+            ]
+            self.analytics_summary.setText(" · ".join(
+                [room, f"Recorded events: {result['events']}", *viewers]
+            ))
             self.analytics_table.setRowCount(len(rows))
             for r, values in enumerate(rows):
                 for c, value in enumerate(values):
                     self.analytics_table.setItem(r, c, QtWidgets.QTableWidgetItem(str(value)))
+            self._load_room_events()
+
+        def _load_room_events(self, older=False):
+            room = self._analysis_room()
+            if not room:
+                return
+            try:
+                result = self._event_query(
+                    self._event_store.page, room, self._event_cursor if older else 0
+                )
+            except Exception as exc:
+                self._show_error(f"Room history failed: {exc}")
+                return
+            self._event_cursor = result["next"]
+            self.events_older.setEnabled(self._event_cursor is not None)
+            start = self.events_table.rowCount() if older else 0
+            self.events_table.setRowCount(start + len(result["events"]))
+            for offset, event in enumerate(result["events"]):
+                payload = event["payload"]
+                stamp = datetime.fromtimestamp(event["received_at"]).strftime("%Y-%m-%d %H:%M:%S")
+                text = payload.get("text") or payload.get("author") or json.dumps(payload, ensure_ascii=False)
+                for column, value in enumerate((stamp, event["kind"], text)):
+                    item = QtWidgets.QTableWidgetItem(str(value))
+                    item.setToolTip(json.dumps(event, ensure_ascii=False, indent=2))
+                    self.events_table.setItem(start + offset, column, item)
+
+        def _delete_room_events(self):
+            room = self._analysis_room()
+            if not room:
+                return
+            answer = QtWidgets.QMessageBox.question(
+                self, "Delete room history", f"Delete all recorded events for {room}?"
+            )
+            if answer != QtWidgets.QMessageBox.StandardButton.Yes:
+                return
+            try:
+                self._event_query(self._event_store.delete, room)
+            except Exception as exc:
+                self._show_error(f"Room history failed: {exc}")
+                return
+            self._refresh_analytics()
+
+        def _export_room_events(self):
+            room = self._analysis_room()
+            if not room:
+                return
+            path, _ = QtWidgets.QFileDialog.getSaveFileName(
+                self, "Download room events JSONL", "room-events.jsonl", "JSONL files (*.jsonl)"
+            )
+            if not path:
+                return
+            store = self._event_store
+
+            def export():
+                with open(path, "wb") as output:
+                    for chunk in store.export(room):
+                        output.write(chunk)
+
+            try:
+                self._event_query(export)
+            except Exception as exc:
+                self._show_error(f"Room history failed: {exc}")
+                return
+            self.statusBar().showMessage(f"Exported room events to {path}.", 5000)
+
+        def _show_author_history(self, message):
+            room = str(message.get("_monitor_id") or "")
+            if self._event_store is None or not room:
+                self._show_error("Room history is unavailable. Set ANALYTICS_ENABLED=true and restart.")
+                return
+            author_id, author = str(message.get("author_id", "")), str(message.get("author", ""))
+            dialog = QtWidgets.QDialog(self)
+            dialog.setWindowTitle(f"{author} · {room}")
+            dialog.resize(640, 480)
+            layout = QtWidgets.QVBoxLayout(dialog)
+            table = QtWidgets.QTableWidget(0, 2)
+            table.setHorizontalHeaderLabels(["Time", "Message"])
+            table.horizontalHeader().setSectionResizeMode(1, QtWidgets.QHeaderView.ResizeMode.Stretch)
+            table.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
+            layout.addWidget(table)
+            older = QtWidgets.QPushButton("Older events")
+            layout.addWidget(older)
+            cursor = {"next": 0}
+
+            def load():
+                try:
+                    result = self._event_query(
+                        self._event_store.author_history, room, author_id, author, cursor["next"]
+                    )
+                except Exception as exc:
+                    self._show_error(f"Room history failed: {exc}")
+                    return
+                cursor["next"] = result["next"]
+                older.setEnabled(result["next"] is not None)
+                start = table.rowCount()
+                table.setRowCount(start + len(result["events"]))
+                for offset, event in enumerate(result["events"]):
+                    payload = event["payload"]
+                    stamp = datetime.fromtimestamp(event["received_at"]).strftime("%Y-%m-%d %H:%M:%S")
+                    table.setItem(start + offset, 0, QtWidgets.QTableWidgetItem(stamp))
+                    table.setItem(start + offset, 1, QtWidgets.QTableWidgetItem(
+                        f"{payload.get('author', '')}: {payload.get('text', '')}"))
+
+            older.clicked.connect(load)
+            load()
+            dialog.exec()
 
         def _export_hotspots_csv(self):
             from src import highlights
-            if not self._hotspots:
-                self._refresh_analytics()
+            if not self._analysis_room():
+                return
+            self._refresh_analytics()
             if not self._hotspots:
                 self._show_error("No chat hotspots are available to export.")
                 return
@@ -7698,8 +8042,9 @@ if QtCore is not None:
 
         def _export_hotspots_edl(self):
             from src import highlights
-            if not self._hotspots:
-                self._refresh_analytics()
+            if not self._analysis_room():
+                return
+            self._refresh_analytics()
             if not self._hotspots:
                 self._show_error("No chat hotspots are available to export.")
                 return
@@ -7707,8 +8052,7 @@ if QtCore is not None:
                 self, "Export DaVinci Resolve markers", "chat-hotspots.edl", "EDL files (*.edl)"
             )
             if path:
-                origin = min((event["ts"] for event in self._hotspot_events), default=time.time())
-                Path(path).write_bytes(highlights.to_edl(self._hotspots, origin))
+                Path(path).write_bytes(highlights.to_edl(self._hotspots, self._hotspot_origin))
                 self.statusBar().showMessage(f"Exported EDL to {path}.", 5000)
 
         def _load_archive_view(self):
@@ -8054,6 +8398,7 @@ if QtCore is not None:
             self._save_archive()
             # Finish accepted writes before the window and its callbacks are destroyed.
             self._archive_executor.shutdown(wait=True)
+            self._event_executor.shutdown(wait=True)
             self._tts_executor.shutdown(wait=False, cancel_futures=True)
             self._obs_executor.shutdown(wait=False, cancel_futures=True)
             self._executor.shutdown(wait=False, cancel_futures=True)

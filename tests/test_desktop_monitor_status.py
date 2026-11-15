@@ -90,6 +90,7 @@ class MonitorLiveIndicatorTests(unittest.TestCase):
             _record_enabled_ids=set(), _ui_language="en", i18n=i18n,
             _monitor_target_changed=Mock(), _set_recording=Mock(),
             _unload_youtube_stream=Mock(), _remove_monitor_target=Mock(),
+            _move_monitor_target=Mock(),
             _layout_channel_cards=Mock(), _apply_theme=Mock(),
             _refresh_recording_status=Mock(),
         )
@@ -101,6 +102,56 @@ class MonitorLiveIndicatorTests(unittest.TestCase):
         row = card["widget"].layout().itemAt(2).layout()
         self.assertIs(row.itemAt(0).widget(), indicator)
         self.assertIs(row.itemAt(1).widget(), card["detail"])
+        controls = card["widget"].layout().itemAt(5).layout()
+        for index in (0, 1, 3, 4):
+            self.assertTrue(
+                controls.itemAt(index).alignment()
+                & desktop_app.QtCore.Qt.AlignmentFlag.AlignVCenter
+            )
+
+    def test_monitor_cards_are_draggable_and_reorder_persistently(self):
+        targets = [
+            {"id": "youtube:one", "platform": "youtube", "target": "one", "enabled": True},
+            {"id": "bilibili:two", "platform": "bilibili", "target": "two", "enabled": True},
+        ]
+        worker = SimpleNamespace(update_targets=Mock())
+        widget = desktop_app.QtWidgets.QWidget()
+        window = SimpleNamespace(
+            channel_grid=desktop_app.QtWidgets.QGridLayout(widget),
+            _monitor_targets=targets, _live_states={}, _record_enabled_ids=set(),
+            _ui_language="en", i18n=i18n, _monitor_target_changed=Mock(),
+            _set_recording=Mock(), _unload_youtube_stream=Mock(),
+            _remove_monitor_target=Mock(), _move_monitor_target=Mock(),
+            _layout_channel_cards=Mock(), _apply_theme=Mock(),
+            _refresh_recording_status=Mock(),
+        )
+        desktop_app._DesktopWindow._refresh_monitor_cards(window)
+        first = window._monitor_cards["youtube:one"]["widget"]
+        handle = window._monitor_cards["youtube:one"]["drag_handle"]
+        self.assertTrue(first.acceptDrops())
+        self.assertEqual(handle.toolTip(), "Drag to reorder")
+        self.assertEqual(handle.cursor().shape(), desktop_app.QtCore.Qt.CursorShape.OpenHandCursor)
+
+        window._save_monitor_targets = Mock()
+        window._refresh_monitor_cards = Mock()
+        window._refresh_chat_room_selectors = Mock()
+        window._refresh_transcription_rooms = Mock()
+        window._refresh_overlay_room_selectors = Mock()
+        window._worker = worker
+        desktop_app._DesktopWindow._move_monitor_target(
+            window, "youtube:one", "bilibili:two", True
+        )
+        self.assertEqual([entry["id"] for entry in targets], ["bilibili:two", "youtube:one"])
+        window._save_monitor_targets.assert_called_once()
+        worker.update_targets.assert_called_once_with(targets)
+        desktop_app._DesktopWindow._move_monitor_target(
+            window, "youtube:one", "bilibili:two", True
+        )
+        self.assertEqual([entry["id"] for entry in targets], ["bilibili:two", "youtube:one"])
+        desktop_app._DesktopWindow._move_monitor_target(
+            window, "missing", "bilibili:two", False
+        )
+        self.assertEqual([entry["id"] for entry in targets], ["bilibili:two", "youtube:one"])
 
 
 if __name__ == "__main__":

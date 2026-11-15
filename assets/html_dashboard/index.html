@@ -118,12 +118,17 @@
         <label>Translate to<select id="transcribe-language" name="transcribe_target_language"><option value="en">English</option><option value="zh-CN">Simplified Chinese</option><option value="zh-TW">Traditional Chinese</option><option value="ja">Japanese</option><option value="ko">Korean</option></select></label>
         <h2>Shared translation API</h2>
         <p>All translation uses this provider, base URL, model and API key. Chat and transcription keep their own translation switches and target languages. Previous-sentence context is used only for transcription.</p>
-        <label>Translation provider<select id="transcribe-provider" name="transcribe_provider"><option value="dashboard">Environment provider (shared)</option><option value="openai_compatible">OpenAI-compatible API</option></select></label>
+        <label>Translation provider<select id="transcribe-provider" name="transcribe_provider"><option value="google">Google Translate</option><option value="openai_compatible">OpenAI-compatible API</option><option value="dashboard">Environment provider (shared)</option></select></label>
+        <button type="button" id="apply-translation-provider">Apply service switch</button>
+        <p id="translation-provider-status" role="status"></p>
+        <p>Choose a service, then apply the switch. Other settings save automatically. Test translation uses the selected service without switching live translation.</p>
         <fieldset id="transcribe-api-options">
           <legend>OpenAI-compatible API</legend>
           <label>API base URL<input name="transcribe_api_base" type="url" required placeholder="https://api.openai.com/v1"></label>
           <label>AI model ID<input name="transcribe_api_model" list="transcribe-models" required autocomplete="off"></label>
           <datalist id="transcribe-models"></datalist>
+          <label>Model reasoning<select name="transcribe_reasoning_effort"><option value="">Service default</option><option value="none">Disabled (supported models only)</option></select></label>
+          <p>For Ollama models with thinking enabled, disable reasoning to reserve output for translation. Other services must support reasoning_effort=none.</p>
           <label>API key<input id="transcribe-api-key" type="password" autocomplete="new-password" spellcheck="false"></label>
           <p id="transcribe-key-status"></p>
           <label class="check"><input id="transcribe-clear-key" type="checkbox">Remove saved API key</label>
@@ -170,7 +175,13 @@
     </section>
   </main>
   <dialog id="confirm"><form method="dialog"><h2>Confirm</h2><p id="confirm-text"></p><div class="toolbar"><button value="cancel">Cancel</button><button value="ok" class="danger">Continue</button></div></form></dialog>
-  <dialog id="emotes"><form method="dialog"><h2>Emotes</h2><div class="toolbar"><select id="emote-site" aria-label="Emote source"><option value="youtube">YouTube channel stamps</option><option value="bilibili">Bilibili</option><option value="missevan">MissEvan</option><option value="kaomoji">MissEvan kaomoji</option></select><button type="button" id="emote-load">Reload</button><button value="close">Close</button></div><p id="emote-status"></p><div id="emote-list"></div></form></dialog>
+  <dialog id="author-history" aria-labelledby="author-history-title">
+    <form method="dialog"><h2 id="author-history-title">Viewer message history</h2><button>Close</button></form>
+    <p id="author-history-name"></p><p>Saved messages from this viewer in this room, newest first.</p>
+    <p id="author-history-status" role="status"></p><div id="author-history-rows"></div>
+    <button id="author-history-older" type="button" disabled>Older events</button>
+  </dialog>
+  <dialog id="emotes"><form method="dialog"><h2>Emotes</h2><div class="toolbar"><select id="emote-site" aria-label="Emote source"><option value="youtube">YouTube channel stamps</option><option value="bilibili">Bilibili</option><option value="missevan">MissEvan</option><option value="kaomoji">MissEvan kaomoji</option></select><button type="button" id="emote-load">Reload</button><button value="close">Close</button></div><p id="emote-status"></p><div id="emote-preview" aria-live="polite"></div><div id="emote-list"></div></form></dialog>
   <footer>Local-only service · Recording and OBS operate on the backend computer</footer>
 </body>
 </html>

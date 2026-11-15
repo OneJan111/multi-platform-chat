@@ -93,6 +93,41 @@ class RoomEventsTests(unittest.TestCase):
             with self.subTest(before=before, limit=limit), self.assertRaises(ValueError):
                 self.store.page("bilibili:1", before, limit)
 
+    def test_author_history_uses_id_across_renames_and_paginates_within_room(self):
+        events = []
+        for index in range(105):
+            events.append(RoomEvents.message({
+                "_monitor_id": "bilibili:1", "platform": "bilibili",
+                "type": "danmaku", "author_id": 42,
+                "author": "Old" if index < 50 else "New", "text": str(index),
+            }, 1700000000 + index))
+        for room, uid, kind in (("bilibili:2", "42", "danmaku"),
+                                ("bilibili:1", "43", "danmaku"),
+                                ("bilibili:1", "42", "enter")):
+            events.append(RoomEvents.message({
+                "_monitor_id": room, "platform": "bilibili", "author_id": uid,
+                "author": "New", "type": kind, "text": "excluded",
+            }, 1700000200))
+        self.store.append(events)
+        store = RoomEvents(self.path)
+        first = store.author_history("bilibili:1", "42", "New")
+        second = store.author_history("bilibili:1", "42", "New", first["next"])
+        self.assertEqual(len(first["events"]), 100)
+        self.assertEqual(len(second["events"]), 5)
+        self.assertIsNone(second["next"])
+        self.assertEqual(first["events"][0]["payload"]["text"], "104")
+        self.assertEqual(second["events"][-1]["payload"]["author"], "Old")
+
+    def test_author_history_falls_back_to_name_and_validates_input(self):
+        self.store.append([RoomEvents.message({
+            "_monitor_id": "youtube:1", "platform": "youtube", "author": "Viewer",
+            "text": "hello", "type": "textMessageEvent",
+        }, 1700000000)])
+        self.assertEqual(len(self.store.author_history("youtube:1", "0", "Viewer")["events"]), 1)
+        for uid, name, before, limit in (("", "", 0, 100), (None, "Viewer", 0, 100),
+                                        ("", "Viewer", -1, 100), ("", "Viewer", 0, 201)):
+            with self.subTest(uid=uid, before=before, limit=limit), self.assertRaises(ValueError):
+                self.store.author_history("youtube:1", uid, name, before, limit)
 
 if __name__ == "__main__":
     unittest.main()

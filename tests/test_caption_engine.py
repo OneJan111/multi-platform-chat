@@ -146,7 +146,7 @@ class CaptionEngineTests(unittest.TestCase):
         options = engine.CaptionOptions(
             provider="openai_compatible", api_base="http://localhost:1234/v1",
             api_model="my-model", api_key="fixture-key", background="Game stream",
-            glossary="HP: health", context_sentences=1,
+            glossary="HP: health", context_sentences=1, reasoning_effort="none",
         )
         session = self.session(options=options)
         recognizer = Mock()
@@ -160,6 +160,7 @@ class CaptionEngineTests(unittest.TestCase):
         self.assertEqual(api.call_args.kwargs, {
             "api_base": options.api_base, "api_key": "fixture-key", "model": "my-model",
             "background": "Game stream", "glossary": "HP: health", "context": ("hello",),
+            "reasoning_effort": "none",
         })
         self.assertEqual(session.snapshot()["segments"][-1]["translated"], "你好")
         self.assertNotIn("fixture-key", str(session.snapshot()))

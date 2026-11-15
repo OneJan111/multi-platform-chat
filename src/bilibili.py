@@ -444,6 +444,17 @@ def _decode_send_gift_v2(pb: str) -> list[dict]:
     return gifts
 
 
+def _danmaku_text(text: str, meta: list) -> str:
+    """Include reply targets that Bilibili sends outside the message body."""
+    name = emotes.parse_danmu_extra(meta).get("reply_uname")
+    if not isinstance(name, str) or not name.strip():
+        return text
+    mention = "@" + name.strip()
+    if re.match(re.escape(mention) + r"(?=$|\s|[:：,，])", text):
+        return text
+    return f"{mention} {text}"
+
+
 def _decode_interact_word_v2(pb: str) -> dict:
     """Decode an INTERACT_WORD_V2 packet into an INTERACT_WORD-shaped dict (schema from blivedm)."""
     try:
@@ -553,7 +564,7 @@ class DanmakuListener:
                         # info[7] = the sender's 大航海 level in this room
                         "membership": _guard_name(info[7] if len(info) > 7 else 0),
                         "membership_icon": _guard_icon(info[7] if len(info) > 7 else 0),
-                        "text": info[1],
+                        "text": _danmaku_text(info[1], meta),
                         "type": "danmaku",
                         # dm_type 1 = sticker/emoticon danmaku (big emote image)
                         "is_emoticon": len(meta) > 12 and meta[12] == 1,
@@ -702,7 +713,8 @@ class DanmakuListener:
         or blind-box price × num); price is the list unit price (or, for blind
         boxes, the unit value of the gift that came out of the box).
         """
-        num = int(data.get("num") or 1)
+        count = data.get("combo_num") or data.get("num") or data.get("gift_num") or 1
+        num = int(count) if combo else int(data.get("num") or 1)
         price_coins = data.get("combo_total_coin") if combo else data.get("total_coin")
         if not price_coins:
             price_coins = data.get("total_coin") or 0
@@ -717,7 +729,7 @@ class DanmakuListener:
         price = ""
         if paid and price_coins:
             price = f" (¥{_yuan(price_coins)}"
-            value_coins = 0 if combo else (data.get("price") or 0) * num
+            value_coins = (data.get("price") or 0) * num
             blind = data.get("blind_gift") if not combo else None
             if isinstance(blind, dict) and blind.get("original_gift_name"):
                 price += f" via {blind['original_gift_name']}"
@@ -727,7 +739,6 @@ class DanmakuListener:
                 price += f", list ¥{_yuan(value_coins)}"
             price += ")"
         gift_name = data.get("giftName") or data.get("gift_name") or ""
-        count = data.get("combo_num") or data.get("num") or data.get("gift_num") or 1
         msg = DanmakuListener._gift_msg(
             data.get("uname", ""), data.get("uid", ""), data.get("face", ""),
             f"🎁 {gift_name} ×{count}{price}", free=not paid,
@@ -1260,13 +1271,13 @@ def _avatar_risk_active() -> bool:
         return time.monotonic() < _avatar_risk_until
 
 
-def _avatar_risk_code(value) -> int | None:
+def _avatar_response_code(value) -> int | None:
     code = getattr(value, "code", None) if not isinstance(value, dict) else value.get("code")
     try:
         code = int(code)
     except (TypeError, ValueError):
         return None
-    return code if code in _AVATAR_RISK_CODES else None
+    return code
 
 
 def _pause_avatar_lookups(code: int) -> None:
@@ -1296,8 +1307,11 @@ def get_user_avatar(uid) -> str:
                 user.User(uid=uid, credential=_credential()).get_user_info()
             )
         except Exception as exc:
-            code = _avatar_risk_code(exc)
-            if code is not None:
+            code = _avatar_response_code(exc)
+            if code == -404:
+                log.warning("Bilibili avatar unavailable for uid %s: profile not found (-404)", uid)
+                return ""
+            if code in _AVATAR_RISK_CODES:
                 _pause_avatar_lookups(code)
                 return ""
             log.warning("Could not fetch Bilibili avatar via bilibili-api for uid %s", uid, exc_info=True)
@@ -1319,8 +1333,11 @@ def get_user_avatar(uid) -> str:
             return ""
         response.raise_for_status()
         payload = response.json()
-        code = _avatar_risk_code(payload)
-        if code is not None:
+        code = _avatar_response_code(payload)
+        if code == -404:
+            log.warning("Bilibili avatar unavailable for uid %s: profile not found (-404)", uid)
+            return ""
+        if code in _AVATAR_RISK_CODES:
             _pause_avatar_lookups(code)
             return ""
         data = payload.get("data") or {}
