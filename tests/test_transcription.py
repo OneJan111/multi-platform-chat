@@ -6,7 +6,9 @@ import types
 import unittest
 import wave
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, call, patch
+
+import numpy as np
 
 from src import bilibili, missevan, transcription
 
@@ -161,6 +163,199 @@ class TranscriptionSourceTests(unittest.TestCase):
 
 
 class TranscriptionWorkerTests(unittest.TestCase):
+    def test_input_language_is_passed_to_whisper_and_keeps_translation_separate(self):
+        for language in (None, "zh", "en", "ja", "ko"):
+            with self.subTest(language=language):
+                session = transcription.LiveTranscriber(
+                    "bilibili", "123", lambda: "https://example.test/live.flv",
+                    "zh-CN", ffmpeg_path="ffmpeg", source_language=language,
+                )
+                model = Mock()
+                model.transcribe.return_value = (
+                    iter([types.SimpleNamespace(text="hello", start=1.0)]),
+                    types.SimpleNamespace(language=language or "en"),
+                )
+                with tempfile.TemporaryDirectory() as folder, \
+                        patch("src.translate.translate", return_value=("translated", "en")) as translate:
+                    path = Path(folder) / "segment_000000.wav"
+                    path.write_bytes(b"wav")
+                    session._transcribe_file(model, path)
+                    model.transcribe.assert_called_once_with(
+                        str(path), beam_size=5, vad_filter=True, language=language,
+                        hotwords=None,
+                    )
+                segment = session.snapshot()["segments"][0]
+                self.assertEqual(segment["detected_language"], language or "en")
+                if language == "zh":
+                    translate.assert_not_called()
+                else:
+                    translate.assert_called_once_with("hello", "zh-CN")
+
+    def test_invalid_input_language_is_rejected_before_starting(self):
+        with self.assertRaisesRegex(ValueError, "Unsupported transcription language"):
+            transcription.LiveTranscriber(
+                "bilibili", "123", lambda: "unused", "en",
+                source_language="not-a-language",
+            )
+
+    def test_vocabulary_hints_are_forwarded_for_each_chunk_and_blank_disables_them(self):
+        for hints, expected in (("", None), ("   ", None), ("  ReazonSpeech, 哔哩哔哩  ", "ReazonSpeech, 哔哩哔哩")):
+            with self.subTest(hints=hints):
+                session = transcription.LiveTranscriber(
+                    "bilibili", "123", lambda: "unused", "en",
+                    translation_enabled=False, ffmpeg_path="ffmpeg",
+                    vocabulary_hints=hints,
+                )
+                model = Mock()
+                model.transcribe.side_effect = [
+                    (iter([types.SimpleNamespace(text="recognized", start=0.0)]),
+                     types.SimpleNamespace(language="en"))
+                    for _ in range(2)
+                ]
+                with tempfile.TemporaryDirectory() as folder:
+                    for index in range(2):
+                        path = Path(folder) / f"segment_{index:06d}.wav"
+                        path.write_bytes(b"wav")
+                        session._transcribe_file(model, path)
+                        self.assertEqual(model.transcribe.call_args.kwargs["hotwords"], expected)
+                self.assertEqual(len(session.snapshot()["segments"]), 2)
+
+    def test_model_loader_uses_cpu_and_warms_up_when_cuda_is_unavailable(self):
+        model = Mock()
+        warmed_up = []
+
+        def transcribe(audio, **kwargs):
+            if not isinstance(audio, np.ndarray):
+                raise ValueError("File object has no read() method")
+            self.assertEqual(audio.dtype, np.float32)
+            np.testing.assert_array_equal(audio, np.zeros(16000, dtype=np.float32))
+
+            def segments():
+                warmed_up.append(True)
+                yield types.SimpleNamespace(text="")
+
+            return segments(), None
+
+        model.transcribe.side_effect = transcribe
+        whisper = types.SimpleNamespace(WhisperModel=Mock(return_value=model))
+
+        with patch.dict(transcription._MODELS, {}, clear=True), \
+                patch.dict(sys.modules, {
+                    "ctranslate2": types.SimpleNamespace(get_cuda_device_count=lambda: 0),
+                    "faster_whisper": whisper,
+                }):
+            loaded = transcription._load_model("base")
+
+        self.assertIs(loaded, model)
+        whisper.WhisperModel.assert_called_once_with(
+            "base", device="cpu", compute_type="int8",
+        )
+        model.transcribe.assert_called_once()
+        self.assertEqual(model.transcribe.call_args.kwargs, {
+            "beam_size": 1,
+            "condition_on_previous_text": False,
+        })
+        self.assertEqual(warmed_up, [True])
+
+    @unittest.skipUnless(os.name == "nt", "Windows CUDA DLL setup")
+    def test_model_loader_configures_cuda_dlls_and_uses_float16(self):
+        class FakeDirectory:
+            def __init__(self, path):
+                self.path = path
+
+            def is_dir(self):
+                return True
+
+            def __str__(self):
+                return self.path
+
+        class FakeDistribution:
+            def locate_file(self, path):
+                return FakeDirectory("C:\\cuda\\" + path.replace("/", "\\"))
+
+        model = Mock()
+        model.transcribe.return_value = (iter(()), None)
+        whisper = types.SimpleNamespace(WhisperModel=Mock(return_value=model))
+
+        with patch.dict(transcription._MODELS, {}, clear=True), \
+                patch.object(transcription, "_CUDA_DLL_HANDLES", []), \
+                patch.dict(os.environ, {"PATH": "system-path"}), \
+                patch.dict(sys.modules, {
+                    "ctranslate2": types.SimpleNamespace(get_cuda_device_count=lambda: 1),
+                    "faster_whisper": whisper,
+                }), \
+                patch.object(transcription, "distribution", return_value=FakeDistribution()), \
+                patch.object(transcription.os, "add_dll_directory", return_value=object()) as add_dir:
+            loaded = transcription._load_model("small")
+            self.assertEqual(
+                os.environ["PATH"],
+                "C:\\cuda\\nvidia\\cudnn\\bin" + os.pathsep
+                + "C:\\cuda\\nvidia\\cublas\\bin" + os.pathsep + "system-path",
+            )
+
+        self.assertIs(loaded, model)
+        whisper.WhisperModel.assert_called_once_with(
+            "small", device="cuda", compute_type="float16",
+        )
+        self.assertEqual(add_dir.call_count, 2)
+
+    def test_missing_cuda_library_retries_cpu_and_caches_only_ready_model(self):
+        for phase in ("construction", "transcribe", "segments"):
+            with self.subTest(phase=phase):
+                error = RuntimeError("Library cublas64_12.dll is not found or cannot be loaded")
+                gpu = Mock()
+                cpu = Mock()
+                cpu.transcribe.return_value = (iter(()), None)
+                if phase == "transcribe":
+                    gpu.transcribe.side_effect = error
+                elif phase == "segments":
+                    def segments():
+                        raise error
+                        yield
+                    gpu.transcribe.return_value = (segments(), None)
+                factory = Mock(side_effect=[
+                    error if phase == "construction" else gpu, cpu,
+                ])
+
+                with patch.dict(transcription._MODELS, {}, clear=True), \
+                        patch.dict(sys.modules, {
+                            "ctranslate2": types.SimpleNamespace(get_cuda_device_count=lambda: 1),
+                            "faster_whisper": types.SimpleNamespace(WhisperModel=factory),
+                        }), \
+                        patch.object(transcription, "distribution", side_effect=transcription.PackageNotFoundError), \
+                        self.assertLogs(transcription.log, level="WARNING") as logs:
+                    self.assertIs(transcription._load_model("base"), cpu)
+                    self.assertIs(transcription._load_model("base"), cpu)
+
+                self.assertEqual(factory.call_args_list, [
+                    call("base", device="cuda", compute_type="float16"),
+                    call("base", device="cpu", compute_type="int8"),
+                ])
+                cpu.transcribe.assert_called_once()
+                self.assertTrue(any("retrying Whisper on CPU" in entry for entry in logs.output))
+
+    def test_unrelated_cuda_and_cpu_errors_are_not_hidden(self):
+        for cuda_count, detail in (
+            (1, "Invalid model file"),
+            (0, "Library cublas64_12.dll is not found or cannot be loaded"),
+        ):
+            with self.subTest(cuda_count=cuda_count):
+                model = Mock()
+                model.transcribe.side_effect = RuntimeError(detail)
+                factory = Mock(return_value=model)
+                with patch.dict(transcription._MODELS, {}, clear=True), \
+                        patch.dict(sys.modules, {
+                            "ctranslate2": types.SimpleNamespace(
+                                get_cuda_device_count=lambda: cuda_count,
+                            ),
+                            "faster_whisper": types.SimpleNamespace(WhisperModel=factory),
+                        }), \
+                        patch.object(transcription, "distribution", side_effect=transcription.PackageNotFoundError):
+                    with self.assertRaisesRegex(RuntimeError, detail):
+                        transcription._load_model("base")
+                    self.assertNotIn("base", transcription._MODELS)
+                factory.assert_called_once()
+
     def test_elapsed_timestamp_includes_chunk_offset_and_skipped_silence(self):
         session = transcription.LiveTranscriber(
             platform="youtube",

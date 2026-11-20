@@ -1,9 +1,10 @@
 import unittest
 from types import SimpleNamespace
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, call, patch
 
 import desktop_app
 from src import user_login
+from src import browser_cookies
 
 
 class _ComboBox:
@@ -37,6 +38,94 @@ class _ComboBox:
 
 
 class DesktopYouTubeAccountTests(unittest.TestCase):
+    def _cookie_window(self, logins=None):
+        window = SimpleNamespace(
+            cookie_browser=Mock(), cookie_site=Mock(), cookie_input=Mock(),
+            cookie_status=Mock(), _login_data=logins if logins is not None else {},
+            _ui_language="en",
+            i18n=SimpleNamespace(translate=lambda text, language, **kwargs: text.format(**kwargs)),
+            _persist_logins=Mock(return_value=True),
+            _reset_youtube_account_combo=Mock(),
+            _run_task=lambda function, callback: callback(function()),
+        )
+        window.cookie_browser.currentText.return_value = "Firefox"
+        window.cookie_site.currentText.return_value = "Bilibili"
+        return window
+
+    def test_firefox_import_verifies_and_saves_all_sites_without_displaying_cookie_values(self):
+        window = self._cookie_window({"youtube_page_id": "old-channel"})
+        with patch("src.browser_cookies.read_cookies", side_effect=[
+            {"SESSDATA": "bili-cookie", "unrelated": "discard"},
+            {"SAPISID": "youtube-cookie"}, {"session": "missevan-cookie"},
+        ]) as read, \
+                patch("src.browser_cookies.verify_bilibili_login", return_value={"is_login": True, "uname": "Bili"}), \
+                patch("src.youtube_web.verify_login", return_value={"is_login": True, "name": "YouTube"}), \
+                patch("src.missevan.verify_login", return_value={"is_login": True, "username": "MissEvan"}):
+            desktop_app._DesktopWindow._read_browser_cookies(window)
+
+        self.assertEqual(read.call_args_list, [
+            call("firefox", domain) for domain in browser_cookies.SITES.values()
+        ])
+        self.assertEqual(window._login_data, {
+            "bilibili": {"SESSDATA": "bili-cookie"},
+            "youtube": {"SAPISID": "youtube-cookie"},
+            "missevan": {"session": "missevan-cookie"},
+        })
+        window._persist_logins.assert_called_once()
+        window._reset_youtube_account_combo.assert_called_once()
+        window.cookie_input.setText.assert_not_called()
+        message = window.cookie_status.setText.call_args.args[0]
+        for site in browser_cookies.SITES:
+            self.assertIn(site + ": signed in as", message)
+        self.assertNotIn("-cookie", message)
+
+    def test_partial_firefox_import_keeps_failed_site_login_and_manual_input(self):
+        window = self._cookie_window({
+            "bilibili": {"SESSDATA": "old-bili"},
+            "youtube": {"SAPISID": "old-youtube"}, "youtube_page_id": "keep-channel",
+        })
+        with patch("src.browser_cookies.read_cookies", side_effect=[
+            browser_cookies.CookieReadError("profile locked"),
+            {"SAPISID": "expired"}, {"session": "new-missevan"},
+        ]), \
+                patch("src.youtube_web.verify_login", return_value={"is_login": False, "error": "expired"}), \
+                patch("src.missevan.verify_login", return_value={"is_login": True, "username": "MissEvan"}):
+            desktop_app._DesktopWindow._read_browser_cookies(window)
+
+        self.assertEqual(window._login_data["bilibili"], {"SESSDATA": "old-bili"})
+        self.assertEqual(window._login_data["youtube"], {"SAPISID": "old-youtube"})
+        self.assertEqual(window._login_data["youtube_page_id"], "keep-channel")
+        self.assertEqual(window._login_data["missevan"], {"session": "new-missevan"})
+        window._persist_logins.assert_called_once()
+        window._reset_youtube_account_combo.assert_not_called()
+        window.cookie_input.clear.assert_not_called()
+        message = window.cookie_status.setText.call_args.args[0]
+        self.assertIn("profile locked", message)
+        self.assertIn("expired", message)
+
+    def test_empty_browser_cookies_do_not_save_or_remove_existing_logins(self):
+        window = self._cookie_window({"youtube": {"SAPISID": "existing"}})
+        with patch("src.browser_cookies.read_cookies", return_value={}):
+            desktop_app._DesktopWindow._read_browser_cookies(window)
+        self.assertEqual(window._login_data, {"youtube": {"SAPISID": "existing"}})
+        window._persist_logins.assert_not_called()
+        message = window.cookie_status.setText.call_args.args[0]
+        for site in browser_cookies.SITES:
+            self.assertIn(f"No {site} cookies found in Firefox.", message)
+
+    def test_import_reports_persistence_failure_and_keeps_pasted_import_site_specific(self):
+        window = self._cookie_window()
+        window._persist_logins.return_value = False
+        window._login_context = lambda: user_login.using(window._login_data)
+        window.cookie_input.text.return_value = "SESSDATA=new-bili"
+        with patch("src.browser_cookies.verify_bilibili_login", return_value={"is_login": True, "uname": "Bili"}), \
+                patch("src.youtube_web.verify_login") as youtube, \
+                patch("src.missevan.verify_login") as missevan:
+            desktop_app._DesktopWindow._import_cookies(window)
+        youtube.assert_not_called()
+        missevan.assert_not_called()
+        self.assertIn("Unable to save login cookies", window.cookie_status.setText.call_args.args[0])
+
     def test_discovery_populates_youtube_channels_and_preserves_current_selection(self):
         combo = _ComboBox()
         combo.addItem("stale account", 5)

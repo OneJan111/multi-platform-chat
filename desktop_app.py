@@ -594,6 +594,30 @@ _DESKTOP_STRINGS: dict[str, tuple[str, str]] = {
     "Remove selected allow pattern": ("删除所选允许规则", "選択した許可パターンを削除"),
     "Remove selected block pattern": ("删除所选屏蔽规则", "選択したブロックパターンを削除"),
     "Room to transcribe": ("要转录的直播间", "文字起こしするルーム"),
+    "Transcribing language": ("转录输入语言", "文字起こしの入力言語"),
+    "Vocabulary hints": ("词汇提示", "語彙ヒント"),
+    "Read and verify all sites": ("读取并验证所有网站", "全サイトを読み込み・確認"),
+    "Reading {browser} cookies for all supported sites…": (
+        "正在从 {browser} 读取所有支持网站的 Cookie…",
+        "{browser} から全対応サイトの Cookie を読み込み中…",
+    ),
+    "{site}: signed in as {name}": (
+        "{site}：已登录为 {name}", "{site}：{name} としてログイン",
+    ),
+    "{site}: login not changed — {error}": (
+        "{site}：登录未更改 — {error}", "{site}：ログインは変更されません — {error}",
+    ),
+    "No {site} cookies found in {browser}.": (
+        "{browser} 中未找到 {site} 的 Cookie。",
+        "{browser} に {site} の Cookie が見つかりません。",
+    ),
+    "Optional names and terms, separated by commas": (
+        "可选：人名和专业词汇，用逗号分隔", "任意：名前や専門用語をカンマで区切って入力"
+    ),
+    "Hints guide recognition but do not force these words into the transcript. Changes apply to new sessions.": (
+        "提示用于辅助识别，不会强制将这些词写入转录。更改在新会话中生效。",
+        "ヒントは認識を補助しますが、文字起こしへの出力を強制するものではありません。変更は新しいセッションに適用されます。",
+    ),
     " s window": (" 秒窗口", " 秒ウィンドウ"),
     "Save danmaku, Super Chats and gifts to an XML file next to each video": (
         "将弹幕、醒目留言和礼物保存为视频旁的 XML 文件",
@@ -3962,7 +3986,7 @@ if QtCore is not None:
             row = QtWidgets.QHBoxLayout()
             import_button = QtWidgets.QPushButton("Verify and save login")
             import_button.clicked.connect(self._import_cookies)
-            read_button = QtWidgets.QPushButton("Read from browser")
+            read_button = QtWidgets.QPushButton("Read and verify all sites")
             read_button.clicked.connect(self._read_browser_cookies)
             clear_button = QtWidgets.QPushButton("Clear saved login")
             clear_button.clicked.connect(self._clear_login)
@@ -4186,6 +4210,26 @@ if QtCore is not None:
             self.transcribe_model.setCurrentText("base")
             self._persist_widget(self.transcribe_model, "transcribe_model")
             form.addRow("Whisper model", self.transcribe_model)
+            self.transcribe_language = QtWidgets.QComboBox()
+            for label, code in (
+                ("Auto-detect", ""),
+                ("中文", "zh"),
+                ("English", "en"),
+                ("日本語", "ja"),
+                ("한국어", "ko"),
+            ):
+                self.transcribe_language.addItem(label, code)
+            self._persist_widget(self.transcribe_language, "transcribe_language")
+            form.addRow("Transcribing language", self.transcribe_language)
+            self.transcribe_vocabulary = QtWidgets.QLineEdit()
+            self.transcribe_vocabulary.setPlaceholderText(
+                "Optional names and terms, separated by commas"
+            )
+            self.transcribe_vocabulary.setToolTip(
+                "Hints guide recognition but do not force these words into the transcript. Changes apply to new sessions."
+            )
+            self._persist_widget(self.transcribe_vocabulary, "transcribe_vocabulary")
+            form.addRow("Vocabulary hints", self.transcribe_vocabulary)
             self.transcribe_translation = QtWidgets.QCheckBox("Translate transcription")
             self.transcribe_translation.setChecked(True)
             self._persist_widget(self.transcribe_translation, "transcribe_translation")
@@ -5275,7 +5319,9 @@ if QtCore is not None:
                     self, "chat_room_selectors", {}
                 ).items()
             }
-            feed_messages = {"paid": self._paid, "joins": self._joins}.get(feed, self._messages)
+            feed_messages = {"paid": self._paid, "joins": self._joins}.get(
+                feed, self._messages + self._paid
+            )
             messages = [
                 message
                 for message in feed_messages
@@ -5283,7 +5329,11 @@ if QtCore is not None:
                     message, selected_ids, room_ids
                 )
             ]
-            return sorted(messages, key=lambda message: message.get("_arrived", 0))
+            messages.sort(key=lambda message: message.get("_arrived", 0))
+            return (
+                _limit_messages_per_room(messages, self.max_messages.value())
+                if feed == "chat" else messages
+            )
 
         def _copy_messages(self, messages):
             if not messages:
@@ -7038,7 +7088,7 @@ if QtCore is not None:
             self._refresh_filters()
 
         def _import_cookies(self):
-            from src import browser_cookies as bc, missevan, user_login, youtube_web
+            from src import browser_cookies as bc
             site = self.cookie_site.currentText()
             raw = self.cookie_input.text()
             try:
@@ -7046,26 +7096,7 @@ if QtCore is not None:
                 if not cookies:
                     raise ValueError("No cookies were found.")
                 with self._login_context():
-                    if site == "Bilibili":
-                        if not cookies.get("SESSDATA"):
-                            raise ValueError("Bilibili cookies must include SESSDATA.")
-                        result = bc.verify_bilibili_login(cookies)
-                        if result.get("error") or not result.get("is_login"):
-                            raise ValueError(result.get("error") or "Bilibili rejected these cookies.")
-                        bc.save_bilibili_credentials(cookies)
-                        name = result.get("uname", "")
-                    elif site == "MissEvan":
-                        result = missevan.verify_login(cookies)
-                        if result.get("error") or not result.get("is_login"):
-                            raise ValueError(result.get("error") or "MissEvan rejected these cookies.")
-                        missevan.save_login(cookies)
-                        name = result.get("username", "")
-                    else:
-                        result = youtube_web.verify_login(cookies)
-                        if result.get("error") or not result.get("is_login"):
-                            raise ValueError(result.get("error") or "YouTube rejected these cookies.")
-                        youtube_web.save_login(cookies)
-                        name = result.get("name", "")
+                    name = bc.verify_and_save_login(site, cookies)
                 if site == "YouTube":
                     self._reset_youtube_account_combo()
                 if not self._persist_logins():
@@ -7189,20 +7220,60 @@ if QtCore is not None:
                 )
 
         def _read_browser_cookies(self):
-            from src import browser_cookies as bc
+            from src import browser_cookies as bc, user_login
             browser = self.cookie_browser.currentText()
-            site = self.cookie_site.currentText()
             if browser not in bc.BROWSERS:
                 self.cookie_status.setText("Select Firefox as the cookie source, or paste cookies and choose Verify and save login.")
                 return
+            self.cookie_status.setText(self.i18n.translate(
+                "Reading {browser} cookies for all supported sites…",
+                self._ui_language, browser=browser,
+            ))
+
             def read():
-                return bc.read_cookies(bc.BROWSERS[browser], bc.SITES[site])
-            def done(cookies):
-                if not cookies:
-                    self.cookie_status.setText(f"No {site} cookies found in {browser}.")
-                else:
-                    self.cookie_input.setText("; ".join(f"{k}={v}" for k, v in cookies.items()))
-                    self.cookie_status.setText(f"Read {len(cookies)} cookies. Review then choose Verify and save login.")
+                results = {}
+                for site, domain in bc.SITES.items():
+                    try:
+                        cookies = bc.read_cookies(bc.BROWSERS[browser], domain)
+                        if not cookies:
+                            results[site] = {"error": self.i18n.translate(
+                                "No {site} cookies found in {browser}.",
+                                self._ui_language, site=site, browser=browser,
+                            )}
+                            continue
+                        stored = {}
+                        with user_login.using(stored):
+                            name = bc.verify_and_save_login(site, cookies)
+                        results[site] = {"name": name, "cookies": stored[site.lower()]}
+                    except bc.CookieReadError as exc:
+                        results[site] = {"error": str(exc)}
+                return results
+
+            def done(results):
+                messages = []
+                imported = False
+                for site, result in results.items():
+                    if "cookies" in result:
+                        self._login_data[site.lower()] = result["cookies"]
+                        if site == "YouTube":
+                            self._login_data.pop("youtube_page_id", None)
+                            self._reset_youtube_account_combo()
+                        imported = True
+                        messages.append(self.i18n.translate(
+                            "{site}: signed in as {name}", self._ui_language,
+                            site=site, name=result["name"],
+                        ))
+                    else:
+                        messages.append(self.i18n.translate(
+                            "{site}: login not changed — {error}", self._ui_language,
+                            site=site, error=result["error"],
+                        ))
+                if imported and not self._persist_logins():
+                    messages.append(self.i18n.translate(
+                        "Unable to save login cookies to application settings.", self._ui_language,
+                    ))
+                self.cookie_status.setText("\n".join(messages))
+
             self._run_task(read, done)
 
         def _persist_logins(self):
@@ -7745,6 +7816,8 @@ if QtCore is not None:
                 self._transcriber = transcription.LiveTranscriber(
                     platform, source_id, resolver, self._translate_target,
                     self.transcribe_model.currentText(), self.transcribe_translation.isChecked(),
+                    source_language=self.transcribe_language.currentData() or None,
+                    vocabulary_hints=self.transcribe_vocabulary.text(),
                 )
                 self._transcriber.start()
                 self._transcription_sessions.append(

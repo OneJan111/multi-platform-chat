@@ -9,6 +9,35 @@ import desktop_app
 
 @unittest.skipIf(desktop_app.QtWidgets is None, "PySide6 is not installed")
 class TranscriptionLifecycleTests(unittest.TestCase):
+    def test_begin_passes_selected_input_language_to_worker(self):
+        for language in ("", "zh", "en", "ja", "ko"):
+            with self.subTest(language=language):
+                window = SimpleNamespace(
+                    _transcriber=None, _translate_target="zh-CN",
+                    transcribe_model=Mock(), transcribe_translation=Mock(),
+                    transcribe_language=Mock(), transcribe_vocabulary=Mock(),
+                    _transcription_sessions=[],
+                    _transcription_destination=Path("transcript.txt"),
+                    _transcription_lrc_offset=0, _room_names={},
+                    transcription_status=Mock(),
+                )
+                window.transcribe_model.currentText.return_value = "base"
+                window.transcribe_translation.isChecked.return_value = True
+                window.transcribe_language.currentData.return_value = language
+                window.transcribe_vocabulary.text.return_value = "ReazonSpeech, Bilibili"
+                with patch("src.transcription.LiveTranscriber") as factory:
+                    desktop_app._DesktopWindow._begin_transcription(window, {
+                        "id": "bilibili:123", "platform": "bilibili", "target": "123",
+                    })
+                    self.assertEqual(
+                        factory.call_args.kwargs["source_language"], language or None,
+                    )
+                    self.assertEqual(
+                        factory.call_args.kwargs["vocabulary_hints"], "ReazonSpeech, Bilibili",
+                    )
+                    factory.return_value.start.assert_called_once()
+                    self.assertEqual(len(window._transcription_sessions), 1)
+
     def test_startup_notifies_once_for_room_already_live(self):
         monitor_id = "youtube:channel"
         target = {

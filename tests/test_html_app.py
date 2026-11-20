@@ -324,6 +324,36 @@ class HtmlDashboardTests(unittest.TestCase):
         self.dashboard.action({"action": "settings", "values": {"visible_sites": ["youtube"]}})
         self.assertEqual(self.dashboard.snapshot()["messages"], [])
 
+    def test_main_chat_repeats_paid_events_from_thank_you_feed_without_double_counting(self):
+        room = self.add_room()
+        messages = [
+            {"id": "chat", "type": "danmaku", "text": "hello"},
+            {"id": "sc", "type": "superchat", "text": "support", "currency": "¥", "value": 30},
+            {"id": "gift", "type": "gift", "text": "flower", "currency": "¥", "value": 2},
+            {"id": "free", "type": "gift", "text": "free flower", "value": 0},
+            {"id": "join", "type": "enter", "text": "joined"},
+        ]
+        self.dashboard.receive_messages([
+            dict(message, _monitor_id=room, platform="bilibili", author="Viewer")
+            for message in messages
+        ])
+        self.dashboard.settings["max_messages"] = 3
+
+        state = self.dashboard.snapshot()
+
+        self.assertEqual([m["id"] for m in state["messages"]], ["sc", "gift", "free"])
+        self.assertEqual([m["id"] for m in state["paid"]], ["sc", "gift", "free"])
+        self.assertEqual([m["id"] for m in state["joins"]], ["join"])
+        self.assertEqual(state["bilibili_gift_revenue"][room], "¥2")
+        self.dashboard.action({
+            "action": "message", "command": "thank", "id": state["paid"][0]["_html_id"],
+        })
+        state = self.dashboard.snapshot()
+        self.assertTrue(state["messages"][0]["_thanked"])
+        self.assertTrue(state["paid"][0]["_thanked"])
+        self.assertEqual(len(state["messages"]), 3)
+        self.assertEqual(len(state["paid"]), 3)
+
     def test_messages_archive_and_latest_500_are_browser_downloadable(self):
         room = self.add_room()
         self.dashboard.receive_messages([{
@@ -384,7 +414,7 @@ class HtmlDashboardTests(unittest.TestCase):
             "sticker_url": "https://yt3.ggpht.com/gift.png",
         }])
         state = self.dashboard.snapshot()
-        self.assertEqual(state["messages"], [])
+        self.assertEqual([m["text"] for m in state["messages"]], ["Sent Fired up"])
         self.assertEqual(state["paid"][0]["value"], 5)
         self.assertEqual(state["paid"][0]["avatar"], "")
         self.assertEqual(state["paid"][0]["sticker_url"], "https://yt3.ggpht.com/gift.png")
@@ -536,7 +566,8 @@ class HtmlDashboardTests(unittest.TestCase):
             {"_monitor_id": room, "platform": "bilibili", "author": "Spammer", "author_id": "9", "text": "spam"},
         ])
         state = self.dashboard.snapshot()
-        gift, spam = state["paid"][0]["_html_id"], state["messages"][0]["_html_id"]
+        gift = state["paid"][0]["_html_id"]
+        spam = next(m["_html_id"] for m in state["messages"] if m.get("id") != "g1")
         self.assertEqual(self.dashboard.action({"action": "message", "command": "thank", "id": gift})["thanked"], True)
         with self.assertRaisesRegex(ValueError, "gift or paid"):
             self.dashboard.action({"action": "message", "command": "thank", "id": spam})
@@ -547,7 +578,7 @@ class HtmlDashboardTests(unittest.TestCase):
         self.assertEqual(job["result"], {"muted": "Spammer"})
         block.assert_called_once_with("123", 9)
         self.dashboard.action({"action": "message", "command": "block", "id": spam})
-        self.assertEqual(self.dashboard.snapshot()["messages"], [])
+        self.assertEqual([m["id"] for m in self.dashboard.snapshot()["messages"]], ["g1"])
         self.assertEqual(self.dashboard.snapshot()["filters"]["blocked_users"], {"bilibili:9": "Spammer"})
         self.dashboard.action({"action": "moderation", "unblock": "bilibili:9", "kind": "user"})
         self.assertEqual(self.dashboard.snapshot()["filters"]["blocked_users"], {})

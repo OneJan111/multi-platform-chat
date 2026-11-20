@@ -1002,8 +1002,15 @@ def _render_feeds() -> None:
         gift_utils.format_amount(currency, amount)
         for currency, amount in sorted(totals.items())
     ) or "—"
-    gifts_html = _feed_messages_html(_gift_messages(), browser_timezone)
-    chat_html = _feed_messages_html(_chat_messages(), browser_timezone)
+    gift_messages = _gift_messages()
+    gifts_html = _feed_messages_html(gift_messages, browser_timezone)
+    chat_html = _feed_messages_html(
+        sorted(
+            _chat_messages() + gift_messages,
+            key=lambda message: message.get("_simple_arrived", 0),
+        ),
+        browser_timezone,
+    )
     st.html(
         """
         <style>

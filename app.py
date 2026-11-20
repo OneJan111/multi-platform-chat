@@ -3625,10 +3625,9 @@ with page_chat:
             p for p, key in (("youtube", "show_yt"), ("bilibili", "show_bili"), ("missevan", "show_me"))
             if not st.session_state.get(key, True)
         }
-        # All gifts, including free gifts, and other paid events have their own column.
         msgs = [
             m for m in st.session_state["chat_messages"]
-            if m.get("platform") not in hidden_platforms and not (is_paid(m) or is_gift(m))
+            if m.get("platform") not in hidden_platforms
         ]
         paid_all = [m for m in st.session_state["paid_messages"] if m.get("platform") not in hidden_platforms]
         topbar = st.container(horizontal=True, vertical_alignment="center", gap="small", key="show_row")

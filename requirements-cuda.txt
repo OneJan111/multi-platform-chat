@@ -1,0 +1,2 @@
+nvidia-cublas-cu12>=12.8,<13
+nvidia-cudnn-cu12>=9,<10

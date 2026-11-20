@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import shutil
 import subprocess
 import tempfile
@@ -9,15 +10,18 @@ import threading
 import time
 from collections import deque
 from datetime import datetime
+from importlib.metadata import PackageNotFoundError, distribution
 from pathlib import Path
 from typing import Callable
 
 log = logging.getLogger(__name__)
 
 MODEL_SIZES = ("tiny", "base", "small")
+SOURCE_LANGUAGES = ("zh", "en", "ja", "ko")
 SEGMENT_SECONDS = 8
 _MODEL_LOCK = threading.Lock()
 _MODELS: dict[str, object] = {}
+_CUDA_DLL_HANDLES = []
 
 
 def language_differs_from_target(source_language: str, target_language: str) -> bool:
@@ -92,12 +96,60 @@ def _load_model(model_size: str):
         model = _MODELS.get(model_size)
         if model is None:
             try:
+                import ctranslate2
+                import numpy as np
                 from faster_whisper import WhisperModel
             except ImportError as exc:
                 raise RuntimeError(
                     "Local transcription requires faster-whisper. Install the project requirements."
                 ) from exc
-            model = WhisperModel(model_size, device="cpu", compute_type="int8")
+
+            device = "cuda" if ctranslate2.get_cuda_device_count() else "cpu"
+            if device == "cuda" and os.name == "nt":
+                for package, library in (
+                    ("nvidia-cublas-cu12", "cublas"),
+                    ("nvidia-cudnn-cu12", "cudnn"),
+                ):
+                    try:
+                        directory = distribution(package).locate_file(
+                            f"nvidia/{library}/bin"
+                        )
+                    except PackageNotFoundError:
+                        log.warning(
+                            "%s is not installed; CUDA libraries must be on PATH", package
+                        )
+                        continue
+                    if directory.is_dir():
+                        _CUDA_DLL_HANDLES.append(os.add_dll_directory(str(directory)))
+                        current_path = os.environ.get("PATH", "")
+                        if str(directory) not in current_path.split(os.pathsep):
+                            os.environ["PATH"] = str(directory) + os.pathsep + current_path
+
+            devices = ("cuda", "cpu") if device == "cuda" else ("cpu",)
+            for device in devices:
+                compute_type = "float16" if device == "cuda" else "int8"
+                try:
+                    model = WhisperModel(model_size, device=device, compute_type=compute_type)
+                    log.info("Warming up Whisper on %s (%s)", device, compute_type)
+                    list(model.transcribe(
+                        np.zeros(16000, dtype=np.float32),
+                        beam_size=1,
+                        condition_on_previous_text=False,
+                    )[0])
+                    break
+                except RuntimeError as exc:
+                    detail = str(exc).lower()
+                    missing_cuda_library = (
+                        any(name in detail for name in ("cublas", "cudnn"))
+                        and ("not found" in detail or "cannot be loaded" in detail)
+                    )
+                    if device != "cuda" or not missing_cuda_library:
+                        raise
+                    log.warning(
+                        "CUDA speech runtime is unavailable (%s); retrying Whisper on CPU.",
+                        exc,
+                    )
+            log.info("Whisper model ready on %s (%s)", device, compute_type)
             _MODELS[model_size] = model
         return model
 
@@ -114,16 +166,22 @@ class LiveTranscriber:
         model_size: str = "base",
         translation_enabled: bool = True,
         ffmpeg_path: str | None = None,
+        source_language: str | None = None,
+        vocabulary_hints: str = "",
     ):
         if platform not in ("youtube", "bilibili", "missevan"):
             raise ValueError(f"Unsupported transcription platform: {platform}")
         if model_size not in MODEL_SIZES:
             raise ValueError(f"Unsupported Whisper model size: {model_size}")
+        if source_language is not None and source_language not in SOURCE_LANGUAGES:
+            raise ValueError(f"Unsupported transcription language: {source_language}")
         self.platform = platform
         self.source_id = source_id
         self.target_language = target_language
         self.translation_enabled = translation_enabled
         self.model_size = model_size
+        self.source_language = source_language
+        self.vocabulary_hints = vocabulary_hints.strip()
         self._source_resolver = source_resolver
         self._ffmpeg_path = ffmpeg_path or shutil.which("ffmpeg")
         self._lock = threading.Lock()
@@ -304,7 +362,11 @@ class LiveTranscriber:
         timestamp = datetime.now().astimezone().strftime("%H:%M:%S")
         try:
             timestamp = datetime.fromtimestamp(audio_file.stat().st_mtime).astimezone().strftime("%H:%M:%S")
-            transcribed, info = model.transcribe(str(audio_file), beam_size=5, vad_filter=True)
+            transcribed, info = model.transcribe(
+                str(audio_file), beam_size=5, vad_filter=True,
+                language=self.source_language,
+                hotwords=self.vocabulary_hints or None,
+            )
             parts = [part for part in transcribed if part.text.strip()]
             original = " ".join(part.text.strip() for part in parts).strip()
             if not original:

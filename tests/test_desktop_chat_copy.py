@@ -13,6 +13,41 @@ from desktop_app import (
 
 
 class DesktopChatCopyTests(unittest.TestCase):
+    @unittest.skipIf(desktop_app.QtWidgets is None, "PySide6 is not installed")
+    def test_main_chat_includes_paid_events_without_changing_thank_you_feed(self):
+        def message(message_id, kind, arrived, room="bilibili:1"):
+            return {
+                "id": message_id, "type": kind, "_arrived": arrived,
+                "platform": "bilibili", "_monitor_id": room,
+            }
+
+        chat = [message("first", "danmaku", 1), message("last", "danmaku", 4)]
+        paid = [
+            message("sc", "superchat", 2), message("gift", "gift", 3),
+            message("other-room", "gift", 5, "bilibili:2"),
+        ]
+        joins = [message("join", "enter", 0)]
+        window = SimpleNamespace(
+            _active_feed="chat", _messages=chat, _paid=paid, _joins=joins,
+            _monitor_targets=[{"id": "bilibili:1"}, {"id": "bilibili:2"}],
+            chat_room_selectors={"bilibili": Mock(currentData=lambda: "bilibili:1")},
+            site_visible={"bilibili": Mock(isChecked=lambda: True)},
+            max_messages=Mock(value=lambda: 3),
+        )
+        window._message_visible_in_chat = lambda *args: (
+            desktop_app._DesktopWindow._message_visible_in_chat(window, *args)
+        )
+        visible = desktop_app._DesktopWindow._visible_chat_messages
+
+        self.assertEqual([m["id"] for m in visible(window)], ["sc", "gift", "last"])
+        self.assertEqual([m["id"] for m in visible(window, "paid")], ["sc", "gift"])
+        self.assertEqual(visible(window, "joins"), joins)
+        self.assertEqual(window._messages, chat)
+        self.assertEqual(window._paid, paid)
+        window.site_visible["bilibili"].isChecked = lambda: False
+        self.assertEqual(visible(window), [])
+        self.assertEqual(visible(window, "paid"), [])
+
     def test_saved_chat_messages_display_newest_first(self):
         messages = [{"text": "first"}, {"text": "second"}, {"text": "third"}]
 

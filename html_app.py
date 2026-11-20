@@ -746,7 +746,7 @@ class Dashboard:
             limit = settings["max_messages"]
             selected = [m for m in self.messages if self.selected_room(m, settings)]
             feeds = {
-                "messages": [m for m in selected if not m.get("_paid")][-limit:],
+                "messages": selected[-limit:],
                 "paid": [m for m in selected if m.get("_paid")][-limit:],
                 "joins": [m for m in self.joins if self.selected_room(m, settings)][-limit:],
             }

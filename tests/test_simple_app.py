@@ -8,7 +8,7 @@ from unittest.mock import Mock
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from src import emotes, reading
-from src.tts import resolve_language
+from src.tts import is_gift, is_paid, resolve_language
 from src.background_poll import BackgroundPoll
 
 
@@ -16,6 +16,85 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class SimpleAppConfigTests(unittest.TestCase):
+    def test_dashboard_main_chat_keeps_gifts_and_superchats_and_respects_hidden_sites(self):
+        tree = ast.parse((ROOT / "app.py").read_text(encoding="utf-8"))
+        append = next(
+            node for node in tree.body
+            if isinstance(node, ast.FunctionDef) and node.name == "_append_chat_message"
+        )
+        live = next(
+            node for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef) and node.name == "_chat_live"
+        )
+        selections = [
+            node for node in live.body
+            if isinstance(node, ast.Assign)
+            and any(isinstance(target, ast.Name) and target.id in {"msgs", "paid_all"}
+                    for target in node.targets)
+        ]
+        state = {"chat_messages": [], "paid_messages": [], "join_messages": []}
+        namespace = {
+            "st": SimpleNamespace(session_state=state),
+            "is_paid": is_paid, "is_gift": is_gift,
+            "hidden_platforms": {"missevan"},
+        }
+        exec(compile(ast.Module(body=[append], type_ignores=[]), "app.py", "exec"), namespace)
+        messages = [
+            {"id": "chat", "platform": "youtube", "type": "textMessageEvent"},
+            {"id": "sc", "platform": "youtube", "type": "superChatEvent"},
+            {"id": "gift", "platform": "bilibili", "type": "gift"},
+            {"id": "hidden", "platform": "missevan", "type": "gift"},
+            {"id": "join", "platform": "bilibili", "type": "enter"},
+        ]
+        for message in messages:
+            namespace["_append_chat_message"](message)
+        exec(compile(ast.Module(body=selections, type_ignores=[]), "app.py", "exec"), namespace)
+
+        self.assertEqual([m["id"] for m in namespace["msgs"]], ["chat", "sc", "gift"])
+        self.assertEqual([m["id"] for m in namespace["paid_all"]], ["sc", "gift"])
+        self.assertEqual([m["id"] for m in state["join_messages"]], ["join"])
+
+    def test_simple_monitors_combine_chats_and_gifts_in_arrival_order(self):
+        tree = ast.parse((ROOT / "simple_app.py").read_text(encoding="utf-8"))
+        functions = [
+            node for node in tree.body if isinstance(node, ast.FunctionDef)
+            and node.name in {"_render_feeds", "_chat_messages", "_gift_messages"}
+        ]
+        chat = [{"id": "first", "_simple_arrived": 1}, {"id": "last", "_simple_arrived": 4}]
+        paid = [
+            {"id": "sc", "type": "superchat", "_simple_arrived": 2},
+            {"id": "gift", "type": "gift", "_simple_arrived": 3},
+        ]
+        for server_history in (False, True):
+            with self.subTest(server_history=server_history):
+                render = Mock(side_effect=["paid feed", "combined chat feed"])
+                namespace = {
+                    "_SERVER_HISTORY_ENABLED": server_history,
+                    "_server_history": lambda: SimpleNamespace(
+                        chat=lambda: chat, gifts=lambda: paid,
+                    ),
+                    "st": SimpleNamespace(
+                        session_state={"simple_chat": chat, "simple_gifts": paid},
+                        context=SimpleNamespace(timezone=""), html=Mock(), markdown=Mock(),
+                    ),
+                    "_profit_totals": lambda: {},
+                    "_feed_messages_html": render,
+                    "_t": lambda text, **kwargs: text.format(**kwargs),
+                    "html": html,
+                }
+                exec(compile(ast.Module(body=functions, type_ignores=[]), "simple_app.py", "exec"), namespace)
+
+                namespace["_render_feeds"]()
+
+                self.assertEqual(render.call_count, 2)
+                self.assertEqual(render.call_args_list[0].args[0], paid)
+                self.assertEqual(
+                    [m["id"] for m in render.call_args_list[1].args[0]],
+                    ["first", "sc", "gift", "last"],
+                )
+                self.assertEqual([m["id"] for m in chat], ["first", "last"])
+                self.assertEqual([m["id"] for m in paid], ["sc", "gift"])
+
     def test_dashboard_super_admin_message_uses_highlight_class(self):
         source = (ROOT / "app.py").read_text(encoding="utf-8")
         function = next(

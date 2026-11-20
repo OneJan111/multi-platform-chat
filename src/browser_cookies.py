@@ -169,6 +169,32 @@ def mask(value: str) -> str:
     return f"{value[:4]}…{value[-4:]} ({len(value)} chars)"
 
 
+def verify_and_save_login(site: str, cookies: dict[str, str]) -> str:
+    """Verify cookies and save them in the active user-login context; return the login name."""
+    from src import missevan, youtube_web
+
+    if site == "Bilibili":
+        if not cookies.get("SESSDATA"):
+            raise CookieReadError("Bilibili cookies must include SESSDATA.")
+        result = verify_bilibili_login(cookies)
+        save = save_bilibili_credentials
+        name = result.get("uname", "")
+    elif site == "MissEvan":
+        result = missevan.verify_login(cookies)
+        save = missevan.save_login
+        name = result.get("username", "")
+    elif site == "YouTube":
+        result = youtube_web.verify_login(cookies)
+        save = youtube_web.save_login
+        name = result.get("name", "")
+    else:
+        raise CookieReadError(f"Unsupported site: {site}")
+    if result.get("error") or not result.get("is_login"):
+        raise CookieReadError(result.get("error") or f"{site} rejected these cookies.")
+    save(cookies)
+    return name
+
+
 def verify_bilibili_login(cookies: dict[str, str]) -> dict:
     """Ask Bilibili who these cookies belong to. Returns {"is_login", "uname", "mid"}."""
     try:
