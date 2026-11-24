@@ -16,23 +16,45 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class SimpleAppConfigTests(unittest.TestCase):
-    def test_material_theme_is_only_injected_for_server_history_monitor(self):
+    def test_material_theme_applies_to_both_monitors_but_not_overlays(self):
         tree = ast.parse((ROOT / "simple_app.py").read_text(encoding="utf-8"))
-        theme = next(
-            node for node in tree.body
-            if isinstance(node, ast.If)
-            and isinstance(node.test, ast.Name)
-            and node.test.id == "_SERVER_HISTORY_ENABLED"
+        theme_index = next(
+            index for index, node in enumerate(tree.body)
+            if isinstance(node, ast.Expr)
+            and isinstance(node.value, ast.Call)
+            and isinstance(node.value.func, ast.Attribute)
+            and isinstance(node.value.func.value, ast.Name)
+            and node.value.func.value.id == "st"
+            and node.value.func.attr == "html"
         )
-        code = compile(ast.Module(body=[theme], type_ignores=[]), "simple_app.py", "exec")
+        code = compile(
+            ast.Module(body=tree.body[theme_index - 1:theme_index + 1], type_ignores=[]),
+            "simple_app.py", "exec",
+        )
         for enabled in (False, True):
-            with self.subTest(server_history=enabled):
-                render = Mock()
-                exec(code, {
-                    "_SERVER_HISTORY_ENABLED": enabled,
-                    "st": SimpleNamespace(html=render),
-                })
-                self.assertEqual(render.call_count, int(enabled))
+            for overlay in (False, True):
+                with self.subTest(server_history=enabled, overlay=overlay):
+                    render = Mock()
+                    render_overlay = Mock()
+                    namespace = {
+                        "_SERVER_HISTORY_ENABLED": enabled,
+                        "_SOURCES": {},
+                        "_render_overlay_page": render_overlay,
+                        "st": SimpleNamespace(
+                            query_params={"view": "overlay"} if overlay else {},
+                            html=render,
+                            stop=Mock(side_effect=RuntimeError("overlay-stop")),
+                        ),
+                    }
+                    if overlay:
+                        with self.assertRaisesRegex(RuntimeError, "overlay-stop"):
+                            exec(code, namespace)
+                        render.assert_not_called()
+                        render_overlay.assert_called_once()
+                    else:
+                        exec(code, namespace)
+                        render.assert_called_once()
+                        render_overlay.assert_not_called()
 
     def test_dashboard_main_chat_keeps_gifts_and_superchats_and_respects_hidden_sites(self):
         tree = ast.parse((ROOT / "app.py").read_text(encoding="utf-8"))

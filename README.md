@@ -278,7 +278,7 @@ To retain the full chat and gift history in memory for as long as the Streamlit 
 
 After opening the app once, background polling continues if all browser sessions disconnect. Status checks stop after any configured channel goes live; chat collection for the live room continues. Restart the server to resume status checks. History is shared by browser sessions connected to that server and cleared when the server stops.
 
-The server-history monitor uses Material 3-inspired tonal feed panels, rounded message cards and pill-shaped sidebar buttons that follow Streamlit's light/dark theme. Native controls, server-lifetime history and transparent OBS overlays are unchanged; the regular simple monitor keeps its existing styling.
+Both simple monitors use Material 3-inspired tonal feed panels, rounded message cards and pill-shaped sidebar buttons that follow Streamlit's light/dark theme. Native controls, each monitor's history behavior and transparent OBS overlays are unchanged.
 
 Configure its new-session defaults in `.env` (see `env.template`):
 

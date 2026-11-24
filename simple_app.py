@@ -126,9 +126,8 @@ if st.query_params.get("view") == "overlay":
     _render_overlay_page()
     st.stop()
 
-if _SERVER_HISTORY_ENABLED:
-    st.html(
-        """
+st.html(
+    """
         <style>
         /* Material 3 roles adapt to Streamlit's selected theme. */
         .stApp {
@@ -260,8 +259,8 @@ if _SERVER_HISTORY_ENABLED:
             .stApp :is(button, a) { transition: none !important; }
         }
         </style>
-        """
-    )
+    """
+)
 
 
 def _chat_messages() -> list[dict]:
