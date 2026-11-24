@@ -3003,6 +3003,10 @@ if QtCore is not None:
             controls = QtWidgets.QHBoxLayout()
             self.live_status = QtWidgets.QLabel("Starting monitor…")
             controls.addWidget(self.live_status, 1)
+            self.hide_gifts = QtWidgets.QCheckBox("Hide gifts")
+            self._persist_widget(self.hide_gifts, "hide_gifts")
+            self.hide_gifts.toggled.connect(lambda _checked: self._refresh_feeds())
+            controls.addWidget(self.hide_gifts)
             clear_button = QtWidgets.QPushButton("Clear Chat window")
             clear_button.clicked.connect(self._clear_chat_window)
             controls.addWidget(clear_button)
@@ -5328,12 +5332,23 @@ if QtCore is not None:
                 if self._message_visible_in_chat(
                     message, selected_ids, room_ids
                 )
+                and not (
+                    feed == "chat"
+                    and message.get("type") == "gift"
+                    and getattr(self, "hide_gifts", None) is not None
+                    and self.hide_gifts.isChecked()
+                )
             ]
             messages.sort(key=lambda message: message.get("_arrived", 0))
-            return (
-                _limit_messages_per_room(messages, self.max_messages.value())
-                if feed == "chat" else messages
+            if feed != "chat":
+                return messages
+            limit_widget = getattr(self, "max_messages", None)
+            limit = (
+                limit_widget.value()
+                if limit_widget is not None
+                else self.config.MAX_CHAT_DISPLAY
             )
+            return _limit_messages_per_room(messages, limit)
 
         def _copy_messages(self, messages):
             if not messages:

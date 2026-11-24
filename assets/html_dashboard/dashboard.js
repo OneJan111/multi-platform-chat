@@ -373,11 +373,12 @@ async function loadAuthorHistory() {
   }
 }
 function renderChat() {
-  const signature = JSON.stringify([state.messages, state.paid, state.joins, state.settings.gift_effects]);
+  const signature = JSON.stringify([state.messages, state.paid, state.joins, state.settings.gift_effects, state.settings.hide_gifts]);
   // Rebuilding the feed would drop a text selection.
   if (signature === lastChat || window.getSelection()?.toString()) return;
   lastChat = signature;
-  fillFeed($("chat-feed"), state.messages.map(message => messageRow(message, false)));
+  fillFeed($("chat-feed"), state.messages.filter(message => !(state.settings.hide_gifts && message.type === "gift"))
+    .map(message => messageRow(message, false)));
   fillFeed($("paid-feed"), state.paid.map(message => messageRow(message, true)));
   fillFeed($("join-feed"), state.joins.map(message => {
     const row = node("div"), template = t("{author} entered"), author = message.author || "?";

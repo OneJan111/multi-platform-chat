@@ -102,3 +102,29 @@ test("emote picker previews the hovered or focused emote larger without sending"
   assert.match(preview, /"mouseenter", "focus"/);
   assert.match(preview, /"mouseleave", "blur"/);
 });
+
+test("Hide gifts removes gifts from the comment feed only", () => {
+  const start = source.indexOf("function renderChat(");
+  const render = source.slice(start, source.indexOf("function speechStatus(", start));
+  const feeds = {};
+  const gift = {type:"gift", id:1}, comment = {type:"chat", id:2}, paid = [gift];
+  const context = vm.createContext({
+    state:{messages:[gift, comment], joins:[], paid, settings:{hide_gifts:true}},
+    lastChat:"",
+    window:{getSelection:() => ""},
+    document:{createTextNode:text => text},
+    $:id => id,
+    node:() => ({append() {}}),
+    t:text => text,
+    appendReadings() {},
+    messageRow:message => message,
+    fillFeed:(id, rows) => { feeds[id] = rows; },
+  });
+  vm.runInContext(render, context);
+  context.renderChat();
+  assert.deepEqual(feeds["chat-feed"].map(row => row.id), [2]);
+  assert.deepEqual(feeds["paid-feed"].map(row => row.id), [1]);
+  context.state.settings.hide_gifts = false;
+  context.renderChat();
+  assert.deepEqual(feeds["chat-feed"].map(row => row.id), [1, 2]);
+});

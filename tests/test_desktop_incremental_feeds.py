@@ -52,6 +52,37 @@ class IncrementalFeedTests(unittest.TestCase):
             "text": f"message {number}",
         }
 
+    def test_chat_feed_uses_default_limit_before_settings_widget_exists(self):
+        from src import config
+
+        room_id = "youtube:room"
+        messages = [
+            {
+                "_monitor_id": room_id,
+                "_arrived": index,
+                "platform": "youtube",
+                "id": str(index),
+            }
+            for index in range(3)
+        ]
+        window = SimpleNamespace(
+            _active_feed="chat",
+            config=config,
+            _monitor_targets=[{"id": room_id}],
+            chat_room_selectors={
+                "youtube": SimpleNamespace(currentData=lambda: room_id)
+            },
+            site_visible={},
+            _messages=messages,
+            _paid=[],
+            _joins=[],
+            _message_visible_in_chat=lambda message, selected_ids, room_ids: True,
+        )
+
+        visible = desktop_app._DesktopWindow._visible_chat_messages(window)
+
+        self.assertEqual(visible, messages)
+
     def test_non_square_emojis_and_stickers_preserve_aspect_ratio(self):
         for width, height, maximum, expected in (
             (200, 100, 26, (26, 13)),

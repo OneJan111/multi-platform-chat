@@ -42,7 +42,7 @@ SITES = tuple(user_login.SITES)
 # Same option names and defaults as the desktop app's QSettings.
 DEFAULTS = {
     **TRANSCRIPTION_DEFAULTS,
-    "max_messages": 100, "gift_effects": False, "ui_language": "en",
+    "max_messages": 100, "gift_effects": False, "hide_gifts": False, "ui_language": "en",
     "show_reading": True, "notify_live": True,
     "visible_sites": list(SITES), "send_sites": ["bilibili", "missevan"], "selected_rooms": {},
     "tts_enabled": False, "tts_language": "auto", "tts_rate": 150, "tts_volume": 100,

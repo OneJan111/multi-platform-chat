@@ -305,7 +305,10 @@ def _get_guard_count(room_id: str, uid) -> Optional[int]:
             return None
         count = (payload.get("data") or {}).get("info", {}).get("num")
         return int(count) if count is not None else None
-    except (requests.RequestException, ValueError, TypeError, AttributeError):
+    except requests.RequestException as exc:
+        log.warning("Bilibili guard-count lookup failed for room %s: %s", room_id, exc)
+        return None
+    except (ValueError, TypeError, AttributeError):
         log.exception("Bilibili guard-count lookup failed for room %s.", room_id)
         return None
 
@@ -1114,6 +1117,9 @@ def get_upower_emotes(room_id: str) -> list[dict]:
     return fetch_upower_emotes(room_id)[0]
 
 
+UPOWER_EMOTES_ENABLED = False  # the endpoint currently always answers 404
+
+
 def fetch_upower_emotes(room_id: str) -> tuple[list[dict], str]:
     """The streamer's 充电 (upower) emote pack, as a one-item pack list, and an error ("" if fine).
 
@@ -1121,15 +1127,26 @@ def fetch_upower_emotes(room_id: str) -> tuple[list[dict], str]:
     With a login, `locked` reflects whether this account is charging the streamer.
     An empty list with no error means the streamer has no 充电表情.
     """
+    if not UPOWER_EMOTES_ENABLED:
+        return [], ""
     uid = _room_owner_uid(room_id)
     if not uid:
         return [], "couldn't find the streamer's UID for this room"
     c = user_login.get("bilibili")
-    login = {k: c.get(k, "") for k in ("SESSDATA", "bili_jct", "buvid3", "DedeUserID") if c.get(k)}
+    # The web client sends its whole cookie jar; Bilibili answers an HTML 404 to a thin or anonymous request.
+    login = {k: v for k, v in c.items() if isinstance(v, str) and v}
+    if login.get("SESSDATA") and not login.get("buvid3"):
+        try:
+            spi = requests.get("https://api.bilibili.com/x/frontend/finger/spi", timeout=5,
+                               headers={"User-Agent": _BROWSER_UA}).json()
+            login.update({"buvid3": spi["data"]["b_3"], "buvid4": spi["data"]["b_4"]})
+        except (requests.RequestException, ValueError, KeyError, TypeError):
+            pass
     # Try with the login (shows what this account unlocked); if Bilibili's risk control rejects it,
     # fall back to an anonymous request so the pack is at least listed.
-    err = ""
-    for cookies in ([login, None] if login else [None]):
+    errors = []
+    for label, cookies in ([("logged in", login), ("anonymous", None)] if login.get("SESSDATA")
+                           else [("anonymous", None)]):
         try:
             resp = requests.get(
                 BILIBILI_POWER_RIGHTS_URL, params={"up_mid": uid}, timeout=8,
@@ -1137,18 +1154,23 @@ def fetch_upower_emotes(room_id: str) -> tuple[list[dict], str]:
                          "Origin": BILIBILI_LIVE_ORIGIN},
                 cookies=cookies,
             )
+        except requests.RequestException as exc:
+            errors.append(f"{label}: {type(exc).__name__}")
+            continue
+        try:
             data = resp.json()
-        except (requests.RequestException, ValueError) as exc:
-            err = f"HTTP {getattr(getattr(exc, 'response', None), 'status_code', '')} {type(exc).__name__}".strip()
+        except ValueError:
+            # Bilibili answers an HTML error page when it rejects the request.
+            errors.append(f"{label}: HTTP {resp.status_code} without JSON")
             continue
         if data.get("code") != 0:
-            err = f"Bilibili code {data.get('code')} {data.get('message', '')}".strip()
+            errors.append(f"{label}: Bilibili code {data.get('code')} {data.get('message', '')}".strip())
             continue
         packs = parse_upower_emotes(data, uid)
         if packs:
             return packs, ""
-        err = ""  # a valid answer without emotes: the streamer has no 充电表情
-    return [], err
+        return [], ""  # a valid answer without emotes: the streamer has no 充电表情
+    return [], "; ".join(errors)
 
 
 def parse_upower_emotes(resp: dict, uid: int) -> list[dict]:

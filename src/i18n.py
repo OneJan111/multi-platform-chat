@@ -1005,6 +1005,7 @@ OBS に何も表示されない場合は、ダッシュボードのプログラ�
     "Offline": ("未开播", "オフライン"),
     "Zone: {zone}": ("分区：{zone}", "カテゴリ: {zone}"),
     "Gift effects": ("礼物特效", "ギフト演出"),
+    "Hide gifts": ("隐藏礼物", "ギフトを非表示"),
     "Animate gift images": ("播放礼物图片动画", "ギフト画像をアニメーション表示"),
     "Play available GIF/WebP gift animations. Full SVGA effects and YouTube animation overlays are not supported.": (
         "播放可用的 GIF/WebP 礼物动画。不支持完整 SVGA 特效和 YouTube 动画浮层。",
