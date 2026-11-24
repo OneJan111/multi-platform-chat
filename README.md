@@ -4,6 +4,8 @@
 
 A Streamlit dashboard for live streamers and their audience. It merges live chat from **YouTube**, **Bilibili** and **MissEvan (猫耳FM)** into one screen, with sending, moderation, translation, text-to-speech, a gifts/Super Chat tracker, OBS control and analytics.
 
+The main Streamlit dashboard uses Material 3-inspired tonal surfaces, rounded controls and pill navigation, following [Material Web's design tokens](https://github.com/material-components/material-web/blob/main/docs/theming/README.md). It retains native Streamlit widgets and follows the selected Streamlit light/dark theme; no external component scripts or fonts are loaded.
+
 The UI is available in **English / 简体中文 / 日本語** and fits PC and tablet screens (landscape and portrait).
 
 ## TL;DR
@@ -275,6 +277,8 @@ To retain the full chat and gift history in memory for as long as the Streamlit 
 ```
 
 After opening the app once, background polling continues if all browser sessions disconnect. Status checks stop after any configured channel goes live; chat collection for the live room continues. Restart the server to resume status checks. History is shared by browser sessions connected to that server and cleared when the server stops.
+
+The server-history monitor uses Material 3-inspired tonal feed panels, rounded message cards and pill-shaped sidebar buttons that follow Streamlit's light/dark theme. Native controls, server-lifetime history and transparent OBS overlays are unchanged; the regular simple monitor keeps its existing styling.
 
 Configure its new-session defaults in `.env` (see `env.template`):
 

@@ -126,6 +126,143 @@ if st.query_params.get("view") == "overlay":
     _render_overlay_page()
     st.stop()
 
+if _SERVER_HISTORY_ENABLED:
+    st.html(
+        """
+        <style>
+        /* Material 3 roles adapt to Streamlit's selected theme. */
+        .stApp {
+            --md-ref-typeface-plain: "Roboto", "Noto Sans", "Segoe UI", sans-serif;
+            --md-sys-color-surface: var(--background-color, light-dark(#fffbfe, #141218));
+            --md-sys-color-on-surface: var(--text-color, light-dark(#1d1b20, #e6e1e5));
+            --md-sys-color-primary: color-mix(in srgb, #875ccc 70%, var(--md-sys-color-on-surface));
+            --md-sys-color-primary-container: color-mix(in srgb, var(--md-sys-color-primary) 18%, var(--md-sys-color-surface));
+            --md-sys-color-surface-container-low: color-mix(in srgb, var(--md-sys-color-on-surface) 3%, var(--md-sys-color-surface));
+            --md-sys-color-surface-container: color-mix(in srgb, var(--md-sys-color-on-surface) 6%, var(--md-sys-color-surface));
+            --md-sys-color-surface-container-high: color-mix(in srgb, var(--md-sys-color-on-surface) 10%, var(--md-sys-color-surface));
+            --md-sys-color-on-surface-variant: color-mix(in srgb, var(--md-sys-color-on-surface) 75%, var(--md-sys-color-surface));
+            --md-sys-color-outline: color-mix(in srgb, var(--md-sys-color-on-surface) 48%, var(--md-sys-color-surface));
+            --md-sys-color-outline-variant: color-mix(in srgb, var(--md-sys-color-on-surface) 20%, var(--md-sys-color-surface));
+            background: var(--md-sys-color-surface);
+            color: var(--md-sys-color-on-surface);
+            font-family: var(--md-ref-typeface-plain);
+        }
+        .stApp :is(h1, h2, h3, p, label, button, input, textarea) {
+            font-family: var(--md-ref-typeface-plain);
+        }
+        .stApp :is(h1, h2, h3) { font-weight: 500; letter-spacing: -0.02em; }
+        .stApp [data-testid="stHeader"] { background: var(--md-sys-color-surface); }
+        .stApp [data-testid="stSidebar"] {
+            background: var(--md-sys-color-surface-container-low);
+            border-right: 1px solid var(--md-sys-color-outline-variant);
+            border-radius: 0 28px 28px 0;
+        }
+        .stApp :where([data-testid="stButton"], [data-testid="stLinkButton"],
+            [data-testid="stDownloadButton"], [data-testid="stFormSubmitButton"]) > :is(button, a) {
+            min-height: 2.5rem;
+            padding: .4rem 1.25rem;
+            border: 1px solid var(--md-sys-color-outline);
+            border-radius: 999px;
+            background: transparent;
+            color: var(--md-sys-color-primary);
+            font-weight: 500;
+            transition: background-color 150ms ease, box-shadow 150ms ease;
+        }
+        .stApp button[kind="primary"] {
+            background: var(--md-sys-color-primary);
+            border-color: var(--md-sys-color-primary);
+            color: var(--md-sys-color-surface);
+        }
+        .stApp :is(button, a)[kind="secondary"]:hover:not(:disabled) {
+            background: var(--md-sys-color-primary-container);
+            color: var(--md-sys-color-primary);
+            border-color: var(--md-sys-color-primary);
+        }
+        .stApp button[kind="primary"]:hover:not(:disabled) {
+            background: color-mix(in srgb, var(--md-sys-color-primary) 90%, var(--md-sys-color-surface));
+            color: var(--md-sys-color-surface);
+            border-color: var(--md-sys-color-primary);
+            box-shadow: 0 2px 6px #00000026;
+        }
+        .stApp :is(button, a, input, textarea):focus-visible {
+            outline: 3px solid var(--md-sys-color-primary);
+            outline-offset: 3px;
+        }
+        .stApp :is([data-baseweb="input"], [data-baseweb="base-input"],
+            [data-baseweb="textarea"], [data-baseweb="select"] > div) {
+            background: var(--md-sys-color-surface-container-high);
+            color: var(--md-sys-color-on-surface);
+            border-radius: 12px;
+        }
+        .stApp :is([data-baseweb="input"], [data-baseweb="textarea"],
+            [data-baseweb="select"] > div):focus-within {
+            border-color: var(--md-sys-color-primary);
+            box-shadow: 0 0 0 1px var(--md-sys-color-primary);
+        }
+        .stApp [data-testid="stExpander"] {
+            border: 1px solid var(--md-sys-color-outline-variant);
+            border-radius: 16px;
+            background: var(--md-sys-color-surface-container-low);
+        }
+        .stApp [data-testid="stAlert"] { border-radius: 16px; }
+        .stApp .simple-feed-panel {
+            padding: 1rem;
+            background: var(--md-sys-color-surface-container-low);
+            border: 1px solid var(--md-sys-color-outline-variant);
+            border-radius: 24px;
+            overflow: hidden;
+        }
+        .stApp .simple-feeds h2.simple-feed-title {
+            margin-bottom: .5rem;
+            font-weight: 500;
+            letter-spacing: -.02em;
+        }
+        .stApp .simple-feed-summary {
+            color: var(--md-sys-color-on-surface-variant);
+            opacity: 1;
+        }
+        .stApp .simple-feed-scroll {
+            scrollbar-width: thin;
+            scrollbar-color: var(--md-sys-color-outline) transparent;
+            padding: 0 .25rem .25rem;
+        }
+        .stApp .simple-feed-card {
+            border: 1px solid var(--md-sys-color-outline-variant);
+            border-radius: 16px;
+            background: var(--md-sys-color-surface-container);
+            padding: .75rem;
+            margin: .25rem 0 .5rem;
+        }
+        .stApp .simple-feed-card-super-admin {
+            background: #b42318;
+            border-color: #ef8178;
+            color: #fff;
+        }
+        .stApp .simple-feed-role { border-radius: 8px; padding: .1rem .5rem; }
+        .stApp .simple-feed-translated {
+            color: var(--md-sys-color-primary);
+            margin-top: .35rem;
+        }
+        .stApp .simple-feed-price {
+            color: color-mix(in srgb, #238558 65%, var(--md-sys-color-on-surface));
+            margin-top: .25rem;
+        }
+        .stApp :is(.simple-feed-reading, .simple-feed-translated) rt {
+            color: var(--md-sys-color-primary);
+        }
+        .stApp .simple-feed-card-super-admin :is(.simple-feed-translated, .simple-feed-price),
+        .stApp .simple-feed-card-super-admin rt { color: #fff; }
+        @media (max-width: 768px) {
+            .stApp .simple-feeds { gap: .5rem; }
+            .stApp .simple-feed-panel { padding: .75rem; border-radius: 16px; }
+        }
+        @media (prefers-reduced-motion: reduce) {
+            .stApp :is(button, a) { transition: none !important; }
+        }
+        </style>
+        """
+    )
+
 
 def _chat_messages() -> list[dict]:
     if not _SERVER_HISTORY_ENABLED:

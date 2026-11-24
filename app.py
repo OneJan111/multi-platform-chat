@@ -103,6 +103,106 @@ from src.tts import (
 st.markdown(
     """
 <style>
+/* Material 3 roles follow Streamlit's selected light/dark theme. */
+.stApp {
+    --md-ref-typeface-plain: "Roboto", "Noto Sans", "Segoe UI", sans-serif;
+    --md-sys-color-surface: var(--background-color, light-dark(#fffbfe, #141218));
+    --md-sys-color-on-surface: var(--text-color, light-dark(#1d1b20, #e6e1e5));
+    --md-sys-color-primary: color-mix(in srgb, #875ccc 70%, var(--md-sys-color-on-surface));
+    --md-sys-color-on-primary: var(--md-sys-color-surface);
+    --md-sys-color-primary-container: color-mix(in srgb, var(--md-sys-color-primary) 18%, var(--md-sys-color-surface));
+    --md-sys-color-on-surface-variant: color-mix(in srgb, var(--md-sys-color-on-surface) 75%, var(--md-sys-color-surface));
+    --md-sys-color-surface-container-low: color-mix(in srgb, var(--md-sys-color-on-surface) 3%, var(--md-sys-color-surface));
+    --md-sys-color-surface-container: color-mix(in srgb, var(--md-sys-color-on-surface) 6%, var(--md-sys-color-surface));
+    --md-sys-color-surface-container-high: color-mix(in srgb, var(--md-sys-color-on-surface) 10%, var(--md-sys-color-surface));
+    --md-sys-color-outline: color-mix(in srgb, var(--md-sys-color-on-surface) 48%, var(--md-sys-color-surface));
+    --md-sys-color-outline-variant: color-mix(in srgb, var(--md-sys-color-on-surface) 20%, var(--md-sys-color-surface));
+    --md-sys-shape-corner-medium: 12px;
+    --md-sys-shape-corner-large: 16px;
+    --md-sys-shape-corner-extra-large: 28px;
+    color: var(--md-sys-color-on-surface);
+    background: var(--md-sys-color-surface);
+    font-family: var(--md-ref-typeface-plain);
+}
+.stApp :is(h1, h2, h3, h4, p, input, textarea, button, label) {
+    font-family: var(--md-ref-typeface-plain);
+}
+.stApp :is(h1, h2, h3) { font-weight: 500; letter-spacing: -0.02em; }
+.stApp h1 { font-size: 2rem; }
+.stApp h2 { font-size: 1.6rem; }
+.stApp h3 { font-size: 1.25rem; }
+.stApp [data-testid="stHeader"] { background: var(--md-sys-color-surface); }
+.stApp [data-testid="stSidebar"] {
+    background: var(--md-sys-color-surface-container-low);
+    border-radius: 0 var(--md-sys-shape-corner-extra-large) var(--md-sys-shape-corner-extra-large) 0;
+    border-right: 1px solid var(--md-sys-color-outline-variant);
+}
+.stApp :where([data-testid="stButton"], [data-testid="stDownloadButton"],
+    [data-testid="stFormSubmitButton"], [data-testid="stPopover"]) > button {
+    min-height: 2.5rem;
+    border-radius: 999px;
+    padding: 0.4rem 1.25rem;
+    border: 1px solid var(--md-sys-color-outline);
+    background: transparent;
+    color: var(--md-sys-color-primary);
+    font-weight: 500;
+    transition: background-color 150ms ease, box-shadow 150ms ease;
+}
+.stApp button[kind="primary"] {
+    background: var(--md-sys-color-primary);
+    border-color: var(--md-sys-color-primary);
+    color: var(--md-sys-color-on-primary);
+}
+.stApp button[kind="secondary"]:hover:not(:disabled) {
+    background: var(--md-sys-color-primary-container);
+    border-color: var(--md-sys-color-primary);
+    color: var(--md-sys-color-primary);
+}
+.stApp button[kind="primary"]:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--md-sys-color-primary) 90%, var(--md-sys-color-on-primary));
+    border-color: var(--md-sys-color-primary);
+    color: var(--md-sys-color-on-primary);
+    box-shadow: 0 2px 6px #00000026;
+}
+.stApp :is(button, input, textarea, [role="tab"]):focus-visible {
+    outline: 3px solid var(--md-sys-color-primary);
+    outline-offset: 3px;
+}
+.stApp :is([data-baseweb="input"], [data-baseweb="base-input"],
+    [data-baseweb="textarea"], [data-baseweb="select"] > div) {
+    background: var(--md-sys-color-surface-container-high);
+    color: var(--md-sys-color-on-surface);
+    border-radius: var(--md-sys-shape-corner-medium);
+}
+.stApp :is([data-baseweb="input"], [data-baseweb="textarea"],
+    [data-baseweb="select"] > div):focus-within {
+    border-color: var(--md-sys-color-primary);
+    box-shadow: 0 0 0 1px var(--md-sys-color-primary);
+}
+.stApp :is([data-testid="stExpander"], [data-testid="stForm"],
+    [data-testid="stVerticalBlockBorderWrapper"]) {
+    border-color: var(--md-sys-color-outline-variant);
+    border-radius: var(--md-sys-shape-corner-large);
+}
+.stApp [data-testid="stExpander"] {
+    background: var(--md-sys-color-surface-container-low);
+}
+.stApp [data-testid="stExpander"] summary {
+    border-radius: var(--md-sys-shape-corner-large);
+}
+.stApp [data-testid="stMetric"] {
+    padding: 1rem 1.25rem;
+    background: var(--md-sys-color-surface-container);
+    border-radius: var(--md-sys-shape-corner-large);
+}
+.stApp [data-testid="stMetricLabel"] { color: var(--md-sys-color-on-surface-variant); }
+.stApp [data-testid="stTabs"] [role="tablist"] {
+    gap: 1rem;
+    border-bottom: 1px solid var(--md-sys-color-outline-variant);
+}
+.stApp [data-testid="stTabs"] [aria-selected="true"] { color: var(--md-sys-color-primary); }
+.stApp [data-baseweb="tab-highlight"] { background: var(--md-sys-color-primary); }
+.stApp [data-testid="stAlert"] { border-radius: var(--md-sys-shape-corner-large); }
 /* Chat rows (--chat-scale is set by the sidebar "Text size" option) */
 .chat-bubble {
     box-sizing: border-box;
@@ -162,20 +262,23 @@ body { --send-composer-left: 16px; }
     right: 9rem;
     width: auto !important;
     z-index: 999991;
-    background: var(--background-color, #0e1117);
+    background: var(--md-sys-color-surface);
 }
 .st-key-active_page [data-testid="stRadioGroup"] {
     flex-wrap: nowrap !important;
     overflow-x: auto;
     gap: 0.25rem;
-    padding: 2px;
+    padding: 4px;
+    border-radius: 999px;
+    background: var(--md-sys-color-surface-container);
 }
 .st-key-active_page [data-testid="stRadioOption"] {
     flex: 0 0 auto;
     width: auto;
     min-height: 2.5rem;
-    padding: 0.4rem 0.5rem;
-    border-radius: 0.5rem;
+    padding: 0.4rem 0.9rem;
+    border-radius: 999px;
+    color: var(--md-sys-color-on-surface-variant);
 }
 .st-key-active_page [data-testid="stMarkdownContainer"] p { white-space: nowrap; }
 /* Hide only the visual radio indicator; keep the input for keyboard navigation. */
@@ -187,11 +290,12 @@ body { --send-composer-left: 16px; }
     background: color-mix(in srgb, currentColor 8%, transparent);
 }
 .st-key-active_page [data-testid="stRadioOption"]:has(input:checked) {
-    background: color-mix(in srgb, var(--primary-color, #ff4b4b) 18%, transparent);
+    background: var(--md-sys-color-primary-container);
+    color: var(--md-sys-color-primary);
     font-weight: 600;
 }
 .st-key-active_page [data-testid="stRadioOption"]:focus-within {
-    outline: 2px solid var(--primary-color, #ff4b4b);
+    outline: 2px solid var(--md-sys-color-primary);
     outline-offset: 2px;
 }
 .st-key-send_controls_expander {
@@ -205,9 +309,10 @@ body { --send-composer-left: 16px; }
     bottom: 0.75rem;
     z-index: 9;
     padding: 0.3rem 0.55rem;
-    border: 1px solid color-mix(in srgb, currentColor 16%, transparent);
-    border-radius: 0.75rem;
-    background: color-mix(in srgb, var(--background-color) 94%, transparent);
+    border: 1px solid var(--md-sys-color-outline-variant);
+    border-radius: var(--md-sys-shape-corner-extra-large);
+    background: var(--md-sys-color-surface-container);
+    box-shadow: 0 4px 16px #0000001f;
     backdrop-filter: blur(12px);
 }
 .st-key-send_box {
@@ -377,7 +482,7 @@ div[class*="st-key-thankbox_"] button {
     cursor: pointer;
 }
 div[class*="st-key-thankbox_"] button:focus-visible {
-    outline: 2px solid var(--primary-color, #ff4b4b);
+    outline: 2px solid var(--md-sys-color-primary);
     outline-offset: -2px;
 }
 div[class*="st-key-thankbox_"]:hover .chat-bubble { filter: brightness(1.15); }
@@ -522,6 +627,10 @@ h3 .site-icon { margin-right: 0.15em; position: relative; top: -0.08em; }
     overflow-y: auto !important;
     overflow-x: hidden;
     padding-right: 4px;
+    border-radius: var(--md-sys-shape-corner-large);
+    background: var(--md-sys-color-surface-container-low);
+    scrollbar-color: var(--md-sys-color-outline) transparent;
+    scrollbar-width: thin;
 }
 .mpc-scroll-bottom {
     position: fixed;
@@ -540,6 +649,11 @@ h3 .site-icon { margin-right: 0.15em; position: relative; top: -0.08em; }
     box-shadow: 0 2px 8px rgba(0,0,0,0.2);
 }
 .mpc-scroll-bottom.is-visible { display: flex; }
+@media (prefers-reduced-motion: reduce) {
+    .stApp button { transition: none !important; }
+    .chat-text img,
+    [class*="st-key-emote_grid_"] button img { transition: none !important; }
+}
 @media (hover: none) {
     .mpc-scroll-bottom.is-visible { display: flex; }
 }

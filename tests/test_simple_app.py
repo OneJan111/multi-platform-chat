@@ -16,6 +16,24 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class SimpleAppConfigTests(unittest.TestCase):
+    def test_material_theme_is_only_injected_for_server_history_monitor(self):
+        tree = ast.parse((ROOT / "simple_app.py").read_text(encoding="utf-8"))
+        theme = next(
+            node for node in tree.body
+            if isinstance(node, ast.If)
+            and isinstance(node.test, ast.Name)
+            and node.test.id == "_SERVER_HISTORY_ENABLED"
+        )
+        code = compile(ast.Module(body=[theme], type_ignores=[]), "simple_app.py", "exec")
+        for enabled in (False, True):
+            with self.subTest(server_history=enabled):
+                render = Mock()
+                exec(code, {
+                    "_SERVER_HISTORY_ENABLED": enabled,
+                    "st": SimpleNamespace(html=render),
+                })
+                self.assertEqual(render.call_count, int(enabled))
+
     def test_dashboard_main_chat_keeps_gifts_and_superchats_and_respects_hidden_sites(self):
         tree = ast.parse((ROOT / "app.py").read_text(encoding="utf-8"))
         append = next(

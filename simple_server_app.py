@@ -1,4 +1,4 @@
-"""Server-lifetime chat history variant of the simple monitor.
+"""Material 3-styled, server-lifetime chat history variant of the simple monitor.
 
 Run with:
     streamlit run simple_server_app.py
